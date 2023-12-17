@@ -1853,6 +1853,12 @@ bool connectToWiFiAndInitOTA(const bool wifiOnly, int repeatScanAttempts)
   {
     const char* network = scanForKnownNetwork();
   
+    if (!network)
+    {
+      delay(1000);
+      continue;
+    }
+    
     int connectToFoundNetworkAttempts = 3;
     const int repeatDelay = 1000;
   
