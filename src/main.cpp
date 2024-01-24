@@ -21,6 +21,9 @@
 
 #include <WiFi.h>
 
+#define MERCATOR_ELEGANTOTA_LEMON_BANNER
+#define MERCATOR_OTA_DEVICE_LABEL "LEMON-IO"
+
 #include <Update.h>
 #include <AsyncTCP.h>
 #include <ESPAsyncWebServer.h>
@@ -40,12 +43,15 @@ const int UPLINK_BAUD_RATE = 9600;
 #define USB_SERIAL Serial
 #define GOPRO_SERIAL Serial1
 
+bool enableReadUplinkComms = true;
+bool enableGPSRead = true;
+bool enableAllUplinkMessageIntegrityChecks = true;
+bool enableConnectToQubitro = true;
+bool enableUploadToQubitro = true;
+bool enableConnectToPrivateMQTT = true;
+bool enableUploadToPrivateMQTT = true;
 const bool enableIMUSensor = true;
-const bool enableReadUplinkComms = true;
-const bool enableAllUplinkMessageIntegrityChecks = true;
 const bool enableOTAServer = true;          // over the air updates
-const bool enableConnectToQubitro = true;
-const bool enableUploadToQubitro = true;
 const bool enableConnectToTwitter = false;
 const bool enableConnectToSMTP = false;
 
@@ -76,6 +82,26 @@ char tweet[512];
 SMTPSession smtp;
 #endif
 
+#define PICOMQTT_MAX_MESSAGE_SIZE 4096
+
+#include <PicoMQTT.h>
+
+PicoMQTT::Client localMQTT(
+    private_mqqt_local_host,      // broker address (or IP)
+    private_mqqt_local_port,      // broker port (defaults to 1883)
+    private_mqqt_client_id, // Client ID
+    private_mqqt_username,  // MQTT username
+    private_mqqt_password   // MQTT password
+);
+
+PicoMQTT::Client remoteMQTT(
+    private_mqqt_remote_host,      // broker address (or IP)
+    private_mqqt_remote_port,      // broker port (defaults to 1883)
+    private_mqqt_client_id,         // Client ID
+    private_mqqt_username,        // MQTT username
+    private_mqqt_password          // MQTT password
+);
+
 #ifdef ENABLE_QUBITRO_AT_COMPILE_TIME
 // see mercator_secrets.c for Qubitro login credentials
 #include <WiFi.h>
@@ -92,6 +118,9 @@ const char* qubitro_device_token = nullptr;
 uint32_t qubitro_upload_min_duty_ms = 980; //980; // throttle upload to qubitro ms
 uint32_t last_qubitro_upload_at = 0;
 
+uint32_t private_mqtt_upload_min_duty_ms = 980; //980; // throttle upload to qubitro ms
+uint32_t last_private_mqtt_upload_at = 0;
+
 uint32_t uplinkMessageListenTimer = 0;
 
 const uint32_t telemetry_online_head_commit_duty_ms = 1900;
@@ -104,9 +133,12 @@ bool g_offlineStorageThrottleApplied = false;
 
 
 char IPBuffer[16];
+char IPLocalGateway[16];
+char WiFiSSID[36];
 const char* no_wifi_label="No WiFi";
 const char* wait_ip_label="Wait IP";
 const char* lost_ip_label="Lost IP";
+bool usingDevNetwork = false;
 
 const int16_t mqtt_payload_size = 2560;
 char mqtt_payload[mqtt_payload_size];
@@ -132,7 +164,7 @@ const char* leakAlarmMsg = "    Float\n\n    Leak!";
 
 uint32_t fixCount = 0;
 uint32_t passedChecksumCount = 0;
-bool processUplinkMessage = false;
+bool processUplinkMessage = true;
 
 uint8_t journey_activity_count = 0;
 const char* journey_activity_indicator = "\\|/-";
@@ -143,6 +175,8 @@ uint32_t qubitroUploadDutyCycle = 0;
 const uint8_t RED_LED_GPIO = 10;
 const uint8_t ORANGE_LED_GPIO = 0;
 const uint8_t IR_LED_GPIO = 9;
+
+uint8_t redLEDStatus = HIGH;
 
 const bool writeLogToSerial = false;
 const bool writeTelemetryLogToSerial = false; // writeLogToSerial must also be true
@@ -185,11 +219,17 @@ uint16_t qubitroMessageLength = 0;
 float KBToQubitro = 0.0;
 float KBFromMako = 0.0;
 
+uint32_t privateMQTTUploadCount = 0;
+uint16_t privateMQTTMessageLength = 0;
+
+
 bool accumulateMissedMessageCount = false;    // start-up
 const uint32_t delayBeforeCountingMissedMessages = 10000; // Allow 10 second start-up
 
 const uint32_t uplinkMessageLingerPeriodMs = 300;
 uint32_t uplinkLingerTimeoutAt = 0;
+uint32_t downlinkSendMessageDuration = 0;   // The time between sending the message to Mako and receiving pre-amble response preceding reply.
+uint32_t preambleReceivedAfterMicroSeconds = 0; // Time for preamble to be read in.
 
 const uint8_t GROVE_GPS_RX_PIN = 33;
 const uint8_t GROVE_GPS_TX_PIN = 32;
@@ -298,8 +338,8 @@ struct LemonTelemetryForStorage
   uint16_t  gps_course_deg;
   uint16_t  gps_knots;            // 52
   
-  float     imu_gyro_x;           // must be on 4 byte boundary
-  float     imu_gyro_y;
+  uint32_t  downlink_send_duration;   // must be on 4 byte boundary
+  uint32_t  uplink_latency;           
   float     imu_gyro_z;
   float     imu_lin_acc_x;
   float     imu_lin_acc_y;
@@ -344,8 +384,8 @@ struct LemonTelemetryForJson
   double    gps_course_deg;
   double    gps_knots;
 
-  float     imu_gyro_x;
-  float     imu_gyro_y;
+  uint32_t  downlink_send_duration;
+  uint32_t  uplink_latency;
   float     imu_gyro_z;
   float     imu_lin_acc_x;
   float     imu_lin_acc_y;
@@ -387,7 +427,8 @@ bool checkForValidPreambleOnUplink();
 bool populateHeadWithMakoTelemetry(BlockHeader& headBlock, const bool validPreambleFound);
 void populateHeadWithLemonTelemetryAndCommit(BlockHeader& headBlock);
 void getNextTelemetryMessagesUploadedToQubitro();
-void populateLatestLemonTelemetry(LemonTelemetryForJson& l, TinyGPSPlus& g);
+void populateCurrentLemonTelemetry(LemonTelemetryForJson& l, TinyGPSPlus& g);
+void populateFinalLemonTelemetry(LemonTelemetryForJson& l);
 void constructLemonTelemetryForStorage(struct LemonTelemetryForStorage& s, const LemonTelemetryForJson l, const uint16_t uplinkMessageLength);
 uint8_t decode_uint8(uint8_t*& msg) ;
 uint16_t decode_uint16(uint8_t*& msg) ;
@@ -412,6 +453,7 @@ bool qubitro_connect();
 void buildUplinkTelemetryMessageV6a(char* payload, const struct MakoUplinkTelemetryForJson& m, const struct LemonTelemetryForJson& l);
 void buildBasicTelemetryMessage(char* payload);
 enum e_q_upload_status uploadTelemetryToQubitro(MakoUplinkTelemetryForJson* makoTelemetry, struct LemonTelemetryForJson* lemonTelemetry);
+enum e_q_upload_status uploadTelemetryToPrivateMQTT(MakoUplinkTelemetryForJson* makoTelemetry, struct LemonTelemetryForJson* lemonTelemetry);
 
 
 
@@ -419,15 +461,16 @@ void getM5ImuSensorData(struct LemonTelemetryForJson& t)
 {
   const float uninitialisedIMU = 0.0;
   
+  // gyro x/y/z now not used
   if (enableIMUSensor)
   {
-    M5.IMU.getGyroData(&t.imu_gyro_x, &t.imu_gyro_y, &t.imu_gyro_z);
+    t.imu_gyro_z = 0.0;
     M5.IMU.getAccelData(&t.imu_lin_acc_x, &t.imu_lin_acc_y, &t.imu_lin_acc_z);
     M5.IMU.getAhrsData(&t.imu_rot_acc_x, &t.imu_rot_acc_y, &t.imu_rot_acc_z);
   }
   else
   {
-    t.imu_gyro_x = t.imu_gyro_y = t.imu_gyro_z = uninitialisedIMU;
+    t.imu_gyro_z = uninitialisedIMU;
     t.imu_lin_acc_x = t.imu_lin_acc_y = t.imu_lin_acc_z = uninitialisedIMU;
     t.imu_rot_acc_x = t.imu_rot_acc_y = t.imu_rot_acc_z = uninitialisedIMU;
   }
@@ -444,14 +487,26 @@ void WiFiStationConnected(WiFiEvent_t event, WiFiEventInfo_t info)
 void WiFiGotIP(WiFiEvent_t event, WiFiEventInfo_t info)
 {
   strcpy(IPBuffer,WiFi.localIP().toString().c_str());
+  strcpy(IPLocalGateway, WiFi.gatewayIP().toString().c_str());
+  strcpy(WiFiSSID, WiFi.SSID().c_str());
+
+  usingDevNetwork = (!strcmp(IPLocalGateway,private_local_gateway) && !strcmp(WiFiSSID, private_dev_ssid));
 
   if (writeLogToSerial)
     USB_SERIAL.printf("***** WiFi CONNECTED IP: %s ******\n",IPBuffer);
 }
 
+bool devNetworkInUse()
+{ return usingDevNetwork; }
+
 void WiFiLostIP(WiFiEvent_t event, WiFiEventInfo_t info)
 {
   strcpy(IPBuffer,lost_ip_label);
+  strcpy(IPBuffer,"");
+  strcpy(IPLocalGateway, "");
+  strcpy(WiFiSSID, WiFi.SSID().c_str());
+
+  usingDevNetwork = false;
 
   if (writeLogToSerial)
     USB_SERIAL.printf("***** WiFi LOST IP ******\n");
@@ -460,6 +515,10 @@ void WiFiLostIP(WiFiEvent_t event, WiFiEventInfo_t info)
 void WiFiStationDisconnected(WiFiEvent_t event, WiFiEventInfo_t info)
 {
   strcpy(IPBuffer,no_wifi_label);
+  strcpy(IPLocalGateway, "");
+  strcpy(WiFiSSID, "");
+
+  usingDevNetwork = false;
 
   if (writeLogToSerial)
     USB_SERIAL.printf("***** WiFi DISCONNECTED: Reason: %d ******\n",info.wifi_sta_disconnected.reason);
@@ -511,6 +570,8 @@ void checkConnectivity()
             
           // do a qubitro reconnect - synchronous
           qubitro_connect();
+
+          // how to do Private MQTT here?
         }
         else
         {
@@ -561,15 +622,56 @@ void dumpHeapUsage(const char* msg)
   }
 }
 
+void toggleRedLED()
+{
+  redLEDStatus = (redLEDStatus == HIGH ? LOW : HIGH );
+  digitalWrite(RED_LED_GPIO, redLEDStatus);
+}
+
+bool haltAllProcessingDuringOTAUpload = false;
+
+void disableFeaturesForOTA(bool screenToRed=true)
+{
+  enableConnectToQubitro = false;
+  enableUploadToQubitro = false;
+  enableConnectToPrivateMQTT = false;
+  enableUploadToPrivateMQTT = false;
+  enableReadUplinkComms = false;
+  processUplinkMessage = false;
+  enableAllUplinkMessageIntegrityChecks = false;
+  enableGPSRead = false;
+  if (screenToRed)
+    M5.Lcd.fillScreen(TFT_RED);
+
+  digitalWrite(RED_LED_GPIO, LOW);  // turn on red led
+
+  haltAllProcessingDuringOTAUpload = true;
+
+  delay(500);
+}
+
+TaskHandle_t mainTaskHandle = nullptr;
+BaseType_t mainTaskCoreId = 0;
+
+void uploadOTABeginCallback(AsyncElegantOtaClass* originator)
+{
+  // halt cpu 0
+//  vTaskSuspend(mainTaskHandle);
+  disableFeaturesForOTA(false);   // prevent LCD call due to separate thread calling this
+}
+
 void setup()
 {
+  mainTaskCoreId = xPortGetCoreID();
+  mainTaskHandle = xTaskGetCurrentTaskHandle();
+
   M5.begin();
 
   WiFi.onEvent(WiFiStationConnected, WiFiEvent_t::ARDUINO_EVENT_WIFI_STA_CONNECTED);
   WiFi.onEvent(WiFiGotIP, WiFiEvent_t::ARDUINO_EVENT_WIFI_STA_GOT_IP);
   WiFi.onEvent(WiFiLostIP, WiFiEvent_t::ARDUINO_EVENT_WIFI_STA_LOST_IP);
   WiFi.onEvent(WiFiStationDisconnected, WiFiEvent_t::ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
-
+  
   strcpy(IPBuffer,no_wifi_label);
 
   ssid_connected = ssid_not_connected;
@@ -596,9 +698,8 @@ void setup()
     imuAvailable = false;
   }
 
-
   pinMode(RED_LED_GPIO, OUTPUT); // Red LED - the interior LED to M5 Stick
-  digitalWrite(RED_LED_GPIO, HIGH); // switch off
+  digitalWrite(RED_LED_GPIO, redLEDStatus); // switch off as redLEDStatus is HIGH
 
   pinMode(ORANGE_LED_GPIO, OUTPUT); // Orange LED - the old external orange LED
   digitalWrite(ORANGE_LED_GPIO, LOW); // switch off
@@ -639,7 +740,6 @@ void setup()
   // cannot use Pin 0 for receive of GPS (resets on startup), can use Pin 36, can use 26
   // cannot use Pin 0 for transmit of GPS (resets on startup), only Pin 26 can be used for transmit.
 
-
 #ifdef ENABLE_QUBITRO_AT_COMPILE_TIME
   if (usePrimaryQubitroUserDevice)
   {
@@ -662,6 +762,12 @@ void setup()
     qubitro_connect();
   }
 #endif
+
+if (enableUploadToPrivateMQTT)
+{
+  localMQTT.begin();
+  remoteMQTT.begin();
+}
 
 #ifdef ENABLE_SMTP_AT_COMPILE_TIME
   if (enableConnectToSMTP && WiFi.status() == WL_CONNECTED)
@@ -756,11 +862,33 @@ void loop()
 {
   shutdownIfUSBPowerOff();
 
+  if (haltAllProcessingDuringOTAUpload)
+  {
+    delay(1000);
+    return;
+  }
+
+  updateButtonsAndBuzzer();
+
+  if (enableUploadToPrivateMQTT)
+  {
+      usingDevNetwork ? localMQTT.loop() : remoteMQTT.loop();
+  }
+
   if (!accumulateMissedMessageCount && millis() > delayBeforeCountingMissedMessages)
     accumulateMissedMessageCount = true;
 
   checkConnectivity();
   
+  if (p_primaryButton->wasReleasefor(100)) // disable message upload
+  {
+    updateButtonsAndBuzzer();
+
+    disableFeaturesForOTA();
+    return;
+  }
+
+  /*
   if (p_primaryButton->wasReleasefor(100)) // toggle ota only
   {
     updateButtonsAndBuzzer();
@@ -774,8 +902,9 @@ void loop()
     toggleWiFiActive();
     return;
   }
+*/
 
-  while (gps_serial.available() > 0)
+  while (enableGPSRead && gps_serial.available() > 0)
   {
     checkForLeak(leakAlarmMsg, M5_POWER_SWITCH_PIN);
 
@@ -801,6 +930,7 @@ void loop()
         {
           processUplinkMessage = true;  // triggers listen for uplink msg
           uplinkMessageListenTimer = millis();
+          downlinkSendMessageDuration = micros();
         }
 
         uint32_t newFixCount = gps.sentencesWithFix();
@@ -834,7 +964,7 @@ void loop()
           passedChecksumCount = newPassedChecksum;
         }
 
-        populateLatestLemonTelemetry(latestLemonTelemetry, gps);
+        populateCurrentLemonTelemetry(latestLemonTelemetry, gps);
 
 #ifdef ENABLE_TWITTER_AT_COMPILE_TIME
         sendAnyTwitterMessagesRequired();
@@ -939,7 +1069,7 @@ void loop()
         M5.Lcd.setTextColor(TFT_WHITE, TFT_RED);
       else if (g_offlineStorageThrottleApplied && telemetryPipeline.isPipelineDraining())
         M5.Lcd.setTextColor(TFT_BLACK, TFT_ORANGE);
-      else if (telemetryPipeline.getPipelineLength() > 2)
+      else if (telemetryPipeline.getPipelineLength() > 4)
         M5.Lcd.setTextColor(TFT_BLACK, TFT_YELLOW);
       else
         M5.Lcd.setTextColor(TFT_WHITE, TFT_BLACK);
@@ -993,6 +1123,8 @@ void loop()
       {
         last_head_committed_at = timeNow;
   
+        populateFinalLemonTelemetry(latestLemonTelemetry);
+
         // 4.2 Populate the head block with the binary Lemon telemetry data and commit to the telemetry pipeline.
         populateHeadWithLemonTelemetryAndCommit(headBlock);
       }
@@ -1004,7 +1136,7 @@ void loop()
       // 5. Send the next message(s) from pipeline to Qubitro
       getNextTelemetryMessagesUploadedToQubitro();
 
-      processUplinkMessage = false;
+      processUplinkMessage = false; // finished processing the uplink message  
     }
     else
     {
@@ -1044,18 +1176,22 @@ bool checkForValidPreambleOnUplink()
   // If uplink messages are to be decoded look for pre-amble sequence on Serial Rx
   if (enableReadUplinkComms)
   {
-    // 1.1 wait until all transmitted data sent to Mako
+    // 1.1 wait until all transmitted data sent to Mako (synchronous)
     GOPRO_SERIAL.flush();
+    uint32_t nowUS = micros();
+
+    downlinkSendMessageDuration = (nowUS >= downlinkSendMessageDuration ? nowUS - downlinkSendMessageDuration : 0xFFFFFFFF - downlinkSendMessageDuration + nowUS);
 
     uplinkLingerTimeoutAt = millis()+uplinkMessageLingerPeriodMs;
+
+    preambleReceivedAfterMicroSeconds = micros();
 
     // 1.2 Read received data searching for lead-in pattern from Tracker - MBJAEJ\0
     // wait upto uplinkLingerTimeoutAt milliseconds to receive the pre-amble
 
-char uplink_preamble_first_segment[] = "MBJ";
-char uplink_preamble_second_segment[] = "AEJ";
+    char uplink_preamble_first_segment[] = "MBJ";
+    char uplink_preamble_second_segment[] = "AEJ";
 
-    
     const char* nextByteToFind = uplink_preamble_first_segment;
     const char* nextSecondSegmentByteToFind = uplink_preamble_second_segment;
     
@@ -1104,60 +1240,21 @@ char uplink_preamble_second_segment[] = "AEJ";
   {
     // ignore any Serial Rx/Uplink bytes
   }
-  
-  return validPreambleFound;
-}
-      
 
-/*
-bool checkForValidPreambleOnUplink()
-{
-  bool validPreambleFound = false;
+  uint32_t nowUS = micros();
 
-  // If uplink messages are to be decoded look for pre-amble sequence on Serial Rx
-  if (enableReadUplinkComms)
+  if (validPreambleFound)
   {
-    // 1.1 wait until all transmitted data sent to Mako
-    GOPRO_SERIAL.flush();
-
-    uplinkLingerTimeoutAt = millis()+uplinkMessageLingerPeriodMs;
-
-    // 1.2 Read received data searching for lead-in pattern from Tracker - MBJAEJ\0
-    // wait upto uplinkLingerTimeoutAt milliseconds to receive the pre-amble
-    const char* nextByteToFind = preamble_pattern;
-    while ((GOPRO_SERIAL.available() || 
-            !GOPRO_SERIAL.available() && millis() < uplinkLingerTimeoutAt) && 
-            *nextByteToFind != 0)
-    {
-      // throw away trash bytes from half-duplex clash - always present
-      char next = GOPRO_SERIAL.read();
-      if (next == *nextByteToFind)
-        nextByteToFind++;
-      else
-        nextByteToFind = preamble_pattern;    // make sure contiguous preamble found, reset search for first char of preamble
-    }
-
-    if (*nextByteToFind == 0)   // last byte of pre-amble found before no more bytes available
-    {
-      validPreambleFound = true;
-      
-      // message pre-amble found - read the rest of the received message.
-      if (writeLogToSerial && writeTelemetryLogToSerial)
-        USB_SERIAL.print("\nPre-Amble Found\n");
-    }
-    else
-    {
-      uplinkMessageMissingCount++;
-    }
+    preambleReceivedAfterMicroSeconds = (nowUS >= preambleReceivedAfterMicroSeconds ? nowUS - preambleReceivedAfterMicroSeconds : 0xFFFFFFFF - preambleReceivedAfterMicroSeconds + nowUS);
   }
   else
   {
-    // ignore any Serial Rx/Uplink bytes
+    preambleReceivedAfterMicroSeconds = 0; 
   }
-  
+
   return validPreambleFound;
 }
-      */
+
 bool populateHeadWithMakoTelemetry(BlockHeader& headBlock, const bool validPreambleFound)
 {
   bool messageValidatedOk = false;
@@ -1364,9 +1461,16 @@ void getNextTelemetryMessagesUploadedToQubitro()
 
     // 3. construct the JSON message from the two structs and send MQTT to Qubitro
     e_q_upload_status uploadStatus=Q_SUCCESS;
+    e_q_upload_status uploadStatusPrivateMQTT=Q_SUCCESS;
+
     #ifdef ENABLE_QUBITRO_AT_COMPILE_TIME
-            if (enableConnectToQubitro && enableUploadToQubitro)
+          if (enableConnectToPrivateMQTT && enableUploadToPrivateMQTT)
+              uploadStatus = uploadStatusPrivateMQTT = uploadTelemetryToPrivateMQTT(&makoJSON, &lemonForUpload);
+
+          if (enableConnectToQubitro && enableUploadToQubitro)
               uploadStatus = uploadTelemetryToQubitro(&makoJSON, &lemonForUpload);
+
+          // MBJ uploadstatus is driven off Qubitro result only.
     #endif
 
     // 5. If sent ok then commit (or no send to Qubitro required), otherwise do nothing
@@ -1392,7 +1496,7 @@ void getNextTelemetryMessagesUploadedToQubitro()
 }
 
 // TinyGPSPlus must be non-const as act of getting lat and lng resets the updated flag
-void populateLatestLemonTelemetry(LemonTelemetryForJson& l, TinyGPSPlus& g)
+void populateCurrentLemonTelemetry(LemonTelemetryForJson& l, TinyGPSPlus& g)
 {
   l.gps_lat =  g.location.lat(); l.gps_lng = g.location.lng();
   l.gps_hdop = g.hdop.hdop();    l.gps_course_deg = g.course.deg(); l.gps_knots = g.speed.knots();
@@ -1402,6 +1506,12 @@ void populateLatestLemonTelemetry(LemonTelemetryForJson& l, TinyGPSPlus& g)
   l.gps_satellites =             g.satellites.value();
 
   getM5ImuSensorData(l);
+}
+
+void populateFinalLemonTelemetry(LemonTelemetryForJson& l)
+{
+  l.downlink_send_duration = downlinkSendMessageDuration;
+  l.uplink_latency = preambleReceivedAfterMicroSeconds;
 }
 
 void constructLemonTelemetryForStorage(struct LemonTelemetryForStorage& s, const LemonTelemetryForJson l, const uint16_t uplinkMessageLength)
@@ -1423,7 +1533,9 @@ void constructLemonTelemetryForStorage(struct LemonTelemetryForStorage& s, const
   s.gps_course_deg = (uint16_t)(l.gps_course_deg * 10.0);
   s.gps_knots = (uint16_t)(l.gps_knots * 10.0);            // 48
   
-  s.imu_gyro_x = l.imu_gyro_x; s.imu_gyro_y = l.imu_gyro_y; s.imu_gyro_z = l.imu_gyro_z; 
+  s.downlink_send_duration = l.downlink_send_duration; 
+  s.uplink_latency = l.uplink_latency; 
+  s.imu_gyro_z = l.imu_gyro_z; 
   s.imu_lin_acc_x = l.imu_lin_acc_x; s.imu_lin_acc_y = l.imu_lin_acc_y; s.imu_lin_acc_z = l.imu_lin_acc_z;
   s.imu_rot_acc_x = l.imu_rot_acc_x; s.imu_rot_acc_y = l.imu_rot_acc_y; s.imu_rot_acc_z = l.imu_rot_acc_z;
   s.uplinkBadMessagePercentage = uplinkBadMessagePercentage;      // 88
@@ -1511,8 +1623,9 @@ bool decodeIntoLemonTelemetryForUpload(uint8_t* msg, const uint16_t length, stru
   l.gps_course_deg = ((float)decode_uint16(msg)) / 10.0;
   l.gps_knots = ((float)decode_uint16(msg)) / 10.0;        // 44
 
-  l.imu_gyro_x = decode_float(msg);
-  l.imu_gyro_y = decode_float(msg);
+  l.downlink_send_duration = decode_uint32(msg);
+  l.uplink_latency = decode_uint32(msg);
+  
   l.imu_gyro_z = decode_float(msg);
   l.imu_lin_acc_x = decode_float(msg);
   l.imu_lin_acc_y = decode_float(msg);
@@ -1953,6 +2066,8 @@ bool setupOTAWebServer(const char* _ssid, const char* _password, const char* lab
       if (writeLogToSerial)
         USB_SERIAL.println("setupOTAWebServer: calling AsyncElegantOTA.begin");
 
+      AsyncElegantOTA.setID(MERCATOR_OTA_DEVICE_LABEL);
+      AsyncElegantOTA.setUploadBeginCallback(uploadOTABeginCallback);
       AsyncElegantOTA.begin(&asyncWebServer);    // Start AsyncElegantOTA
 
       if (writeLogToSerial)
@@ -2074,7 +2189,7 @@ void buildUplinkTelemetryMessageV6a(char* payload, const struct MakoUplinkTeleme
           "\"mako_imu_rot_acc_x\":%f,\"mako_imu_rot_acc_y\":%f,\"mako_imu_rot_acc_z\":%f,"
           "\"mako_rx_good_checksum_msgs\":%hu,"
 
-          "\"lemon_imu_gyro_x\":%f,\"lemon_imu_gyro_y\":%f,\"lemon_imu_gyro_z\":%f,"
+          "\"downlink_send_duration\":%lu,\"uplink_latency\":%lu,\"lemon_imu_gyro_z\":%f,"
           "\"lemon_imu_lin_acc_x\":%f,\"lemon_imu_lin_acc_y\":%f,\"lemon_imu_lin_acc_z\":%f,"
           "\"lemon_imu_rot_acc_x\":%f,\"lemon_imu_rot_acc_y\":%f,\"lemon_imu_rot_acc_z\":%f,"
           "\"uplink_bad_percentage\":%.1f,"
@@ -2115,7 +2230,9 @@ void buildUplinkTelemetryMessageV6a(char* payload, const struct MakoUplinkTeleme
           m.imu_lin_acc_x, m.imu_lin_acc_y, m.imu_lin_acc_z,
           m.imu_rot_acc_x, m.imu_rot_acc_y, m.imu_rot_acc_z,
           m.good_checksum_msgs,
-          l.imu_gyro_x,    l.imu_gyro_y,    l.imu_gyro_z,
+          l.downlink_send_duration,
+          l.uplink_latency,    
+          l.imu_gyro_z,
           l.imu_lin_acc_x, l.imu_lin_acc_y, l.imu_lin_acc_z,
           l.imu_rot_acc_x, l.imu_rot_acc_y, l.imu_rot_acc_z,
           l.uplinkBadMessagePercentage,
@@ -2147,6 +2264,64 @@ void buildUplinkTelemetryMessageV6a(char* payload, const struct MakoUplinkTeleme
 void buildBasicTelemetryMessage(char* payload)
 {
   sprintf(payload, "{\"lat\":%f,\"lng\":%f}",  gps.location.lat(), gps.location.lng());
+}
+
+enum e_q_upload_status uploadTelemetryToPrivateMQTT(MakoUplinkTelemetryForJson* makoTelemetry, struct LemonTelemetryForJson* lemonTelemetry)
+{
+  enum e_q_upload_status uploadStatus = Q_UNDEFINED_ERROR;
+
+  if(enableUploadToPrivateMQTT)
+  {
+    // This needs to be either localMQTT or remoteMQTT
+    PicoMQTT::Client* MQTTClient = (usingDevNetwork ? &localMQTT : &remoteMQTT);
+
+    if (WiFi.status() == WL_CONNECTED)
+    {
+      if (MQTTClient->connected())
+      {
+        buildUplinkTelemetryMessageV6a(mqtt_payload, *makoTelemetry, *lemonTelemetry);
+
+        last_private_mqtt_upload_at = millis();
+        bool result = MQTTClient->publish("test", mqtt_payload);
+
+        if (result)
+        {
+          toggleRedLED();
+          uploadStatus = Q_SUCCESS_SEND;
+          // USB_SERIAL.printf("PrivateMQTT Client sent message %s\n", mqtt_payload);
+          privateMQTTUploadCount++;
+        }
+        else
+        {
+          if (writeLogToSerial)
+            USB_SERIAL.printf("Private MQTT Client failed to send message. Publish returned false.\n");
+          uploadStatus = Q_MQTT_CLIENT_SEND_ERROR;
+        }
+      }
+      else
+      {
+        uploadStatus = Q_MQTT_CLIENT_CONNECT_ERROR;
+        if (writeLogToSerial)
+          USB_SERIAL.printf("Private MQTT Client error - not connected\n");
+      }
+    }
+    else
+    {
+      uploadStatus = Q_NO_WIFI_CONNECTION;
+
+      if (writeLogToSerial)
+        USB_SERIAL.println("Private MQTT No Wifi\n");
+    }
+  }
+  else
+  {
+    uploadStatus = Q_SUCCESS_NOT_ENABLED;
+
+    if (writeLogToSerial)
+      USB_SERIAL.println("Private MQTT Not Enabled\n");
+  }
+
+  return uploadStatus;
 }
 
 enum e_q_upload_status uploadTelemetryToQubitro(MakoUplinkTelemetryForJson* makoTelemetry, struct LemonTelemetryForJson* lemonTelemetry)
@@ -2201,7 +2376,7 @@ enum e_q_upload_status uploadTelemetryToQubitro(MakoUplinkTelemetryForJson* mako
     uploadStatus = Q_SUCCESS_NOT_ENABLED;
 
     if (writeLogToSerial)
-      USB_SERIAL.println("Q Not On\n");
+      USB_SERIAL.println("Q Not Enabled\n");
   }
 
   return uploadStatus;
