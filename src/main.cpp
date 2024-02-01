@@ -12,7 +12,6 @@
 
 //#define ENABLE_TWITTER_AT_COMPILE_TIME
 //#define ENABLE_SMTP_AT_COMPILE_TIME
-#define ENABLE_QUBITRO_AT_COMPILE_TIME
 
 #include <M5StickCPlus.h>
 
@@ -46,8 +45,6 @@ const int UPLINK_BAUD_RATE = 9600;
 bool enableReadUplinkComms = true;
 bool enableGPSRead = true;
 bool enableAllUplinkMessageIntegrityChecks = true;
-bool enableConnectToQubitro = true;
-bool enableUploadToQubitro = true;
 bool enableConnectToPrivateMQTT = true;
 bool enableUploadToPrivateMQTT = true;
 const bool enableIMUSensor = true;
@@ -102,23 +99,12 @@ PicoMQTT::Client remoteMQTT(
     private_mqqt_password          // MQTT password
 );
 
-#ifdef ENABLE_QUBITRO_AT_COMPILE_TIME
-// see mercator_secrets.c for Qubitro login credentials
+// see mercator_secrets.c for Private MQTT login credentials
 #include <WiFi.h>
 #include <ESP32Ping.h>
-#include <QubitroMqttClient.h>
+#include <QubitroMqttClient.h>      // MBJ REFACTOR - CAN BE REMOVED ONCE ENUMS SEPARATELY DEFINED
 
-const bool usePrimaryQubitroUserDevice = true;
-
-const char* qubitro_username = nullptr;
-const char* qubitro_password = nullptr;
-const char* qubitro_device_id = nullptr;
-const char* qubitro_device_token = nullptr;
-
-uint32_t qubitro_upload_min_duty_ms = 980; //980; // throttle upload to qubitro ms
-uint32_t last_qubitro_upload_at = 0;
-
-uint32_t private_mqtt_upload_min_duty_ms = 980; //980; // throttle upload to qubitro ms
+uint32_t private_mqtt_upload_min_duty_ms = 980; //980; // throttle upload to private mqtt ms
 uint32_t last_private_mqtt_upload_at = 0;
 
 uint32_t uplinkMessageListenTimer = 0;
@@ -143,17 +129,12 @@ bool usingDevNetwork = false;
 const int16_t mqtt_payload_size = 2560;
 char mqtt_payload[mqtt_payload_size];
 WiFiClient wifiClient;
-QubitroMqttClient qubitro_mqttClient(wifiClient);
-bool qubitro_connect();
-unsigned long qubitro_connection_timeout_ms = 30000;  // reducing this doesn't help when mobile coverage lost
-unsigned long qubitro_keep_alive_interval_ms = 15000;
 
 // Mask with 0x01 to see if successful
 enum e_q_upload_status {Q_SUCCESS=1, Q_SUCCESS_SEND=3, Q_SUCCESS_NO_SEND=5, Q_SUCCESS_NOT_ENABLED=7, 
                         Q_NO_WIFI_CONNECTION=8, Q_SERVER_CONNECT_ERROR=10,
                         Q_MQTT_CLIENT_CONNECT_ERROR=12, Q_MQTT_CLIENT_SEND_ERROR=14, 
                         Q_UNDEFINED_ERROR=254};
-#endif
 
 bool otaActive = false; // OTA updates toggle
 AsyncWebServer asyncWebServer(80);
@@ -169,8 +150,8 @@ bool processUplinkMessage = true;
 uint8_t journey_activity_count = 0;
 const char* journey_activity_indicator = "\\|/-";
 
-uint32_t currentQubitroUploadAt = 0, lastQubitroUploadAt = 0;
-uint32_t qubitroUploadDutyCycle = 0;
+uint32_t currentPrivateMQTTUploadAt = 0, lastPrivateMQTTUploadAt = 0;
+uint32_t privateMQTTUploadDutyCycle = 0;
 
 const uint8_t RED_LED_GPIO = 10;
 const uint8_t ORANGE_LED_GPIO = 0;
@@ -214,14 +195,10 @@ float uplinkBadMessagePercentage = 0.0;
 
 uint32_t lastGoodUplinkMessage = 0;
 uint16_t uplinkMessageLength = 0;
-uint32_t qubitroUploadCount = 0;
-uint16_t qubitroMessageLength = 0;
-float KBToQubitro = 0.0;
-float KBFromMako = 0.0;
-
 uint32_t privateMQTTUploadCount = 0;
 uint16_t privateMQTTMessageLength = 0;
-
+float KBToPrivateMQTT = 0.0;
+float KBFromMako = 0.0;
 
 bool accumulateMissedMessageCount = false;    // start-up
 const uint32_t delayBeforeCountingMissedMessages = 10000; // Allow 10 second start-up
@@ -250,7 +227,6 @@ long milliSecondsToWaitForShutDown = 1500;
 void shutdownIfUSBPowerOff();
 void toggleOTAActive();
 void toggleWiFiActive();
-void toggleQubitroBroker();
 
 void checkForLeak(const char* msg, const uint8_t pin);
 
@@ -404,11 +380,11 @@ struct LemonTelemetryForJson
   uint16_t  gps_year;
 
   // not in LemonTelemetry message
-  uint32_t  qubitroUploadCount;   // removed from LemonTelem message
-  uint16_t  qubitroMessageLength;   // removed from LemonTelem message
-  float     KBToQubitro;   // removed from LemonTelem message
+  uint32_t  privateMQTTUploadCount;   // removed from LemonTelem message
+  uint16_t  privateMQTTMessageLength;   // removed from LemonTelem message
+  float     KBToPrivateMQTT;   // removed from LemonTelem message
   uint32_t  live_metrics_count;   // removed from LemonTelem message
-  uint32_t  qubitroUploadDutyCycle;   // removed from LemonTelem message
+  uint32_t  privateMQTTUploadDutyCycle;   // removed from LemonTelem message
 };
 
 struct LemonTelemetryForJson latestLemonTelemetry;
@@ -426,7 +402,7 @@ bool doesHeadCommitRequireForce(BlockHeader& block);
 bool checkForValidPreambleOnUplink();
 bool populateHeadWithMakoTelemetry(BlockHeader& headBlock, const bool validPreambleFound);
 void populateHeadWithLemonTelemetryAndCommit(BlockHeader& headBlock);
-void getNextTelemetryMessagesUploadedToQubitro();
+void getNextTelemetryMessagesUploadedToPrivateMQTT();
 void populateCurrentLemonTelemetry(LemonTelemetryForJson& l, TinyGPSPlus& g);
 void populateFinalLemonTelemetry(LemonTelemetryForJson& l);
 void constructLemonTelemetryForStorage(struct LemonTelemetryForStorage& s, const LemonTelemetryForJson l, const uint16_t uplinkMessageLength);
@@ -449,10 +425,8 @@ void checkForLeak(const char* msg, const uint8_t pin);
 const char* scanForKnownNetwork();
 bool connectToWiFiAndInitOTA(const bool wifiOnly, int repeatScanAttempts);
 bool setupOTAWebServer(const char* _ssid, const char* _password, const char* label, uint32_t timeout, bool wifiOnly);
-bool qubitro_connect();
 void buildUplinkTelemetryMessageV6a(char* payload, const struct MakoUplinkTelemetryForJson& m, const struct LemonTelemetryForJson& l);
 void buildBasicTelemetryMessage(char* payload);
-enum e_q_upload_status uploadTelemetryToQubitro(MakoUplinkTelemetryForJson* makoTelemetry, struct LemonTelemetryForJson* lemonTelemetry);
 enum e_q_upload_status uploadTelemetryToPrivateMQTT(MakoUplinkTelemetryForJson* makoTelemetry, struct LemonTelemetryForJson* lemonTelemetry);
 
 
@@ -534,7 +508,10 @@ const uint16_t pipelineBackedUpLength = 10;
 
 void checkConnectivity()
 {
-  if (enableConnectToQubitro)
+  return;    // MBJ REFACTOR
+
+
+  if (enableConnectToPrivateMQTT)
   {
     // Maximum of one connectivity check per duty cycle
     // If WiFi drops it will take two iterations to get back online, the first to reconnect to wifi
@@ -569,7 +546,7 @@ void checkConnectivity()
           }
             
           // do a qubitro reconnect - synchronous
-          qubitro_connect();
+//          qubitro_connect();
 
           // how to do Private MQTT here?
         }
@@ -632,8 +609,6 @@ bool haltAllProcessingDuringOTAUpload = false;
 
 void disableFeaturesForOTA(bool screenToRed=true)
 {
-  enableConnectToQubitro = false;
-  enableUploadToQubitro = false;
   enableConnectToPrivateMQTT = false;
   enableUploadToPrivateMQTT = false;
   enableReadUplinkComms = false;
@@ -740,33 +715,19 @@ void setup()
   // cannot use Pin 0 for receive of GPS (resets on startup), can use Pin 36, can use 26
   // cannot use Pin 0 for transmit of GPS (resets on startup), only Pin 26 can be used for transmit.
 
-#ifdef ENABLE_QUBITRO_AT_COMPILE_TIME
-  if (usePrimaryQubitroUserDevice)
+  if (enableConnectToPrivateMQTT && WiFi.status() == WL_CONNECTED)
   {
-    qubitro_username = qubitro_username_1;
-    qubitro_password = qubitro_password_1;
-    qubitro_device_id = qubitro_device_id_1;
-    qubitro_device_token = qubitro_device_token_1;
+  // do any connect test to MQTT broker here
   }
-  else
-  {
-    qubitro_username = qubitro_username_2;
-    qubitro_password = qubitro_password_2;
-    qubitro_device_id = qubitro_device_id_2;
-    qubitro_device_token = qubitro_device_token_2;    
-  }
-
-
-  if (enableConnectToQubitro && WiFi.status() == WL_CONNECTED)
-  {
-    qubitro_connect();
-  }
-#endif
 
 if (enableUploadToPrivateMQTT)
 {
   localMQTT.begin();
   remoteMQTT.begin();
+  // do any keep alive stuff here 
+  //    qubitro_mqttClient.setConnectionTimeout(qubitro_connection_timeout_ms);
+  //    qubitro_mqttClient.setKeepAliveInterval(qubitro_keep_alive_interval_ms);
+
 }
 
 #ifdef ENABLE_SMTP_AT_COMPILE_TIME
@@ -1089,9 +1050,9 @@ void loop()
       const bool showListenTimer = false;
 
       if (showListenTimer)       
-        M5.Lcd.printf("Q %lu UT %lu  \n",qubitroUploadCount,uplinkMessageListenTimer);
+        M5.Lcd.printf("Q %lu UT %lu  \n",privateMQTTUploadCount,uplinkMessageListenTimer);
       else
-        M5.Lcd.printf("Q %lu !%.1f%%\n",qubitroUploadCount,uplinkBadMessagePercentage);
+        M5.Lcd.printf("Q %lu !%.1f%%\n",privateMQTTUploadCount,uplinkBadMessagePercentage);
       
       M5.Lcd.setTextSize(2);
 
@@ -1133,8 +1094,8 @@ void loop()
         // do not commit the head block - throw away the entire message
       }
 
-      // 5. Send the next message(s) from pipeline to Qubitro
-      getNextTelemetryMessagesUploadedToQubitro();
+      // 5. Send the next message(s) from pipeline to private MQTT
+      getNextTelemetryMessagesUploadedToPrivateMQTT();
 
       processUplinkMessage = false; // finished processing the uplink message  
     }
@@ -1429,13 +1390,13 @@ void populateHeadWithLemonTelemetryAndCommit(BlockHeader& headBlock)
   }
 }
 
-void getNextTelemetryMessagesUploadedToQubitro()
+void getNextTelemetryMessagesUploadedToPrivateMQTT()
 {
   BlockHeader tailBlock;
   const uint8_t maxTailPullsPerCycle = 1;   // now set to 1 because upload to qubitro is only every 2 seconds throttled.
   uint8_t tailPulls = maxTailPullsPerCycle;
 
-  if (millis() < last_qubitro_upload_at + qubitro_upload_min_duty_ms) // upload throttle.
+  if (millis() < last_private_mqtt_upload_at + private_mqtt_upload_min_duty_ms) // upload throttle.
     return;
 
   while (telemetryPipeline.pullTailBlock(tailBlock) && tailPulls)
@@ -1459,19 +1420,13 @@ void getNextTelemetryMessagesUploadedToQubitro()
     LemonTelemetryForJson lemonForUpload;
     decodeIntoLemonTelemetryForUpload(makoPayloadBuffer+roundedUpLength, combinedBufferSize - roundedUpLength, lemonForUpload);
 
-    // 3. construct the JSON message from the two structs and send MQTT to Qubitro
+    // 3. construct the JSON message from the two structs and send MQTT to Private MQTT
     e_q_upload_status uploadStatus=Q_SUCCESS;
     e_q_upload_status uploadStatusPrivateMQTT=Q_SUCCESS;
 
-    #ifdef ENABLE_QUBITRO_AT_COMPILE_TIME
-          if (enableConnectToPrivateMQTT && enableUploadToPrivateMQTT)
-              uploadStatus = uploadStatusPrivateMQTT = uploadTelemetryToPrivateMQTT(&makoJSON, &lemonForUpload);
+    if (enableConnectToPrivateMQTT && enableUploadToPrivateMQTT)
+        uploadStatus = uploadStatusPrivateMQTT = uploadTelemetryToPrivateMQTT(&makoJSON, &lemonForUpload);
 
-          if (enableConnectToQubitro && enableUploadToQubitro)
-              uploadStatus = uploadTelemetryToQubitro(&makoJSON, &lemonForUpload);
-
-          // MBJ uploadstatus is driven off Qubitro result only.
-    #endif
 
     // 5. If sent ok then commit (or no send to Qubitro required), otherwise do nothing
     if (uploadStatus & 0x01 == Q_SUCCESS)
@@ -1548,11 +1503,11 @@ void constructLemonTelemetryForStorage(struct LemonTelemetryForStorage& s, const
   s.four_byte_zero_padding = 0;     // 104
 }
 
-//  uint32_t  l.qubitroUploadCount;
-//  float     l.KBToQubitro;
+//  uint32_t  l.privateMQTTUploadCount;
+//  float     l.KBToPrivateMQTT;
 //  uint32_t  l.live_metrics_count;
-//  uint32_t  l.qubitroUploadDutyCycle;
-//  uint16_t  l.qubitroMessageLength = qubitroMessageLength;
+//  uint32_t  l.privateMQTTUploadDutyCycle;
+//  uint16_t  l.privateMQTTMessageLength = privateMQTTMessageLength;
 
 uint8_t decode_uint8(uint8_t*& msg) 
 { 
@@ -2123,50 +2078,10 @@ bool setupOTAWebServer(const char* _ssid, const char* _password, const char* lab
   return connected;
 }
 
-#ifdef ENABLE_QUBITRO_AT_COMPILE_TIME
-bool qubitro_connect()
-{
-  bool success = true;
-
-  if (enableConnectToQubitro && WiFi.status() == WL_CONNECTED)
-  {
-    qubitro_mqttClient.setId(qubitro_device_id);
-    qubitro_mqttClient.setDeviceIdToken(qubitro_device_id, qubitro_device_token);
-    qubitro_mqttClient.setConnectionTimeout(qubitro_connection_timeout_ms);
-    qubitro_mqttClient.setKeepAliveInterval(qubitro_keep_alive_interval_ms);
-
-    if (writeLogToSerial)
-      USB_SERIAL.println("Connecting to Qubitro...");
-
-    if (!qubitro_mqttClient.connect(qubitro_host, qubitro_port))
-    {
-      if (writeLogToSerial)
-      {
-        USB_SERIAL.print("Connection failed. Error code: ");
-        USB_SERIAL.println(qubitro_mqttClient.connectError());
-        USB_SERIAL.println("Visit docs.qubitro.com or create a new issue on github.com/qubitro");
-      }
-      success = false;
-    }
-    else
-    {
-      if (writeLogToSerial)
-        USB_SERIAL.println("Connected to Qubitro.");
-      qubitro_mqttClient.subscribe(qubitro_device_id);
-    }
-  }
-  else
-  {
-    success = false;
-  }
-
-  return success;
-}
-
 void buildUplinkTelemetryMessageV6a(char* payload, const struct MakoUplinkTelemetryForJson& m, const struct LemonTelemetryForJson& l)
 {
-  currentQubitroUploadAt = millis();
-  qubitroUploadDutyCycle = currentQubitroUploadAt - lastQubitroUploadAt;
+  currentPrivateMQTTUploadAt = millis();
+  privateMQTTUploadDutyCycle = currentPrivateMQTTUploadAt - lastPrivateMQTTUploadAt;
 
   
   uint32_t live_metrics_count = 75; // as of 9 May 20:16
@@ -2207,7 +2122,7 @@ void buildUplinkTelemetryMessageV6a(char* payload, const struct MakoUplinkTeleme
           
           l.gps_hour, l.gps_minute, l.gps_second,
           l.gps_day, l.gps_month, l.gps_year,
-          currentQubitroUploadAt / 1000 / 60,   // lemon on minutes
+          currentPrivateMQTTUploadAt / 1000 / 60,   // lemon on minutes
           l.gps_lat, l.gps_lng,
           m.depth, m.water_pressure, m.water_temperature,
           m.enclosure_temperature, m.enclosure_humidity, m.enclosure_air_pressure,
@@ -2244,21 +2159,21 @@ void buildUplinkTelemetryMessageV6a(char* payload, const struct MakoUplinkTeleme
 //          l.badLengthUplinkMsgCount,
 //          l.badChkSumUplinkMsgCount,
           l.uplinkMessageLength,
-          qubitroUploadCount,
-          qubitroMessageLength,             ///  ????
-          KBToQubitro,                      ///  ????
+          privateMQTTUploadCount,
+          privateMQTTMessageLength,             ///  ????
+          KBToPrivateMQTT,                      ///  ????
           l.KBFromMako,
           live_metrics_count,
-          qubitroUploadDutyCycle,           ///  ????
+          privateMQTTUploadDutyCycle,           ///  ????
           l.consoleDownlinkMsgCount
           
           // DO NOT POPULATE (HARDCODED IN SPRINTF STRING) geo_location
          );
 
-  qubitroMessageLength = strlen(payload);
-  KBToQubitro += (((float)(qubitroMessageLength)) / 1024.0);
+  privateMQTTMessageLength = strlen(payload);
+  KBToPrivateMQTT += (((float)(privateMQTTMessageLength)) / 1024.0);
 
-  lastQubitroUploadAt = millis();
+  lastPrivateMQTTUploadAt = millis();
 }
 
 void buildBasicTelemetryMessage(char* payload)
@@ -2323,67 +2238,6 @@ enum e_q_upload_status uploadTelemetryToPrivateMQTT(MakoUplinkTelemetryForJson* 
 
   return uploadStatus;
 }
-
-enum e_q_upload_status uploadTelemetryToQubitro(MakoUplinkTelemetryForJson* makoTelemetry, struct LemonTelemetryForJson* lemonTelemetry)
-{
-  enum e_q_upload_status uploadStatus = Q_UNDEFINED_ERROR;
-
-  if (enableConnectToQubitro)
-  {
-    if (WiFi.status() == WL_CONNECTED)
-    {
-      if (qubitro_mqttClient.connectError() == SUCCESS)
-      {
-        buildUplinkTelemetryMessageV6a(mqtt_payload, *makoTelemetry, *lemonTelemetry);
-
-        last_qubitro_upload_at = millis();
-
-        qubitro_mqttClient.poll();
-        qubitro_mqttClient.beginMessage(qubitro_device_id);
-        qubitro_mqttClient.print(mqtt_payload);
-        int endMessageResult = qubitro_mqttClient.endMessage();
-
-        if (endMessageResult == 1)
-        {
-          uploadStatus = Q_SUCCESS_SEND;
-          // USB_SERIAL.printf("Qubitro Client sent message %s\n", mqtt_payload);
-          qubitroUploadCount++;
-        }
-        else
-        {
-          if (writeLogToSerial)
-            USB_SERIAL.printf("Qubitro Client failed to send message, EndMessage error: %d\n", endMessageResult);
-          uploadStatus = Q_MQTT_CLIENT_SEND_ERROR;
-        }
-      }
-      else
-      {
-        uploadStatus = Q_MQTT_CLIENT_CONNECT_ERROR;
-        if (writeLogToSerial)
-          USB_SERIAL.printf("Qubitro Client error status %d\n", qubitro_mqttClient.connectError());
-      }
-    }
-    else
-    {
-      uploadStatus = Q_NO_WIFI_CONNECTION;
-
-      if (writeLogToSerial)
-        USB_SERIAL.println("Q No Wifi\n");
-    }
-  }
-  else
-  {
-    uploadStatus = Q_SUCCESS_NOT_ENABLED;
-
-    if (writeLogToSerial)
-      USB_SERIAL.println("Q Not Enabled\n");
-  }
-
-  return uploadStatus;
-}
-
-#endif
-
 
 #ifdef ENABLE_SMTP_AT_COMPILE_TIME
 void sendTestByEmail()
