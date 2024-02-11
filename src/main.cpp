@@ -27,6 +27,7 @@
 #include <AsyncTCP.h>
 #include <ESPAsyncWebServer.h>
 #include <AsyncElegantOTA.h>
+AsyncElegantOtaClass AsyncElegantOTA;
 
 #include "TinyGPSPlus.h"
 #include <TelemetryPipeline.h>
