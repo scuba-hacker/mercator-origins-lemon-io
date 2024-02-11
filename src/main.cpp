@@ -202,7 +202,7 @@ float KBToPrivateMQTT = 0.0;
 float KBFromMako = 0.0;
 
 bool accumulateMissedMessageCount = false;    // start-up
-const uint32_t delayBeforeCountingMissedMessages = 10000; // Allow 10 second start-up
+const uint32_t delayBeforeCountingMissedMessages = 60000; // Allow 60 second start-up
 
 const uint32_t uplinkMessageLingerPeriodMs = 300;
 uint32_t uplinkLingerTimeoutAt = 0;
