@@ -711,7 +711,7 @@ void setup()
 
   // setup second serial port for sending/receiving data to/from GoPro
   GOPRO_SERIAL.setRxBufferSize(1024); // was 256 - must set before begin
-  GOPRO_SERIAL.begin(UPLINK_BAUD_RATE, SERIAL_8N1, HAT_GPS_RX_PIN, HAT_GPS_TX_PIN);
+  GOPRO_SERIAL.begin(UPLINK_BAUD_RATE, SERIAL_8N2, HAT_GPS_RX_PIN, HAT_GPS_TX_PIN);
 
   // cannot use Pin 0 for receive of GPS (resets on startup), can use Pin 36, can use 26
   // cannot use Pin 0 for transmit of GPS (resets on startup), only Pin 26 can be used for transmit.
