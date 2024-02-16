@@ -261,8 +261,7 @@ struct MakoUplinkTelemetryForJson
   uint16_t bad_checksum_msgs;
   float usb_voltage;
   float usb_current;
-  float bat_voltage;
-  float bat_charge_current;
+  char target_code[5];
   float lsm_mag_x;
   float lsm_mag_y;
   float lsm_mag_z;
@@ -1037,7 +1036,7 @@ void loop()
         M5.Lcd.setTextColor(TFT_WHITE, TFT_BLACK);
 
       const bool showPipeLength=false;
-      
+
       if (showPipeLength)
         M5.Lcd.printf("P %-3hu Mis %hu\n",telemetryPipeline.getPipelineLength(),uplinkMessageMissingCount);
       else
@@ -1559,6 +1558,20 @@ void decode_uint16_into_3_char_array(uint8_t*& msg, char* target)
   target[2] = '\0';
 }
 
+void decode_uint32_into_5_char_array(uint8_t*& msg, char* target)
+{
+  uint16_t twoBytes = decode_uint16(msg);
+
+  target[0] = (twoBytes & 0x00FF);
+  target[1] = ((twoBytes & 0xFF00) >> 8);
+
+  twoBytes = decode_uint16(msg);
+  target[2] = (twoBytes & 0x00FF);
+  target[3] = ((twoBytes & 0xFF00) >> 8);
+
+  target[4] = '\0';
+}
+
 bool decodeIntoLemonTelemetryForUpload(uint8_t* msg, const uint16_t length, struct LemonTelemetryForJson& l)
 {
   l.gps_lat = decode_double(msg);
@@ -1633,8 +1646,18 @@ bool decodeMakoUplinkMessageV5a(uint8_t* uplinkMsg, struct MakoUplinkTelemetryFo
   m.bad_checksum_msgs = decode_uint16(uplinkMsg);
   m.usb_voltage = ((float)decode_uint16(uplinkMsg)) / 1000.0;
   m.usb_current = ((float)decode_uint16(uplinkMsg)) / 100.0;
-  m.bat_voltage = ((float)decode_uint16(uplinkMsg)) / 1000.0;
-  m.bat_charge_current = ((float)decode_uint16(uplinkMsg)) / 100.0;
+
+  decode_uint32_into_5_char_array(uplinkMsg,m.target_code);
+
+  char* stripChar = strchr(m.target_code,' ');
+  if (stripChar)
+    *stripChar = '\0';                // strip any trailing space
+
+  stripChar = strchr(m.target_code,'\n');
+  if (stripChar)
+    *stripChar = '\0';      // strip any trailing newline
+
+  strcpy(lastTargetCode,m.target_code);
 
   m.lsm_mag_x = decode_float(uplinkMsg); m.lsm_mag_y = decode_float(uplinkMsg); m.lsm_mag_z = decode_float(uplinkMsg);
   m.lsm_acc_x = decode_float(uplinkMsg); m.lsm_acc_y = decode_float(uplinkMsg);  m.lsm_acc_z = decode_float(uplinkMsg);
@@ -2093,7 +2116,7 @@ void buildUplinkTelemetryMessageV6a(char* payload, const struct MakoUplinkTeleme
           "\"water_pressure\":%f,\"water_temperature\":%f,\"enclosure_temperature\":%f,\"enclosure_humidity\":%f,\"enclosure_air_pressure\":%f,"
           "\"magnetic_heading_compensated\":%f,\"heading_to_target\":%f,\"distance_to_target\":%f,\"journey_course\":%f,\"journey_distance\":%f,"
           "\"mako_screen_display\":\"%s\",\"mako_on_mins\":%lu,\"mako_user_action\":%d,\"mako_rx_bad_checksum_msgs\":%hu,"
-          "\"mako_usb_voltage\":%f,\"mako_usb_current\":%f,\"mako_bat_voltage\":%f,\"mako_bat_charge_current\":%f,"
+          "\"mako_usb_voltage\":%f,\"mako_usb_current\":%f,\"mako_target_code\":\"%s\","
           "\"fix_count\":%lu,\"lemon_usb_voltage\":%f,\"lemon_usb_current\":%f,\"lemon_bat_voltage\":%f,\"uplink_missing_msgs_from_mako\":%hu,"
           "\"sats\":%lu,\"hdop\":%f,\"gps_course\":%f,\"gps_speed_knots\":%f,"
 
@@ -2119,8 +2142,6 @@ void buildUplinkTelemetryMessageV6a(char* payload, const struct MakoUplinkTeleme
           // with bad length and bad checksum stats
           //           "\"uplink_good_msgs_from_mako\":%lu,\"uplink_bad_msgs_from_mako\":%lu,\"uplink_bad_len_msgs_from_mako\":%lu,\"uplink_bad_chk_msgs_from_mako\":%lu,\"uplink_msg_length\":%hu,\"msgs_to_qubitro\":%d,\"qubitro_msg_length\":%hu,\"KB_to_qubitro\":%.1f,\"KB_uplinked_from_mako\":%.1f,"
 
-          
-          
           l.gps_hour, l.gps_minute, l.gps_second,
           l.gps_day, l.gps_month, l.gps_year,
           currentPrivateMQTTUploadAt / 1000 / 60,   // lemon on minutes
@@ -2132,7 +2153,9 @@ void buildUplinkTelemetryMessageV6a(char* payload, const struct MakoUplinkTeleme
           m.screen_display,
           m.seconds_on,
           m.user_action,
-          m.bad_checksum_msgs, m.usb_voltage, m.usb_current, m.bat_voltage, m.bat_charge_current,
+          m.bad_checksum_msgs, m.usb_voltage, m.usb_current, 
+          
+          m.target_code,
 
           l.fixCount,
           
@@ -2254,7 +2277,7 @@ void sendTestByEmail()
   if (!smtp.connect(&session))
   {
     if (writeLogToSerial)
-      USB_SERIAL.println("Error connecting to SMTP, " + smtp.errorReason());
+      USB_SERIAL.println("Error connecting to SMTP", + smtp.errorReason());
     return;
   }
 
