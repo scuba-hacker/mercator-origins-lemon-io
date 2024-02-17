@@ -33,6 +33,8 @@ AsyncWebSocket ws("/ws");
 #include <ArduinoJSON.h>
 JsonDocument readings;
 
+#include <WebSerial.h>
+
 #include "TinyGPSPlus.h"
 #include <TelemetryPipeline.h>
 
@@ -2058,6 +2060,21 @@ bool connectToWiFiAndInitOTA(const bool wifiOnly, int repeatScanAttempts)
   return connected;
 }
 
+void webSerialReceiveMessage(uint8_t *data, size_t len){
+  WebSerial.println("Received Data...");
+  String d = "";
+  for(int i=0; i < len; i++){
+    d += char(data[i]);
+  }
+  WebSerial.println(d);
+  if (d == "ON"){
+    digitalWrite(RED_LED_GPIO, HIGH);
+  }
+  if (d=="OFF"){
+    digitalWrite(RED_LED_GPIO, LOW);
+  }
+}
+
 bool setupOTAWebServer(const char* _ssid, const char* _password, const char* label, uint32_t timeout, bool wifiOnly)
 {
   if (wifiOnly && WiFi.status() == WL_CONNECTED)
@@ -2140,6 +2157,15 @@ bool setupOTAWebServer(const char* _ssid, const char* _password, const char* lab
       AsyncElegantOTA.setID(MERCATOR_OTA_DEVICE_LABEL);
       AsyncElegantOTA.setUploadBeginCallback(uploadOTABeginCallback);
       AsyncElegantOTA.begin(&asyncWebServer);    // Start AsyncElegantOTA
+
+      static bool webSerialInitialised = false;
+
+      if (!webSerialInitialised)
+      {
+        WebSerial.begin(&asyncWebServer);
+        WebSerial.msgCallback(webSerialReceiveMessage);
+        webSerialInitialised = true;
+      }
 
       if (writeLogToSerial)
         USB_SERIAL.println("setupOTAWebServer: calling asyncWebServer.begin");

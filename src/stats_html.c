@@ -128,6 +128,7 @@ const uint8_t STATS_HTML[] = {
 "               </div>\n"
 "           </div>\n"
 "       </div>\n"
+"        <iframe src=\"/webserial\" width=\"1000\" height=\"1000\" frameborder=\"0\"></iframe>\n"
 "       <script>\n"
 "       var gateway = `ws://${window.location.hostname}/ws`;\n"
 "       var websocket;\n"
