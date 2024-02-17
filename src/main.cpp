@@ -28,6 +28,10 @@
 #include <ESPAsyncWebServer.h>
 #include <AsyncElegantOTA.h>
 AsyncElegantOtaClass AsyncElegantOTA;
+AsyncWebSocket ws("/ws");
+
+#include <ArduinoJSON.h>
+JsonDocument readings;
 
 #include "TinyGPSPlus.h"
 #include <TelemetryPipeline.h>
@@ -50,9 +54,9 @@ bool enableConnectToPrivateMQTT = true;
 bool enableUploadToPrivateMQTT = true;
 const bool enableIMUSensor = true;
 const bool enableOTAServer = true;          // over the air updates
+
 const bool enableConnectToTwitter = false;
 const bool enableConnectToSMTP = false;
-
 uint32_t consoleDownlinkMsgCount = 0;
 
 const String ssid_not_connected = "-";
@@ -224,6 +228,10 @@ void updateButtonsAndBuzzer();
 const float minimumUSBVoltage = 4.0;
 long USBVoltageDropTime = 0;
 long milliSecondsToWaitForShutDown = 1500;
+
+
+extern const uint8_t STATS_HTML[];
+extern const uint32_t STATS_HTML_SIZE;
 
 void shutdownIfUSBPowerOff();
 void toggleOTAActive();
@@ -429,7 +437,63 @@ void buildUplinkTelemetryMessageV6a(char* payload, const struct MakoUplinkTeleme
 void buildBasicTelemetryMessage(char* payload);
 enum e_q_upload_status uploadTelemetryToPrivateMQTT(MakoUplinkTelemetryForJson* makoTelemetry, struct LemonTelemetryForJson* lemonTelemetry);
 
+void notifyClients(String sensorReadings) {
+  ws.textAll(sensorReadings);
+}
 
+String getStats()
+{
+  readings["fixCount"] = fixCount;
+  readings["goodUplinkMessageCount"] = goodUplinkMessageCount;
+  readings["privateMQTTUploadCount"] = privateMQTTUploadCount;
+  readings["uplinkBadMessagePercentage"] = (int)uplinkBadMessagePercentage;
+  readings["badLengthUplinkMsgCount"] = badLengthUplinkMsgCount;
+  readings["badUplinkMessageCount"] = badUplinkMessageCount;
+  readings["badChkSumUplinkMsgCount"] = badChkSumUplinkMsgCount;
+  readings["uplinkMessageMissingCount"] = uplinkMessageMissingCount;
+  readings["lemonUptime"] = (int)(currentPrivateMQTTUploadAt / 1000 / 60);
+
+  String jsonString;
+  serializeJson(readings, jsonString);
+
+  return jsonString;
+}
+
+void handleWebSocketMessage(void *arg, uint8_t *data, size_t len) {
+  AwsFrameInfo *info = (AwsFrameInfo*)arg;
+  if (info->final && info->index == 0 && info->len == len && info->opcode == WS_TEXT) {
+    data[len] = 0;
+//    String message = (char*)data;
+    // Check if the message is "getReadings"
+//    if (strcmp((char*)data, "getReadings") == 0) {
+      //if it is, send current sensor readings
+//      notifyClients(getSensorReadings());
+      notifyClients(getStats());
+    //  }
+  }
+}
+
+void onEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type, void *arg, uint8_t *data, size_t len) {
+  switch (type) {
+    case WS_EVT_CONNECT:
+      Serial.printf("WebSocket client #%u connected from %s\n", client->id(), client->remoteIP().toString().c_str());
+      break;
+    case WS_EVT_DISCONNECT:
+      Serial.printf("WebSocket client #%u disconnected\n", client->id());
+      break;
+    case WS_EVT_DATA:
+      handleWebSocketMessage(arg, data, len);
+      break;
+    case WS_EVT_PONG:
+    case WS_EVT_ERROR:
+      break;
+  }
+}
+
+void initWebSocket() {
+  ws.onEvent(onEvent);
+  asyncWebServer.addHandler(&ws);
+}
 
 void getM5ImuSensorData(struct LemonTelemetryForJson& t)
 {
@@ -1065,6 +1129,10 @@ void loop()
 
       M5.Lcd.setTextColor(TFT_WHITE, TFT_BLACK);
       uplinkMessageListenTimer = 0;
+
+      notifyClients(getStats());
+
+      ws.cleanupClients();  // ensure no more than 8 connections
       
       if (!messageValidatedOk)    // validation fails if mako telemetry not invalid size
       {
@@ -1106,6 +1174,11 @@ void loop()
   }
 
   checkForLeak(leakAlarmMsg, M5_POWER_SWITCH_PIN);
+}
+
+void sendStatsWebSocketNotification()
+{
+    notifyClients(getStats());
 }
 
 bool doesHeadCommitRequireForce(BlockHeader& block)
@@ -1657,8 +1730,6 @@ bool decodeMakoUplinkMessageV5a(uint8_t* uplinkMsg, struct MakoUplinkTelemetryFo
   if (stripChar)
     *stripChar = '\0';      // strip any trailing newline
 
-  strcpy(lastTargetCode,m.target_code);
-
   m.lsm_mag_x = decode_float(uplinkMsg); m.lsm_mag_y = decode_float(uplinkMsg); m.lsm_mag_z = decode_float(uplinkMsg);
   m.lsm_acc_x = decode_float(uplinkMsg); m.lsm_acc_y = decode_float(uplinkMsg);  m.lsm_acc_z = decode_float(uplinkMsg);
   m.imu_gyro_x = decode_float(uplinkMsg); m.imu_gyro_y = decode_float(uplinkMsg); m.imu_gyro_z = decode_float(uplinkMsg);
@@ -2041,7 +2112,28 @@ bool setupOTAWebServer(const char* _ssid, const char* _password, const char* lab
       asyncWebServer.on("/", HTTP_GET, [](AsyncWebServerRequest * request) {
         request->send(200, "text/plain", "To upload firmware use /update");
       });
-        
+
+      asyncWebServer.on("/stats", HTTP_GET, [](AsyncWebServerRequest * request) {
+          AsyncWebServerResponse *response = request->beginResponse_P(200, "text/html", STATS_HTML, STATS_HTML_SIZE); 
+          request->send(response);
+      });
+    
+      asyncWebServer.on("/stats", HTTP_POST, [&](AsyncWebServerRequest *request){
+              AsyncWebParameter* p = request->getParam("button",true,false);
+              if (p)
+              {
+                  request->send(200, "text/html", "ok");
+                  if (p->value() == String("rebootButton"))
+                    esp_restart();
+              }
+              else
+              {
+                request->send(200, "text/plain", "invalid");
+              }
+      });
+
+      initWebSocket();
+
       if (writeLogToSerial)
         USB_SERIAL.println("setupOTAWebServer: calling AsyncElegantOTA.begin");
 
