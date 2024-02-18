@@ -64,7 +64,7 @@ bool enableUploadToPrivateMQTT = true;
 const bool enableIMUSensor = true;
 const bool enableOTAServer = true;          // over the air updates
 
-const bool writeLogToSerial = false;
+const bool writeLogToSerial = true;
 const bool writeTelemetryLogToSerial = false; // writeLogToSerial must also be true
 
 const bool enableConnectToTwitter = false;
@@ -119,7 +119,6 @@ PicoMQTT::Client remoteMQTT(
 // see mercator_secrets.c for Private MQTT login credentials
 #include <WiFi.h>
 #include <ESP32Ping.h>
-#include <QubitroMqttClient.h>      // MBJ REFACTOR - CAN BE REMOVED ONCE ENUMS SEPARATELY DEFINED
 
 uint32_t private_mqtt_upload_min_duty_ms = 980; //980; // throttle upload to private mqtt ms
 uint32_t last_private_mqtt_upload_at = 0;
@@ -221,6 +220,14 @@ const uint32_t uplinkMessageLingerPeriodMs = 300;
 uint32_t uplinkLingerTimeoutAt = 0;
 uint32_t downlinkSendMessageDuration = 0;   // The time between sending the message to Mako and receiving pre-amble response preceding reply.
 uint32_t preambleReceivedAfterMicroSeconds = 0; // Time for preamble to be read in.
+
+const int8_t maxPingAttempts = 1;
+int32_t lastCheckForInternetConnectivityAt = 0;
+int32_t checkInternetConnectivityDutyCycle = 10000; // 30 seconds between each check
+
+const uint16_t pipelineBackedUpLength = 10;
+
+
 
 const uint8_t GROVE_GPS_RX_PIN = 33;
 const uint8_t GROVE_GPS_TX_PIN = 32;
@@ -413,6 +420,7 @@ void WiFiLostIP(WiFiEvent_t event, WiFiEventInfo_t info);
 void WiFiStationDisconnected(WiFiEvent_t event, WiFiEventInfo_t info);
 void checkConnectivity();
 bool isInternetAccessible();
+bool isScubaMosquittoBrokerAvailable();
 void dumpHeapUsage(const char* msg);
 char* customiseSentence(char* sentence);
 bool doesHeadCommitRequireForce(BlockHeader& block);
@@ -461,6 +469,12 @@ String getStats()
   readings["badChkSumUplinkMsgCount"] = badChkSumUplinkMsgCount;
   readings["uplinkMessageMissingCount"] = uplinkMessageMissingCount;
   readings["lemonUptime"] = (int)(currentPrivateMQTTUploadAt / 1000 / 60);
+  readings["pipelineDraining"] = (telemetryPipeline.isPipelineDraining() ? "Yes" : "No");
+  readings["pipelineLength"] = telemetryPipeline.getPipelineLength();
+  readings["offlineThrottleApplied"] = (g_offlineStorageThrottleApplied ? "Yes" : "No");  
+  readings["last_private_mqtt_upload_at"] = (float)(last_private_mqtt_upload_at)/100.0;
+  readings["last_head_committed_at"] = (float)(last_head_committed_at)/100.0;
+  readings["lastCheckForInternetConnectivityAt"] = (float)(lastCheckForInternetConnectivityAt)/100.0;
 
   String jsonString;
   serializeJson(readings, jsonString);
@@ -573,15 +587,9 @@ void WiFiStationDisconnected(WiFiEvent_t event, WiFiEventInfo_t info)
   // Reason 201
 }
 
-const int8_t maxPingAttempts = 1;
-int32_t lastCheckForInternetConnectivityAt = 0;
-int32_t checkInternetConnectivityDutyCycle = 10000; // 30 seconds between each check
-
-const uint16_t pipelineBackedUpLength = 10;
-
 void checkConnectivity()
 {
-  return;    // MBJ REFACTOR
+//  return;    // MBJ REFACTOR
 
 
   if (enableConnectToPrivateMQTT)
@@ -615,9 +623,7 @@ void checkConnectivity()
           if (writeLogToSerial)
           {
             USB_SERIAL.println("1.2.1 checkConnectivity: WiFi ok, internet ping success");
-            USB_SERIAL.println("1.2.1 Attempt qubitro_connect()");
           }
-            
           // do a qubitro reconnect - synchronous
 //          qubitro_connect();
 
@@ -632,6 +638,22 @@ void checkConnectivity()
           
           g_offlineStorageThrottleApplied = true;
         }
+
+
+        if (isScubaMosquittoBrokerAvailable())
+        {
+          USB_SERIAL.println("1.2.3 checkConnectivity: Scuba MQTT Broker ping success");
+        }
+        else
+        {
+          if (writeLogToSerial)
+          {
+            USB_SERIAL.println("1.2.4 checkConnectivity: WiFi ok, ping google ok, MQTT Broker fail");
+          }
+          
+          g_offlineStorageThrottleApplied = true;
+        }
+
       }
       else
       {
@@ -660,6 +682,13 @@ bool isInternetAccessible()
 {
   lastCheckForInternetConnectivityAt = millis();
   return Ping.ping(ping_target,maxPingAttempts);
+}
+
+bool isScubaMosquittoBrokerAvailable()
+{
+    PicoMQTT::Client* MQTTClient = (usingDevNetwork ? &localMQTT : &remoteMQTT);
+
+    return MQTTClient->connected();
 }
 
 void dumpHeapUsage(const char* msg)
@@ -710,6 +739,22 @@ void uploadOTABeginCallback(AsyncElegantOtaClass* originator)
 
 void setup()
 {
+    localMQTT.connected_callback = [] {
+        USB_SERIAL.println("Local MQTT connected");
+    };
+
+    localMQTT.disconnected_callback = [] {
+        USB_SERIAL.println("Local MQTT disconnected");
+    };
+
+    remoteMQTT.connected_callback = [] {
+        USB_SERIAL.println("Remote MQTT connected");
+    };
+
+    remoteMQTT.disconnected_callback = [] {
+        USB_SERIAL.println("Remote MQTT disconnected");
+    };
+
   mainTaskCoreId = xPortGetCoreID();
   mainTaskHandle = xTaskGetCurrentTaskHandle();
 
@@ -2345,8 +2390,9 @@ enum e_q_upload_status uploadTelemetryToPrivateMQTT(MakoUplinkTelemetryForJson* 
       {
         buildUplinkTelemetryMessageV6a(mqtt_payload, *makoTelemetry, *lemonTelemetry);
 
+        const int qos = 1;
         last_private_mqtt_upload_at = millis();
-        bool result = MQTTClient->publish("test", mqtt_payload);
+        bool result = MQTTClient->publish("test", mqtt_payload,qos);
 
         if (result)
         {
