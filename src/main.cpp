@@ -604,7 +604,7 @@ void checkConnectivity()
     if (telemetryPipeline.getPipelineLength() > pipelineBackedUpLength && 
         telemetryPipeline.isPipelineDraining() == false)
     {
-      // messages are backing up and not draining, either a WiFi or 4G or server connection issue
+      // messages are backing up and not draining, either a WiFi or 4G or broker server connection issue
       lastCheckForInternetConnectivityAt = millis();
 
       if (writeLogToSerial)
@@ -624,10 +624,6 @@ void checkConnectivity()
           {
             USB_SERIAL.println("1.2.1 checkConnectivity: WiFi ok, internet ping success");
           }
-          // do a qubitro reconnect - synchronous
-//          qubitro_connect();
-
-          // how to do Private MQTT here?
         }
         else
         {
@@ -638,7 +634,6 @@ void checkConnectivity()
           
           g_offlineStorageThrottleApplied = true;
         }
-
 
         if (isScubaMosquittoBrokerAvailable())
         {
