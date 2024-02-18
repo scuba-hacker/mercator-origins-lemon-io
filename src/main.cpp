@@ -64,7 +64,7 @@ bool enableUploadToPrivateMQTT = true;
 const bool enableIMUSensor = true;
 const bool enableOTAServer = true;          // over the air updates
 
-const bool writeLogToSerial = false;
+bool writeLogToSerial = false;
 const bool writeTelemetryLogToSerial = false; // writeLogToSerial must also be true
 
 const bool enableConnectToTwitter = false;
@@ -2165,12 +2165,19 @@ void webSerialReceiveMessage(uint8_t *data, size_t len){
   for(int i=0; i < len; i++){
     d += char(data[i]);
   }
+
   WebSerial.println(d);
+
   if (d == "ON"){
     digitalWrite(RED_LED_GPIO, HIGH);
   }
-  if (d=="OFF"){
+  else if (d=="OFF"){
     digitalWrite(RED_LED_GPIO, LOW);
+  }
+  else if (d=="serial-off")
+  {
+    writeLogToSerial = false;
+    WebSerial.closeAll();
   }
 }
 
