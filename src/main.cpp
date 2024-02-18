@@ -263,6 +263,36 @@ void updateButtonsAndBuzzer()
   M5.Beep.update();
 }
 
+struct MakoStats
+{
+  uint16_t minimum_sensor_read_time;
+  uint16_t quietTimeMsBeforeUplink;
+  uint16_t sensor_aquisition_time;
+  uint16_t max_sensor_acquisition_time;
+  uint16_t actual_sensor_acquisition_time;
+  uint16_t max_actual_sensor_acquisition_time;
+
+  MakoStats(uint16_t mi, uint16_t qu, uint16_t se,uint16_t max_s,uint16_t ac,uint16_t max_a) :
+    minimum_sensor_read_time(mi),
+    quietTimeMsBeforeUplink(qu),
+    sensor_aquisition_time(se),
+    max_sensor_acquisition_time(max_s),
+    actual_sensor_acquisition_time(ac),
+    max_actual_sensor_acquisition_time(max_a)
+  {}
+
+  MakoStats() :
+    minimum_sensor_read_time(0),
+    quietTimeMsBeforeUplink(0),
+    sensor_aquisition_time(0),
+    max_sensor_acquisition_time(0),
+    actual_sensor_acquisition_time(0),
+    max_actual_sensor_acquisition_time(0)
+  {}
+};
+
+MakoStats latestMakoStats;
+
 const uint16_t makoHardcodedUplinkMessageLength = 114;
 
 struct MakoUplinkTelemetryForJson
@@ -287,7 +317,7 @@ struct MakoUplinkTelemetryForJson
   char target_code[5];
     
   uint16_t minimum_sensor_read_time;
-  uint16_t quiteTimeMsBeforeUplink;
+  uint16_t quietTimeMsBeforeUplink;
   uint16_t sensor_aquisition_time;
   uint16_t max_sensor_acquisition_time;
   uint16_t actual_sensor_acquisition_time;
@@ -480,11 +510,19 @@ String getStats()
   readings["last_head_committed_at"] = (float)((int)((float)(last_head_committed_at)/100.0))/10.0;
   readings["lastCheckForInternetConnectivityAt"] = (float)((int)((float)(lastCheckForInternetConnectivityAt)/100.0))/10.0;
 
+  readings["min_sens_read"] = latestMakoStats.minimum_sensor_read_time;
+  readings["sens_read"] = latestMakoStats.sensor_aquisition_time;
+  readings["max_sens_read"] = latestMakoStats.max_sensor_acquisition_time;
+  readings["act_sens_read"] = latestMakoStats.actual_sensor_acquisition_time;
+  readings["max_act_sens_read"] = latestMakoStats.max_actual_sensor_acquisition_time;
+  readings["quiet_b4_uplink"] = latestMakoStats.quietTimeMsBeforeUplink;
+
   String jsonString;
   serializeJson(readings, jsonString);
 
   return jsonString;
 }
+
 
 void handleWebSocketMessage(void *arg, uint8_t *data, size_t len) {
   AwsFrameInfo *info = (AwsFrameInfo*)arg;
@@ -1782,13 +1820,14 @@ bool decodeMakoUplinkMessageV5a(uint8_t* uplinkMsg, struct MakoUplinkTelemetryFo
     *stripChar = '\0';      // strip any trailing newline
 
   m.minimum_sensor_read_time = decode_uint16(uplinkMsg);
-  m.quiteTimeMsBeforeUplink = decode_uint16(uplinkMsg);
+  m.quietTimeMsBeforeUplink = decode_uint16(uplinkMsg);
   m.sensor_aquisition_time = decode_uint16(uplinkMsg);
   m.max_sensor_acquisition_time = decode_uint16(uplinkMsg);
   m.actual_sensor_acquisition_time = decode_uint16(uplinkMsg);
   m.max_actual_sensor_acquisition_time = decode_uint16(uplinkMsg);
 
   m.lsm_acc_x = decode_float(uplinkMsg); m.lsm_acc_y = decode_float(uplinkMsg);  m.lsm_acc_z = decode_float(uplinkMsg);
+
   m.imu_gyro_x = decode_float(uplinkMsg); m.imu_gyro_y = decode_float(uplinkMsg); m.imu_gyro_z = decode_float(uplinkMsg);
   m.imu_lin_acc_x = decode_float(uplinkMsg); m.imu_lin_acc_y = decode_float(uplinkMsg); m.imu_lin_acc_z = decode_float(uplinkMsg);
   m.imu_rot_acc_x = decode_float(uplinkMsg); m.imu_rot_acc_y = decode_float(uplinkMsg); m.imu_rot_acc_z = decode_float(uplinkMsg);
@@ -2335,10 +2374,11 @@ void buildUplinkTelemetryMessageV6a(char* payload, const struct MakoUplinkTeleme
 
           l.gps_satellites, l.gps_hdop, l.gps_course_deg, l.gps_knots,
           
-          m.minimum_sensor_read_time, m.quiteTimeMsBeforeUplink, m.sensor_aquisition_time,  
+          m.minimum_sensor_read_time, m.quietTimeMsBeforeUplink, m.sensor_aquisition_time,  
           m.max_sensor_acquisition_time, m.actual_sensor_acquisition_time, m.max_actual_sensor_acquisition_time,
 
           m.lsm_acc_x, m.lsm_acc_y, m.lsm_acc_z,
+
           m.imu_gyro_x,    m.imu_gyro_y,    m.imu_gyro_z,
           m.imu_lin_acc_x, m.imu_lin_acc_y, m.imu_lin_acc_z,
           m.imu_rot_acc_x, m.imu_rot_acc_y, m.imu_rot_acc_z,
@@ -2372,6 +2412,10 @@ void buildUplinkTelemetryMessageV6a(char* payload, const struct MakoUplinkTeleme
   KBToPrivateMQTT += (((float)(privateMQTTMessageLength)) / 1024.0);
 
   lastPrivateMQTTUploadAt = millis();
+
+  // update last uploaded mako stats
+  latestMakoStats=MakoStats(m.minimum_sensor_read_time, m.quietTimeMsBeforeUplink,m.sensor_aquisition_time, 
+                            m.max_sensor_acquisition_time, m.actual_sensor_acquisition_time, m.max_actual_sensor_acquisition_time);
 }
 
 void buildBasicTelemetryMessage(char* payload)
