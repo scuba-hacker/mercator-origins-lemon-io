@@ -123,8 +123,6 @@ PicoMQTT::Client remoteMQTT(
 uint32_t private_mqtt_upload_min_duty_ms = 980; //980; // throttle upload to private mqtt ms
 uint32_t last_private_mqtt_upload_at = 0;
 
-uint32_t uplinkMessageListenTimer = 0;
-
 const uint32_t telemetry_online_head_commit_duty_ms = 1900;
 const uint32_t telemetry_offline_head_commit_duty_ms = 10000;
 uint32_t last_head_committed_at = 0;
@@ -216,10 +214,11 @@ float KBFromMako = 0.0;
 bool accumulateMissedMessageCount = false;    // start-up
 const uint32_t delayBeforeCountingMissedMessages = 60000; // Allow 60 second start-up
 
-const uint32_t uplinkMessageLingerPeriodMs = 300;
+const uint32_t uplinkMessageLingerPeriodMs = 300;   // max milliseconds to wait for Mako pre-amble to reply
 uint32_t uplinkLingerTimeoutAt = 0;
-uint32_t downlinkSendMessageDuration = 0;   // The time between sending the message to Mako and receiving pre-amble response preceding reply.
-uint32_t preambleReceivedAfterMicroSeconds = 0; // Time for preamble to be read in.
+uint32_t downlinkSendMessageDuration = 0;       // Latency processing GPS message and downlink msg send to Mako complete.
+uint32_t preambleReceivedAfterMicroSeconds = 0; // Latency between start of preamble and end of preamble received from Mako.
+uint32_t uplinkMessageListenTimer = 0; // Latency processing GPS message, send to mako and valid msg received from Mako.
 
 const int8_t maxPingAttempts = 1;
 int32_t lastCheckForInternetConnectivityAt = 0;
@@ -286,9 +285,14 @@ struct MakoUplinkTelemetryForJson
   float usb_voltage;
   float usb_current;
   char target_code[5];
-  float lsm_mag_x;
-  float lsm_mag_y;
-  float lsm_mag_z;
+    
+  uint16_t minimum_sensor_read_time;
+  uint16_t quiteTimeMsBeforeUplink;
+  uint16_t sensor_aquisition_time;
+  uint16_t max_sensor_acquisition_time;
+  uint16_t actual_sensor_acquisition_time;
+  uint16_t max_actual_sensor_acquisition_time;
+  
   float lsm_acc_x;
   float lsm_acc_y;
   float lsm_acc_z;
@@ -472,9 +476,9 @@ String getStats()
   readings["pipelineDraining"] = (telemetryPipeline.isPipelineDraining() ? "Yes" : "No");
   readings["pipelineLength"] = telemetryPipeline.getPipelineLength();
   readings["offlineThrottleApplied"] = (g_offlineStorageThrottleApplied ? "Yes" : "No");  
-  readings["last_private_mqtt_upload_at"] = (float)(last_private_mqtt_upload_at)/100.0;
-  readings["last_head_committed_at"] = (float)(last_head_committed_at)/100.0;
-  readings["lastCheckForInternetConnectivityAt"] = (float)(lastCheckForInternetConnectivityAt)/100.0;
+  readings["last_private_mqtt_upload_at"] = (float)((int)((float)(last_private_mqtt_upload_at)/100.0))/10.0;
+  readings["last_head_committed_at"] = (float)((int)((float)(last_head_committed_at)/100.0))/10.0;
+  readings["lastCheckForInternetConnectivityAt"] = (float)((int)((float)(lastCheckForInternetConnectivityAt)/100.0))/10.0;
 
   String jsonString;
   serializeJson(readings, jsonString);
@@ -719,7 +723,7 @@ void disableFeaturesForOTA(bool screenToRed=true)
 
   haltAllProcessingDuringOTAUpload = true;
 
-  delay(500);
+  ws.closeAll();    // close all websocket connections
 }
 
 TaskHandle_t mainTaskHandle = nullptr;
@@ -727,8 +731,6 @@ BaseType_t mainTaskCoreId = 0;
 
 void uploadOTABeginCallback(AsyncElegantOtaClass* originator)
 {
-  // halt cpu 0
-//  vTaskSuspend(mainTaskHandle);
   disableFeaturesForOTA(false);   // prevent LCD call due to separate thread calling this
 }
 
@@ -1779,7 +1781,13 @@ bool decodeMakoUplinkMessageV5a(uint8_t* uplinkMsg, struct MakoUplinkTelemetryFo
   if (stripChar)
     *stripChar = '\0';      // strip any trailing newline
 
-  m.lsm_mag_x = decode_float(uplinkMsg); m.lsm_mag_y = decode_float(uplinkMsg); m.lsm_mag_z = decode_float(uplinkMsg);
+  m.minimum_sensor_read_time = decode_uint16(uplinkMsg);
+  m.quiteTimeMsBeforeUplink = decode_uint16(uplinkMsg);
+  m.sensor_aquisition_time = decode_uint16(uplinkMsg);
+  m.max_sensor_acquisition_time = decode_uint16(uplinkMsg);
+  m.actual_sensor_acquisition_time = decode_uint16(uplinkMsg);
+  m.max_actual_sensor_acquisition_time = decode_uint16(uplinkMsg);
+
   m.lsm_acc_x = decode_float(uplinkMsg); m.lsm_acc_y = decode_float(uplinkMsg);  m.lsm_acc_z = decode_float(uplinkMsg);
   m.imu_gyro_x = decode_float(uplinkMsg); m.imu_gyro_y = decode_float(uplinkMsg); m.imu_gyro_z = decode_float(uplinkMsg);
   m.imu_lin_acc_x = decode_float(uplinkMsg); m.imu_lin_acc_y = decode_float(uplinkMsg); m.imu_lin_acc_z = decode_float(uplinkMsg);
@@ -2272,9 +2280,7 @@ void buildUplinkTelemetryMessageV6a(char* payload, const struct MakoUplinkTeleme
   currentPrivateMQTTUploadAt = millis();
   privateMQTTUploadDutyCycle = currentPrivateMQTTUploadAt - lastPrivateMQTTUploadAt;
 
-  
-  uint32_t live_metrics_count = 75; // as of 9 May 20:16
-  
+  uint32_t live_metrics_count = 75; // as of 9 May 2023
   
   sprintf(payload,
           "{\"UTC_time\":\"%02d:%02d:%02d\",\"UTC_date\":\"%02d:%02d:%02d\",\"lemon_on_mins\":%lu,\"coordinates\":[%f,%f],\"depth\":%f,"
@@ -2285,7 +2291,8 @@ void buildUplinkTelemetryMessageV6a(char* payload, const struct MakoUplinkTeleme
           "\"fix_count\":%lu,\"lemon_usb_voltage\":%f,\"lemon_usb_current\":%f,\"lemon_bat_voltage\":%f,\"uplink_missing_msgs_from_mako\":%hu,"
           "\"sats\":%lu,\"hdop\":%f,\"gps_course\":%f,\"gps_speed_knots\":%f,"
 
-          "\"mako_lsm_mag_x\":%f,\"mako_lsm_mag_y\":%f,\"mako_lsm_mag_z\":%f,"
+          "\"min_sens_read\":%hu,\"quiet_b4_uplink\":%hu,\"sens_read\":%hu,\"max_sens_read\":%hu,\"act_sens_read\":%hu,\"max_act_sens_read\":%hu,"
+
           "\"mako_lsm_acc_x\":%f,\"mako_lsm_acc_y\":%f,\"mako_lsm_acc_z\":%f,"
 
           "\"mako_imu_gyro_x\":%f,\"mako_imu_gyro_y\":%f,\"mako_imu_gyro_z\":%f,"
@@ -2327,8 +2334,10 @@ void buildUplinkTelemetryMessageV6a(char* payload, const struct MakoUplinkTeleme
           l.vBusVoltage, l.vBusCurrent, l.vBatVoltage, l.uplinkMessageMissingCount,
 
           l.gps_satellites, l.gps_hdop, l.gps_course_deg, l.gps_knots,
+          
+          m.minimum_sensor_read_time, m.quiteTimeMsBeforeUplink, m.sensor_aquisition_time,  
+          m.max_sensor_acquisition_time, m.actual_sensor_acquisition_time, m.max_actual_sensor_acquisition_time,
 
-          m.lsm_mag_x, m.lsm_mag_y, m.lsm_mag_z,
           m.lsm_acc_x, m.lsm_acc_y, m.lsm_acc_z,
           m.imu_gyro_x,    m.imu_gyro_y,    m.imu_gyro_z,
           m.imu_lin_acc_x, m.imu_lin_acc_y, m.imu_lin_acc_z,
