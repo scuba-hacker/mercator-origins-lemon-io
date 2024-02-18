@@ -46,7 +46,14 @@ const int SCREEN_WIDTH = 135;
 const int GPS_BAUD_RATE = 9600;
 const int UPLINK_BAUD_RATE = 9600;
 
-#define USB_SERIAL Serial
+#define USE_WEBSERIAL
+
+#ifdef USE_WEBSERIAL
+  #define USB_SERIAL WebSerial
+#else
+  #define USB_SERIAL Serial
+#endif
+
 #define GOPRO_SERIAL Serial1
 
 bool enableReadUplinkComms = true;
@@ -56,6 +63,9 @@ bool enableConnectToPrivateMQTT = true;
 bool enableUploadToPrivateMQTT = true;
 const bool enableIMUSensor = true;
 const bool enableOTAServer = true;          // over the air updates
+
+const bool writeLogToSerial = false;
+const bool writeTelemetryLogToSerial = false; // writeLogToSerial must also be true
 
 const bool enableConnectToTwitter = false;
 const bool enableConnectToSMTP = false;
@@ -165,9 +175,6 @@ const uint8_t ORANGE_LED_GPIO = 0;
 const uint8_t IR_LED_GPIO = 9;
 
 uint8_t redLEDStatus = HIGH;
-
-const bool writeLogToSerial = false;
-const bool writeTelemetryLogToSerial = false; // writeLogToSerial must also be true
 
 TinyGPSPlus gps;
 int uart_number_gps = 2;
