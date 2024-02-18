@@ -64,7 +64,7 @@ bool enableUploadToPrivateMQTT = true;
 const bool enableIMUSensor = true;
 const bool enableOTAServer = true;          // over the air updates
 
-const bool writeLogToSerial = true;
+const bool writeLogToSerial = false;
 const bool writeTelemetryLogToSerial = false; // writeLogToSerial must also be true
 
 const bool enableConnectToTwitter = false;
@@ -761,7 +761,8 @@ void disableFeaturesForOTA(bool screenToRed=true)
 
   haltAllProcessingDuringOTAUpload = true;
 
-  ws.closeAll();    // close all websocket connections
+  ws.closeAll();          // close all websocket connections for test page
+  WebSerial.closeAll();   // close all websocket connetions for WebSerial
 }
 
 TaskHandle_t mainTaskHandle = nullptr;
@@ -775,18 +776,22 @@ void uploadOTABeginCallback(AsyncElegantOtaClass* originator)
 void setup()
 {
     localMQTT.connected_callback = [] {
+      if (writeLogToSerial)
         USB_SERIAL.println("Local MQTT connected");
     };
 
     localMQTT.disconnected_callback = [] {
+      if (writeLogToSerial)
         USB_SERIAL.println("Local MQTT disconnected");
     };
 
     remoteMQTT.connected_callback = [] {
+      if (writeLogToSerial)
         USB_SERIAL.println("Remote MQTT connected");
     };
 
     remoteMQTT.disconnected_callback = [] {
+      if (writeLogToSerial)
         USB_SERIAL.println("Remote MQTT disconnected");
     };
 
