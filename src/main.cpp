@@ -45,8 +45,9 @@ const int SCREEN_WIDTH = 135;
 
 const int GPS_BAUD_RATE = 9600;
 const int UPLINK_BAUD_RATE = 9600;
+const int NEOPIXELS_BAUD_RATE = 9600;
 
-#define USE_WEBSERIAL
+//#define USE_WEBSERIAL
 
 #ifdef USE_WEBSERIAL
   #define USB_SERIAL WebSerial
@@ -55,6 +56,8 @@ const int UPLINK_BAUD_RATE = 9600;
 #endif
 
 #define GOPRO_SERIAL Serial1
+
+bool enableDiagnosticsWebStatsUpdates=false;
 
 bool enableReadUplinkComms = true;
 bool enableGPSRead = true;
@@ -76,6 +79,10 @@ String ssid_connected = ssid_not_connected;
 
 enum e_display_brightness {OFF_DISPLAY = 0, DIM_DISPLAY = 25, HALF_BRIGHT_DISPLAY = 50, BRIGHTEST_DISPLAY = 100};
 const e_display_brightness ScreenBrightness = BRIGHTEST_DISPLAY;
+
+enum e_lemon_status{LC_NONE=0, LC_STARTUP=1, LC_SEARCH_WIFI=2, LC_FOUND_WIFI=3, LC_NO_WIFI=4, LC_NO_GPS=5, LC_NO_FIX=6, LC_GOOD_FIX=7, LC_ALL_OFF=8, LC_NO_STATUS_UPDATE=127, LC_NO_INTERNET=128};
+
+e_lemon_status lemonStatus = LC_STARTUP;
 
 #ifdef ENABLE_TWITTER_AT_COMPILE_TIME
 // see mercator_secrets.c for Twitter login credentials
@@ -168,8 +175,10 @@ uint32_t currentPrivateMQTTUploadAt = 0, lastPrivateMQTTUploadAt = 0;
 uint32_t privateMQTTUploadDutyCycle = 0;
 
 const uint8_t RED_LED_GPIO = 10;
-const uint8_t ORANGE_LED_GPIO = 0;
 const uint8_t IR_LED_GPIO = 9;
+
+const uint8_t TX_TO_NEOPIXELS_GPIO = IR_LED_GPIO;         // was 0
+const uint8_t RX_TO_NEOPIXELS_GPIO = 0;   // was IR_LED_GPIO
 
 uint8_t redLEDStatus = HIGH;
 
@@ -179,6 +188,14 @@ HardwareSerial gps_serial(uart_number_gps);
 
 int uart_number_gopro = 1;
 HardwareSerial ss_to_gopro(uart_number_gopro);
+
+HardwareSerial& neopixels_serial = Serial;
+
+void sendLemonStatus(const e_lemon_status status)
+{
+  if (!writeLogToSerial)
+    neopixels_serial.write(status);
+}
 
 //double Lat, Lng;
 //uint32_t satellites = 0;
@@ -242,7 +259,7 @@ void updateButtonsAndBuzzer();
 
 const float minimumUSBVoltage = 4.0;
 long USBVoltageDropTime = 0;
-long milliSecondsToWaitForShutDown = 1500;
+long milliSecondsToWaitForShutDown = 500;
 
 
 extern const uint8_t STATS_HTML[];
@@ -253,6 +270,7 @@ void toggleOTAActive();
 void toggleWiFiActive();
 
 void checkForLeak(const char* msg, const uint8_t pin);
+void checkForReedSwitches();
 
 bool setupOTAWebServer(const char* _ssid, const char* _password, const char* label, uint32_t timeout, bool wifiOnly);
 
@@ -473,6 +491,10 @@ double decode_double(uint8_t*& msg) ;
 void decode_uint16_into_3_char_array(uint8_t*& msg, char* target);
 bool decodeIntoLemonTelemetryForUpload(uint8_t* msg, const uint16_t length, struct LemonTelemetryForJson& l);
 bool decodeMakoUplinkMessageV5a(uint8_t* uplinkMsg, struct MakoUplinkTelemetryForJson& m, const bool preventGlobalUpdate);
+
+bool makoReportsLeak = false;
+void checkMakoJSONForAlarms(struct MakoUplinkTelemetryForJson& m);
+
 uint16_t calcUplinkChecksum(char* buffer, uint16_t length);
 void sendFakeGPSData_No_Fix();
 void sendFakeGPSData_No_GPS();
@@ -488,7 +510,7 @@ void buildUplinkTelemetryMessageV6a(char* payload, const struct MakoUplinkTeleme
 void buildBasicTelemetryMessage(char* payload);
 enum e_q_upload_status uploadTelemetryToPrivateMQTT(MakoUplinkTelemetryForJson* makoTelemetry, struct LemonTelemetryForJson* lemonTelemetry);
 
-void notifyClients(String sensorReadings) {
+void notifyWebSocketClients(String sensorReadings) {
   ws.textAll(sensorReadings);
 }
 
@@ -533,7 +555,7 @@ void handleWebSocketMessage(void *arg, uint8_t *data, size_t len) {
 //    if (strcmp((char*)data, "getReadings") == 0) {
       //if it is, send current sensor readings
 //      notifyClients(getSensorReadings());
-      notifyClients(getStats());
+      notifyWebSocketClients(getStats());
     //  }
   }
 }
@@ -834,11 +856,20 @@ void setup()
   pinMode(RED_LED_GPIO, OUTPUT); // Red LED - the interior LED to M5 Stick
   digitalWrite(RED_LED_GPIO, redLEDStatus); // switch off as redLEDStatus is HIGH
 
-  pinMode(ORANGE_LED_GPIO, OUTPUT); // Orange LED - the old external orange LED
-  digitalWrite(ORANGE_LED_GPIO, LOW); // switch off
+  pinMode(TX_TO_NEOPIXELS_GPIO, OUTPUT);
+  digitalWrite(TX_TO_NEOPIXELS_GPIO, HIGH); // switch off
 
-  pinMode(IR_LED_GPIO, OUTPUT); // IR LED
-  digitalWrite(IR_LED_GPIO, HIGH); // switch off
+  pinMode(RX_TO_NEOPIXELS_GPIO, INPUT);
+
+  if (!writeLogToSerial)
+  {
+    Serial.end();
+    const bool invert = true; // Invertion of Tx needed due to using the IR Led as transmit
+    neopixels_serial.begin(NEOPIXELS_BAUD_RATE, SERIAL_8N1, RX_TO_NEOPIXELS_GPIO, TX_TO_NEOPIXELS_GPIO, invert);
+    neopixels_serial.setRxInvert(!invert);    // Need to not invert the Rx.
+  }
+
+  sendLemonStatus(LC_STARTUP);
 
   M5.Lcd.setRotation(0);
   M5.Lcd.setTextSize(2);
@@ -851,9 +882,17 @@ void setup()
 
   if (enableOTAServer)
   {
+    sendLemonStatus(LC_SEARCH_WIFI);
+
     bool wifiOnly = false;
     int repeatScanAttempts = 4;
-    connectToWiFiAndInitOTA(wifiOnly, repeatScanAttempts);
+    bool connected = connectToWiFiAndInitOTA(wifiOnly, repeatScanAttempts);
+    sendLemonStatus(connected ? LC_FOUND_WIFI : LC_NO_WIFI);
+
+    if (!connected)
+      delay(5000);    // wait 5 seconds before proceeding - lantern will show no wifi state for 5 seconds
+    else
+      delay(2000);    // show state for 2 seconds
   }
 
   // https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/peripherals/uart.html
@@ -878,15 +917,15 @@ void setup()
   // do any connect test to MQTT broker here
   }
 
-if (enableUploadToPrivateMQTT)
-{
-  localMQTT.begin();
-  remoteMQTT.begin();
-  // do any keep alive stuff here 
-  //    qubitro_mqttClient.setConnectionTimeout(qubitro_connection_timeout_ms);
-  //    qubitro_mqttClient.setKeepAliveInterval(qubitro_keep_alive_interval_ms);
+  if (enableUploadToPrivateMQTT)
+  {
+    localMQTT.begin();
+    remoteMQTT.begin();
+    // do any keep alive stuff here 
+    //    qubitro_mqttClient.setConnectionTimeout(qubitro_connection_timeout_ms);
+    //    qubitro_mqttClient.setKeepAliveInterval(qubitro_keep_alive_interval_ms);
 
-}
+  }
 
 #ifdef ENABLE_SMTP_AT_COMPILE_TIME
   if (enableConnectToSMTP && WiFi.status() == WL_CONNECTED)
@@ -977,6 +1016,14 @@ char* customiseSentence(char* sentence)
   return sentence;
 }
 
+uint32_t mainBackColour = TFT_BLACK;
+
+uint32_t timeOfNextLemonStatus = 0;
+const uint32_t lemonStatusDutyCycle = 1000;
+
+const int initNeopixelSerialByteRead = -1;
+int neopixelSerialByteRead = initNeopixelSerialByteRead;
+
 void loop()
 {
   shutdownIfUSBPowerOff();
@@ -986,6 +1033,17 @@ void loop()
     delay(1000);
     return;
   }
+
+  if (makoReportsLeak)
+  {
+    if (mainBackColour == TFT_BLACK)
+    {
+      mainBackColour = TFT_ORANGE;
+      M5.Lcd.fillScreen(TFT_ORANGE);
+    }
+  }
+
+  M5.Lcd.setTextColor(TFT_WHITE,mainBackColour);
 
   updateButtonsAndBuzzer();
 
@@ -1113,9 +1171,10 @@ void loop()
     // No fix only shown on first acquisition.
     M5.Lcd.setCursor(55, 5);
     M5.Lcd.setTextSize(4);
-    M5.Lcd.printf("No Fix\n\n   Lemon\n");
+    M5.Lcd.print("No Fix\n\n   Lemon\n");
     M5.Lcd.setCursor(110, 45);
     M5.Lcd.printf("%c", journey_activity_indicator[(++journey_activity_count) % 4]);
+    sendLemonStatus(LC_NO_FIX);
 
     // tells gopro M5 that gps is alive but no fix yet.
     // gopro M5 can choose to show this data for test purposes, otherwise in
@@ -1132,11 +1191,13 @@ void loop()
     // Once messages start being received, this is blocked as it is normal
     // to have gaps in the stream. There is no indication if GPS stream hangs
     // after first byte received, eg no bytes within 10 seconds.
+
     M5.Lcd.setCursor(55, 5);
     M5.Lcd.setTextSize(4);
-    M5.Lcd.printf("No GPS\n\n   Lemon\n", goodUplinkMessageCount, badUplinkMessageCount);
+    M5.Lcd.print("No GPS\n\n   Lemon\n");
     M5.Lcd.setCursor(110, 45);
     M5.Lcd.printf("%c", journey_activity_indicator[(++journey_activity_count) % 4]);
+    sendLemonStatus(LC_NO_GPS);
 
     // tells gopro M5 that gps is alive but no fix yet.
     // gopro M5 can choose to show this data for test purposes, otherwise in
@@ -1149,6 +1210,12 @@ void loop()
   }
   else
   {
+    if (timeOfNextLemonStatus < millis())
+    {
+      sendLemonStatus(LC_GOOD_FIX);
+      timeOfNextLemonStatus+=millis() + lemonStatusDutyCycle;
+    }
+
     if (processUplinkMessage)
     {
       // 1. Skip past any trash characters due to half-duplex and read pre-amble
@@ -1173,7 +1240,7 @@ void loop()
         uplinkBadMessagePercentage = 100.0*float(badUplinkMessageCount+uplinkMessageMissingCount)/tempDenominator;
       
       M5.Lcd.setCursor(5, 5);
-      M5.Lcd.setTextColor(TFT_WHITE, TFT_BLACK);
+      M5.Lcd.setTextColor(TFT_WHITE, mainBackColour);
           
       M5.Lcd.setTextSize(3);
 
@@ -1191,7 +1258,7 @@ void loop()
       else if (telemetryPipeline.getPipelineLength() > 4)
         M5.Lcd.setTextColor(TFT_BLACK, TFT_YELLOW);
       else
-        M5.Lcd.setTextColor(TFT_WHITE, TFT_BLACK);
+        M5.Lcd.setTextColor(TFT_WHITE, mainBackColour);
 
       const bool showPipeLength=false;
 
@@ -1203,7 +1270,7 @@ void loop()
       if (WiFi.status() != WL_CONNECTED)
         M5.Lcd.setTextColor(TFT_WHITE, TFT_RED);
       else
-        M5.Lcd.setTextColor(TFT_WHITE, TFT_BLACK);
+        M5.Lcd.setTextColor(TFT_WHITE, mainBackColour);
 
       const bool showListenTimer = false;
 
@@ -1217,16 +1284,19 @@ void loop()
       if (WiFi.status() != WL_CONNECTED) 
         M5.Lcd.setTextColor(TFT_WHITE, TFT_RED);
       else
-        M5.Lcd.setTextColor(TFT_WHITE, TFT_BLACK);
+        M5.Lcd.setTextColor(TFT_WHITE, mainBackColour);
 
       M5.Lcd.printf("IP: %-15s", IPBuffer); //(WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() : "No WiFi         "));
 
-      M5.Lcd.setTextColor(TFT_WHITE, TFT_BLACK);
+      M5.Lcd.setTextColor(TFT_WHITE, mainBackColour);
       uplinkMessageListenTimer = 0;
 
-      notifyClients(getStats());
+      if (enableDiagnosticsWebStatsUpdates)
+      {
+        notifyWebSocketClients(getStats());
+        ws.cleanupClients();  // ensure no more than 8 connections
+      }
 
-      ws.cleanupClients();  // ensure no more than 8 connections
       
       if (!messageValidatedOk)    // validation fails if mako telemetry not invalid size
       {
@@ -1268,11 +1338,25 @@ void loop()
   }
 
   checkForLeak(leakAlarmMsg, M5_POWER_SWITCH_PIN);
+
+  checkForReedSwitches();
+}
+
+void checkForReedSwitches()
+{
+  while (!writeLogToSerial && neopixels_serial.available())
+  {
+    neopixelSerialByteRead = neopixels_serial.read();
+    if (neopixelSerialByteRead == 100)
+      mainBackColour = TFT_BLUE;
+    else if (neopixelSerialByteRead == 200)
+      mainBackColour = TFT_MAGENTA;
+  }
 }
 
 void sendStatsWebSocketNotification()
 {
-    notifyClients(getStats());
+    notifyWebSocketClients(getStats());
 }
 
 bool doesHeadCommitRequireForce(BlockHeader& block)
@@ -1583,6 +1667,8 @@ void getNextTelemetryMessagesUploadedToPrivateMQTT()
     const bool preventGlobalUpdate = false; // refactoring needed to remove this
     decodeMakoUplinkMessageV5a(makoPayloadBuffer, makoJSON, preventGlobalUpdate);
 
+    checkMakoJSONForAlarms(makoJSON);
+
     // 2. parse the lemon payload into the lemon json payload struct
     LemonTelemetryForJson lemonForUpload;
     decodeIntoLemonTelemetryForUpload(makoPayloadBuffer+roundedUpLength, combinedBufferSize - roundedUpLength, lemonForUpload);
@@ -1781,6 +1867,14 @@ bool decodeIntoLemonTelemetryForUpload(uint8_t* msg, const uint16_t length, stru
   l.gps_year = decode_uint16(msg);    // 100
   
   return true;
+}
+
+void checkMakoJSONForAlarms(struct MakoUplinkTelemetryForJson& m)
+{
+  if (m.user_action & 0x0004)
+  {
+      makoReportsLeak = true;
+  }
 }
 
 // uplink msg from mako is 114 bytes
