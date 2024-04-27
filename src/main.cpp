@@ -84,6 +84,12 @@ enum e_lemon_status{LC_NONE=0, LC_STARTUP=1, LC_SEARCH_WIFI=2, LC_FOUND_WIFI=3, 
 
 e_lemon_status lemonStatus = LC_STARTUP;
 
+const uint32_t maxTimeBeforeAlertNoFix = 3000;
+const uint32_t maxTimeBeforeAlertNoGPSByte = 2000;
+uint32_t timeNextGoodFixExpectedBy = 0;
+uint32_t timeNextGPSByteExpectedBy = 0;
+
+
 #ifdef ENABLE_TWITTER_AT_COMPILE_TIME
 // see mercator_secrets.c for Twitter login credentials
 #include <WiFiClientSecure.h>   // Twitter
@@ -1089,9 +1095,20 @@ void loop()
 
     if (gps.encode(nextByte))
     {
+      uint32_t now = millis();
+      timeNextGPSByteExpectedBy = now + maxTimeBeforeAlertNoGPSByte;
+
       // Must extract longitude and latitude for the updated flag to be set on next location update.
       if (gps.location.isValid() && gps.location.isUpdated() && gps.isSentenceFix())
       {
+        if (now > timeOfNextLemonStatus)
+        {
+          sendLemonStatus(LC_GOOD_FIX);
+          timeOfNextLemonStatus = now + lemonStatusDutyCycle;
+        }
+
+        timeNextGoodFixExpectedBy = now + maxTimeBeforeAlertNoFix;
+
         // only enter here on GPRMC and GPGGA msgs with M5 GPS unit, 0.5 sec between each message.
         // GNRMC followed by GNGGA messages for NEO-6M, no perceptible gap between GNRMC and GNGGA.
         // 1 second between updates on the same message type for M5.
@@ -1210,12 +1227,6 @@ void loop()
   }
   else
   {
-    if (timeOfNextLemonStatus < millis())
-    {
-      sendLemonStatus(LC_GOOD_FIX);
-      timeOfNextLemonStatus+=millis() + lemonStatusDutyCycle;
-    }
-
     if (processUplinkMessage)
     {
       // 1. Skip past any trash characters due to half-duplex and read pre-amble
@@ -1335,6 +1346,25 @@ void loop()
     {
       uplinkMessageListenTimer = 0;
     }
+  }
+
+  uint32_t now = millis();
+
+  if (now > timeOfNextLemonStatus)
+  {
+    if (now > timeNextGoodFixExpectedBy)
+    {
+      if (now > timeNextGPSByteExpectedBy)
+        sendLemonStatus(LC_NO_GPS);
+      else
+        sendLemonStatus(LC_NO_FIX);
+    }
+    else
+    {
+      sendLemonStatus(LC_GOOD_FIX);
+    }
+
+    timeOfNextLemonStatus = millis() + lemonStatusDutyCycle;
   }
 
   checkForLeak(leakAlarmMsg, M5_POWER_SWITCH_PIN);
