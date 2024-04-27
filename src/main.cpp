@@ -133,7 +133,7 @@ PicoMQTT::Client remoteMQTT(
 #include <WiFi.h>
 #include <ESP32Ping.h>
 
-uint32_t private_mqtt_upload_min_duty_ms = 980; //980; // throttle upload to private mqtt ms
+uint32_t private_mqtt_upload_min_duty_ms = 50; // throttle upload to private mqtt ms
 uint32_t last_private_mqtt_upload_at = 0;
 
 const uint32_t telemetry_online_head_commit_duty_ms = 1900;
@@ -1675,7 +1675,7 @@ void populateHeadWithLemonTelemetryAndCommit(BlockHeader& headBlock)
 void getNextTelemetryMessagesUploadedToPrivateMQTT()
 {
   BlockHeader tailBlock;
-  const uint8_t maxTailPullsPerCycle = 1;   // now set to 1 because upload to qubitro is only every 2 seconds throttled.
+  const uint8_t maxTailPullsPerCycle = 10;   // allow up to 10 messages per cycle
   uint8_t tailPulls = maxTailPullsPerCycle;
 
   if (millis() < last_private_mqtt_upload_at + private_mqtt_upload_min_duty_ms) // upload throttle.
@@ -2581,7 +2581,8 @@ enum e_q_upload_status uploadTelemetryToPrivateMQTT(MakoUplinkTelemetryForJson* 
         {
           toggleRedLED();
           uploadStatus = Q_SUCCESS_SEND;
-          // USB_SERIAL.printf("PrivateMQTT Client sent message %s\n", mqtt_payload);
+          if (writeLogToSerial)
+            USB_SERIAL.printf("PrivateMQTT Client sent message %s\n", mqtt_payload);
           privateMQTTUploadCount++;
         }
         else
