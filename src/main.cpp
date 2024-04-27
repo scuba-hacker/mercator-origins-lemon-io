@@ -30,6 +30,9 @@
 AsyncElegantOtaClass AsyncElegantOTA;
 AsyncWebSocket ws("/ws");
 
+const int32_t timeBetweenSendingStatsUpdates = 5000;
+int32_t timeOfNextStatUpdate = 0;
+
 #include <ArduinoJSON.h>
 JsonDocument readings;
 
@@ -56,9 +59,6 @@ const int NEOPIXELS_BAUD_RATE = 9600;
 #endif
 
 #define GOPRO_SERIAL Serial1
-
-bool enableDiagnosticsWebStatsUpdates=false;
-
 bool enableReadUplinkComms = true;
 bool enableGPSRead = true;
 bool enableAllUplinkMessageIntegrityChecks = true;
@@ -1302,12 +1302,13 @@ void loop()
       M5.Lcd.setTextColor(TFT_WHITE, mainBackColour);
       uplinkMessageListenTimer = 0;
 
-      if (enableDiagnosticsWebStatsUpdates)
+      if (ws.count() && millis() > timeOfNextStatUpdate)
       {
         notifyWebSocketClients(getStats());
         ws.cleanupClients();  // ensure no more than 8 connections
-      }
 
+        timeOfNextStatUpdate = millis() + timeBetweenSendingStatsUpdates;
+      }
       
       if (!messageValidatedOk)    // validation fails if mako telemetry not invalid size
       {
@@ -2111,9 +2112,7 @@ void shutdownIfUSBPowerOff()
     {
       if (millis() > USBVoltageDropTime + milliSecondsToWaitForShutDown)
       {
-        // initiate shutdown after 3 seconds.
-        delay(1000);
-        fadeToBlackAndShutdown();
+        M5.Axp.PowerOff();
       }
     }
   }
