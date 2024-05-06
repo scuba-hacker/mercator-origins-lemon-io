@@ -30,7 +30,7 @@
 AsyncElegantOtaClass AsyncElegantOTA;
 AsyncWebSocket ws("/ws");
 
-const int32_t timeBetweenSendingStatsUpdates = 5000;
+const int32_t timeBetweenSendingStatsUpdates = 1100;
 int32_t timeOfNextStatUpdate = 0;
 
 #include <ArduinoJSON.h>
@@ -530,7 +530,7 @@ String getStats()
   readings["badUplinkMessageCount"] = badUplinkMessageCount;
   readings["badChkSumUplinkMsgCount"] = badChkSumUplinkMsgCount;
   readings["uplinkMessageMissingCount"] = uplinkMessageMissingCount;
-  readings["lemonUptime"] = (int)(currentPrivateMQTTUploadAt / 1000 / 60);
+  readings["lemonUptime"] = (int)(millis() / 1000);
   readings["pipelineDraining"] = (telemetryPipeline.isPipelineDraining() ? "Yes" : "No");
   readings["pipelineLength"] = telemetryPipeline.getPipelineLength();
   readings["offlineThrottleApplied"] = (g_offlineStorageThrottleApplied ? "Yes" : "No");  
@@ -551,25 +551,22 @@ String getStats()
   return jsonString;
 }
 
-
 void handleWebSocketMessage(void *arg, uint8_t *data, size_t len) {
   AwsFrameInfo *info = (AwsFrameInfo*)arg;
-  if (info->final && info->index == 0 && info->len == len && info->opcode == WS_TEXT) {
+  if (info->final && info->index == 0 && info->len == len && info->opcode == WS_TEXT) 
+  {
     data[len] = 0;
-//    String message = (char*)data;
-    // Check if the message is "getReadings"
-//    if (strcmp((char*)data, "getReadings") == 0) {
-      //if it is, send current sensor readings
-//      notifyClients(getSensorReadings());
+//    if (strcmp((char*)data, "getReadings") == 0)
       notifyWebSocketClients(getStats());
-    //  }
   }
 }
 
 void onEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type, void *arg, uint8_t *data, size_t len) {
-  switch (type) {
+  switch (type) 
+  {
     case WS_EVT_CONNECT:
       Serial.printf("WebSocket client #%u connected from %s\n", client->id(), client->remoteIP().toString().c_str());
+      notifyWebSocketClients(getStats()); // re-established
       break;
     case WS_EVT_DISCONNECT:
       Serial.printf("WebSocket client #%u disconnected\n", client->id());
@@ -1091,6 +1088,14 @@ void loop()
   {
     checkForLeak(leakAlarmMsg, M5_POWER_SWITCH_PIN);
 
+    if (ws.count() && millis() > timeOfNextStatUpdate)
+    {
+      notifyWebSocketClients(getStats());
+      ws.cleanupClients();  // ensure no more than 8 connections
+
+      timeOfNextStatUpdate = millis() + timeBetweenSendingStatsUpdates;
+    }
+
     char nextByte = gps_serial.read();
 
     if (gps.encode(nextByte))
@@ -1362,7 +1367,10 @@ void loop()
     }
     else
     {
-      sendLemonStatus(LC_GOOD_FIX);
+      if (telemetryPipeline.isPipelineDraining())
+        sendLemonStatus(LC_GOOD_FIX);
+      else
+        sendLemonStatus(LC_NO_INTERNET);
     }
 
     timeOfNextLemonStatus = millis() + lemonStatusDutyCycle;
@@ -2355,16 +2363,26 @@ bool setupOTAWebServer(const char* _ssid, const char* _password, const char* lab
       if (writeLogToSerial)
         USB_SERIAL.println("setupOTAWebServer: calling asyncWebServer.on");
 
-      asyncWebServer.on("/", HTTP_GET, [](AsyncWebServerRequest * request) {
+      asyncWebServer.on("/", HTTP_GET, [](AsyncWebServerRequest * request) 
+      {
         request->send(200, "text/plain", "To upload firmware use /update");
       });
 
-      asyncWebServer.on("/stats", HTTP_GET, [](AsyncWebServerRequest * request) {
+      asyncWebServer.on("/reboot", HTTP_GET, [](AsyncWebServerRequest * request) 
+      {
+        request->send(200, "text/plain", "Rebooting");
+        delay(500);
+        esp_restart();
+      });
+
+      asyncWebServer.on("/stats", HTTP_GET, [](AsyncWebServerRequest * request) 
+      {
           AsyncWebServerResponse *response = request->beginResponse_P(200, "text/html", STATS_HTML, STATS_HTML_SIZE); 
           request->send(response);
       });
     
-      asyncWebServer.on("/stats", HTTP_POST, [&](AsyncWebServerRequest *request){
+      asyncWebServer.on("/stats", HTTP_POST, [&](AsyncWebServerRequest *request)
+      {
               AsyncWebParameter* p = request->getParam("button",true,false);
               if (p)
               {

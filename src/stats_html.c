@@ -123,7 +123,7 @@ const uint8_t STATS_HTML[] = {
 "                   <p class=\"reading\"><span id=\"uplinkMessageMissingCount\"></span></p>\n"
 "               </div>\n"
 "               <div class=\"card\">\n"
-"                   <p class=\"card-title\">Lemon Uptime (min)</p>\n"
+"                   <p class=\"card-title\">Lemon Uptime (sec)</p>\n"
 "                   <p class=\"reading\"><span id=\"lemonUptime\"></span></p>\n"
 "               </div>\n"
 "               <div class=\"card\">\n"
