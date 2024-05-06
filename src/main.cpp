@@ -64,8 +64,9 @@ bool enableGPSRead = true;
 bool enableAllUplinkMessageIntegrityChecks = true;
 bool enableConnectToPrivateMQTT = true;
 bool enableUploadToPrivateMQTT = true;
-const bool enableIMUSensor = true;
+const bool enableIMUSensor = false;
 const bool enableOTAServer = true;          // over the air updates
+const bool enableTelegram = false;          // requires 35KB heap to send message (open/close secure connection)
 
 bool writeLogToSerial = false;
 const bool writeTelemetryLogToSerial = false; // writeLogToSerial must also be true
@@ -89,6 +90,13 @@ const uint32_t maxTimeBeforeAlertNoGPSByte = 2000;
 uint32_t timeNextGoodFixExpectedBy = 0;
 uint32_t timeNextGPSByteExpectedBy = 0;
 
+#ifdef ENABLE_TELEGRAM_BOT_AT_COMPILE_TIME
+#include <WiFiClientSecure.h>
+#include <UniversalTelegramBot.h>
+
+WiFiClientSecure secured_client;
+UniversalTelegramBot telegramBot(TELEGRAM_BOT_TOKEN, secured_client);
+#endif
 
 #ifdef ENABLE_TWITTER_AT_COMPILE_TIME
 // see mercator_secrets.c for Twitter login credentials
@@ -545,6 +553,13 @@ String getStats()
   readings["max_act_sens_read"] = latestMakoStats.max_actual_sensor_acquisition_time;
   readings["quiet_b4_uplink"] = latestMakoStats.quietTimeMsBeforeUplink;
 
+  multi_heap_info_t info;
+  heap_caps_get_info(&info, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT); // internal RAM, memory capable to store data or to create new task
+
+  readings["free_heap_bytes"] = info.total_free_bytes;
+  readings["largest_free_block"] = info.largest_free_block;
+  readings["minimum_free_ever"] = info.minimum_free_bytes;
+
   String jsonString;
   serializeJson(readings, jsonString);
 
@@ -782,9 +797,19 @@ void disableFeaturesForOTA(bool screenToRed=true)
   if (screenToRed)
     M5.Lcd.fillScreen(TFT_RED);
 
-  digitalWrite(RED_LED_GPIO, LOW);  // turn on red led
+  redLEDStatus = LOW;
+  digitalWrite(RED_LED_GPIO, redLEDStatus);  // turn on red led
 
   haltAllProcessingDuringOTAUpload = true;
+
+  if (writeLogToSerial)
+  {
+    multi_heap_info_t info;
+    heap_caps_get_info(&info, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT); // internal RAM, memory capable to store data or to create new task
+    USB_SERIAL.printf("\n%s : free heap bytes: %i  largest free heap block: %i min free ever: %i\n",  "halted", info.total_free_bytes, info.largest_free_block, info.minimum_free_bytes);
+  }
+
+  telemetryPipeline.teardown();
 
   ws.closeAll();          // close all websocket connections for test page
   WebSerial.closeAll();   // close all websocket connetions for WebSerial
@@ -837,7 +862,7 @@ void setup()
   if (writeLogToSerial)
     USB_SERIAL.printf("sizeof LemonTelemetry: %lu\n",sizeof(LemonTelemetryForStorage));
 
-  const uint16_t maxPipelineBufferKB = 100;
+  const uint16_t maxPipelineBufferKB = 95;    // if telegram is enabled the pipeline needs to be 60KB or smaller. Without pipeline length can be 95KB.
   const uint16_t maxPipelineBlockPayloadSize = 256; // was 224 - Assuming 120 byte Mako Telemetry Msg and 104 byte Lemon Telemetry Msg
   BlockHeader::s_overrideMaxPayloadSize(maxPipelineBlockPayloadSize);  // 400 messages with 256 byte max payload. 
   telemetryPipeline.init(&millis,maxPipelineBufferKB);
@@ -1024,6 +1049,9 @@ uint32_t mainBackColour = TFT_BLACK;
 uint32_t timeOfNextLemonStatus = 0;
 const uint32_t lemonStatusDutyCycle = 1000;
 
+uint32_t timeOfNextTelegramBotUpdateSendMsg = 0;
+const uint32_t telegramBotDutyCycle = 10000;
+
 const int initNeopixelSerialByteRead = -1;
 int neopixelSerialByteRead = initNeopixelSerialByteRead;
 
@@ -1033,7 +1061,9 @@ void loop()
 
   if (haltAllProcessingDuringOTAUpload)
   {
-    delay(1000);
+    delay(500);
+    dumpHeapUsage("Halted=true");
+    toggleRedLED();
     return;
   }
 
@@ -1095,8 +1125,7 @@ void loop()
 
       timeOfNextStatUpdate = millis() + timeBetweenSendingStatsUpdates;
 
-      if (writeLogToSerial)
-        USB_SERIAL.println("Sent Stats");
+      dumpHeapUsage("Sent stats: ");
     }
 
     char nextByte = gps_serial.read();
@@ -1382,6 +1411,17 @@ void loop()
   checkForLeak(leakAlarmMsg, M5_POWER_SWITCH_PIN);
 
   checkForReedSwitches();
+
+#ifdef ENABLE_TELEGRAM_BOT_AT_COMPILE_TIME
+  if (enableTelegram && now > timeOfNextTelegramBotUpdateSendMsg)
+  {
+    bool result = telegramBot.sendSimpleMessage(TELEGRAM_USER_ID, "Heartbeat", "");
+    if (writeLogToSerial)
+      USB_SERIAL.printf("Result of Bot Send - loop(): %d\n",result);
+    timeOfNextTelegramBotUpdateSendMsg = millis() + telegramBotDutyCycle;
+    dumpHeapUsage("loop() - after send telegram");
+  }
+#endif
 }
 
 void checkForReedSwitches()
@@ -2339,6 +2379,10 @@ bool setupOTAWebServer(const char* _ssid, const char* _password, const char* lab
   WiFi.setHostname("lemon"); //define hostname
 
   WiFi.begin(_ssid, _password);
+#ifdef ENABLE_TELEGRAM_BOT_AT_COMPILE_TIME
+  if (enableTelegram)
+    secured_client.setCACert(TELEGRAM_CERTIFICATE_ROOT); // Add root certificate for api.telegram.org
+#endif
 
   // Wait for connection for max of timeout/1000 seconds
   M5.Lcd.printf("%s Wifi", label);

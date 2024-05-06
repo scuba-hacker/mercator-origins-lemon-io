@@ -17,27 +17,23 @@ static const int   timeout_3 = 10000;
 
 static const char* ping_target = "8.8.8.8";    // google DNS
 
-static const char* qubitro_host = "";
-static const int   qubitro_port = 1883;	// 1883 (dev) or 8883 (prod)
-static const char* qubitro_username_1 = "";
-static const char* qubitro_password_1 = "";
-static const char* qubitro_device_id_1 = "";
-static const char* qubitro_device_token_1 = "";
+static const char* private_mqqt_remote_host = "";
+static const int   private_mqqt_remote_port = 0;
+static const char* private_mqqt_local_host = "";
+static const int   private_mqqt_local_port = ;
+static const char* private_mqqt_client_id = "";
+static const char* private_mqqt_username = "";
+static const char* private_mqqt_password = "";
 
-static const char* qubitro_username_2 = "";
-static const char* qubitro_password_2 = "";
-static const char* qubitro_device_id_2 = "";
-static const char* qubitro_device_token_2 = "";
+static const char* private_dev_ssid = "";
+static const char* private_local_gateway = "";
+
+static const char* TELEGRAM_BOT_TOKEN="";
+static const char* TELEGRAM_USER_ID="";
 
 static const char* smtpServer = "";
 static const int   smtpPort = 465;		// depends upon smtp protocol used by your isp
 static const char* smtpSenderEmail = "";
 static const char* smtpSenderPassword = "";
 static const char* smtpRecepientEmail = "";
-
-static const char* twitterConsumerKey = "";
-static const char* twitterConsumerSecret = "";
-static const char* twitterAccessToken = "";
-static const char* twitterAccessTokenSecret = "";
-static const char* twitterBearerToken = "";
 */
