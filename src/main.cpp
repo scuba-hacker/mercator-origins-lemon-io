@@ -1094,6 +1094,9 @@ void loop()
       ws.cleanupClients();  // ensure no more than 8 connections
 
       timeOfNextStatUpdate = millis() + timeBetweenSendingStatsUpdates;
+
+      if (writeLogToSerial)
+        USB_SERIAL.println("Sent Stats");
     }
 
     char nextByte = gps_serial.read();
@@ -2300,10 +2303,10 @@ void webSerialReceiveMessage(uint8_t *data, size_t len){
   WebSerial.println(d);
 
   if (d == "ON"){
-    digitalWrite(RED_LED_GPIO, HIGH);
+    digitalWrite(RED_LED_GPIO, LOW);
   }
   else if (d=="OFF"){
-    digitalWrite(RED_LED_GPIO, LOW);
+    digitalWrite(RED_LED_GPIO, HIGH);
   }
   else if (d=="serial-off")
   {
@@ -2332,6 +2335,9 @@ bool setupOTAWebServer(const char* _ssid, const char* _password, const char* lab
   M5.Lcd.setTextSize(2);
   bool connected = false;
   WiFi.mode(WIFI_STA);
+  WiFi.config(INADDR_NONE, INADDR_NONE, INADDR_NONE, INADDR_NONE);
+  WiFi.setHostname("lemon"); //define hostname
+
   WiFi.begin(_ssid, _password);
 
   // Wait for connection for max of timeout/1000 seconds
