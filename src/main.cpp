@@ -81,7 +81,8 @@ String ssid_connected = ssid_not_connected;
 enum e_display_brightness {OFF_DISPLAY = 0, DIM_DISPLAY = 25, HALF_BRIGHT_DISPLAY = 50, BRIGHTEST_DISPLAY = 100};
 const e_display_brightness ScreenBrightness = BRIGHTEST_DISPLAY;
 
-enum e_lemon_status{LC_NONE=0, LC_STARTUP=1, LC_SEARCH_WIFI=2, LC_FOUND_WIFI=3, LC_NO_WIFI=4, LC_NO_GPS=5, LC_NO_FIX=6, LC_GOOD_FIX=7, LC_ALL_OFF=8, LC_NO_STATUS_UPDATE=127, LC_NO_INTERNET=128};
+enum e_lemon_status{LC_NONE=0, LC_STARTUP=1, LC_SEARCH_WIFI=2, LC_FOUND_WIFI=3, LC_NO_WIFI=4, LC_NO_GPS=5, 
+                    LC_NO_FIX=6, LC_GOOD_FIX=7, LC_ALL_OFF=8, LC_DIVE_IN_PROGRESS=64, LC_NO_STATUS_UPDATE=127, LC_NO_INTERNET=128};
 
 e_lemon_status lemonStatus = LC_STARTUP;
 
@@ -205,10 +206,17 @@ HardwareSerial ss_to_gopro(uart_number_gopro);
 
 HardwareSerial& neopixels_serial = Serial;
 
+bool diveInProgress = false;
+
 void sendLemonStatus(const e_lemon_status status)
 {
   if (!writeLogToSerial)
-    neopixels_serial.write(status);
+  {
+    if (diveInProgress)
+      neopixels_serial.write(status | LC_DIVE_IN_PROGRESS);
+    else
+      neopixels_serial.write(status);
+  }
 }
 
 //double Lat, Lng;
@@ -274,7 +282,6 @@ void updateButtonsAndBuzzer();
 const float minimumUSBVoltage = 4.0;
 long USBVoltageDropTime = 0;
 long milliSecondsToWaitForShutDown = 500;
-
 
 extern const uint8_t STATS_HTML[];
 extern const uint32_t STATS_HTML_SIZE;
@@ -1281,7 +1288,6 @@ void loop()
       // 3. Populate the head block with the binary telemetry data received from Mako (or zero's if no data)
       bool messageValidatedOk = populateHeadWithMakoTelemetry(headBlock, validPreambleFound);
 
-
       float tempDenominator = float(goodUplinkMessageCount+badUplinkMessageCount+uplinkMessageMissingCount);
 
       if (tempDenominator > 0)
@@ -1459,6 +1465,8 @@ bool doesHeadCommitRequireForce(BlockHeader& block)
     forceHeadCommit = true;
   }
   
+  diveInProgress = (makoJSON.depth > 0.5);
+
   return forceHeadCommit;
 }
 
