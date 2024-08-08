@@ -30,10 +30,4 @@ static const char* private_local_gateway = "";
 
 static const char* TELEGRAM_BOT_TOKEN="";
 static const char* TELEGRAM_USER_ID="";
-
-static const char* smtpServer = "";
-static const int   smtpPort = 465;		// depends upon smtp protocol used by your isp
-static const char* smtpSenderEmail = "";
-static const char* smtpSenderPassword = "";
-static const char* smtpRecepientEmail = "";
 */
