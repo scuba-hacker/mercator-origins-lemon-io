@@ -50,6 +50,7 @@ const int GPS_BAUD_RATE = 9600;
 const int UPLINK_BAUD_RATE = 9600;
 const int NEOPIXELS_BAUD_RATE = 9600;
 
+// make sure this is disabled if writeLogToSerial is false
 //#define USE_WEBSERIAL
 
 #ifdef USE_WEBSERIAL
@@ -192,8 +193,8 @@ uint32_t privateMQTTUploadDutyCycle = 0;
 const uint8_t RED_LED_GPIO = 10;
 const uint8_t IR_LED_GPIO = 9;
 
-const uint8_t TX_TO_NEOPIXELS_GPIO = IR_LED_GPIO;         // was 0
-const uint8_t RX_TO_NEOPIXELS_GPIO = 0;   // was IR_LED_GPIO
+const uint8_t TX_TO_NEOPIXELS_GPIO = IR_LED_GPIO;
+const uint8_t RX_TO_NEOPIXELS_GPIO = 0;
 
 uint8_t redLEDStatus = HIGH;
 
@@ -218,9 +219,6 @@ void sendLemonStatus(const e_lemon_status status)
       neopixels_serial.write(status);
   }
 }
-
-//double Lat, Lng;
-//uint32_t satellites = 0;
 
 int nofix_byte_loop_count = 0;
 
@@ -255,9 +253,10 @@ const uint32_t delayBeforeCountingMissedMessages = 60000; // Allow 60 second sta
 
 const uint32_t uplinkMessageLingerPeriodMs = 300;   // max milliseconds to wait for Mako pre-amble to reply
 uint32_t uplinkLingerTimeoutAt = 0;
-uint32_t downlinkSendMessageDuration = 0;       // Latency processing GPS message and downlink msg send to Mako complete.
-uint32_t preambleReceivedAfterMicroSeconds = 0; // Latency between start of preamble and end of preamble received from Mako.
-uint32_t uplinkMessageListenTimer = 0; // Latency processing GPS message, send to mako and valid msg received from Mako.
+uint32_t downlinkSendMessageDurationMicroSeconds = 0;   // Latency processing GPS message and downlink msg send to Mako complete.
+uint32_t preambleReceivedAfterMicroSeconds = 0;         // Latency between start of preamble and end of preamble received from Mako.
+uint32_t uplinkRxMicroSeconds = 0;                      // Latency between end of pre-amble received and good complete message received from Mako.
+uint32_t uplinkMessageListenTimer = 0;                  // Latency processing GPS message, send to mako and valid msg received from Mako.
 
 const int8_t maxPingAttempts = 1;
 int32_t lastCheckForInternetConnectivityAt = 0;
@@ -412,8 +411,8 @@ struct LemonTelemetryForStorage
   uint16_t  gps_knots;            // 52
   
   uint32_t  downlink_send_duration;   // must be on 4 byte boundary
-  uint32_t  uplink_latency;           
-  float     imu_gyro_z;
+  uint32_t  uplink_preamble_latency;
+  uint32_t  uplink_rx_latency;
   float     imu_lin_acc_x;
   float     imu_lin_acc_y;
   float     imu_lin_acc_z;
@@ -458,8 +457,8 @@ struct LemonTelemetryForJson
   double    gps_knots;
 
   uint32_t  downlink_send_duration;
-  uint32_t  uplink_latency;
-  float     imu_gyro_z;
+  uint32_t  uplink_preamble_latency;
+  uint32_t  uplink_rx_latency;
   float     imu_lin_acc_x;
   float     imu_lin_acc_y;
   float     imu_lin_acc_z;
@@ -614,13 +613,11 @@ void getM5ImuSensorData(struct LemonTelemetryForJson& t)
   // gyro x/y/z now not used
   if (enableIMUSensor)
   {
-    t.imu_gyro_z = 0.0;
     M5.IMU.getAccelData(&t.imu_lin_acc_x, &t.imu_lin_acc_y, &t.imu_lin_acc_z);
     M5.IMU.getAhrsData(&t.imu_rot_acc_x, &t.imu_rot_acc_y, &t.imu_rot_acc_z);
   }
   else
   {
-    t.imu_gyro_z = uninitialisedIMU;
     t.imu_lin_acc_x = t.imu_lin_acc_y = t.imu_lin_acc_z = uninitialisedIMU;
     t.imu_rot_acc_x = t.imu_rot_acc_y = t.imu_rot_acc_z = uninitialisedIMU;
   }
@@ -726,7 +723,10 @@ void checkConnectivity()
 
         if (isScubaMosquittoBrokerAvailable())
         {
-          USB_SERIAL.println("1.2.3 checkConnectivity: Scuba MQTT Broker ping success");
+          if (writeLogToSerial)
+          {
+            USB_SERIAL.println("1.2.3 checkConnectivity: Scuba MQTT Broker ping success");
+          }
         }
         else
         {
@@ -942,7 +942,7 @@ void setup()
 
   // setup second serial port for sending/receiving data to/from GoPro
   GOPRO_SERIAL.setRxBufferSize(1024); // was 256 - must set before begin
-  GOPRO_SERIAL.begin(UPLINK_BAUD_RATE, SERIAL_8N2, HAT_GPS_RX_PIN, HAT_GPS_TX_PIN);
+  GOPRO_SERIAL.begin(UPLINK_BAUD_RATE, SERIAL_8N1, HAT_GPS_RX_PIN, HAT_GPS_TX_PIN);
 
   // cannot use Pin 0 for receive of GPS (resets on startup), can use Pin 36, can use 26
   // cannot use Pin 0 for transmit of GPS (resets on startup), only Pin 26 can be used for transmit.
@@ -1105,22 +1105,6 @@ void loop()
     return;
   }
 
-  /*
-  if (p_primaryButton->wasReleasefor(100)) // toggle ota only
-  {
-    updateButtonsAndBuzzer();
-    toggleOTAActive();
-    return;
-  }
-
-  if (p_secondButton->wasReleasefor(100)) // toggle wifi only
-  {
-    updateButtonsAndBuzzer();
-    toggleWiFiActive();
-    return;
-  }
-*/
-
   while (enableGPSRead && gps_serial.available() > 0)
   {
     checkForLeak(leakAlarmMsg, M5_POWER_SWITCH_PIN);
@@ -1162,13 +1146,15 @@ void loop()
         // send message to outgoing serial connection to gopro
         GOPRO_SERIAL.write(customiseSentence(gps.getSentence()));
         consoleDownlinkMsgCount++;
-        //////////////////////////////////////////////////////////
+// breaks good uplinks - keep commented out
+//          int txDoneWaitMS = 100;
+//         uart_wait_tx_done(uart_number_gopro,pdMS_TO_TICKS(txDoneWaitMS));
 
         if (gps.isSentenceGGA())
         {
           processUplinkMessage = true;  // triggers listen for uplink msg
           uplinkMessageListenTimer = millis();
-          downlinkSendMessageDuration = micros();
+          downlinkSendMessageDurationMicroSeconds = micros();
         }
 
         uint32_t newFixCount = gps.sentencesWithFix();
@@ -1340,7 +1326,14 @@ void loop()
       else
         M5.Lcd.setTextColor(TFT_WHITE, mainBackColour);
 
-      M5.Lcd.printf("IP: %-15s", IPBuffer); //(WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() : "No WiFi         "));
+      int16_t xCurs = M5.Lcd.getCursorX();
+      int16_t yCurs = M5.Lcd.getCursorY();
+
+      M5.Lcd.printf("     %-15s", IPBuffer); //(WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() : "No WiFi         "));
+
+      M5.Lcd.setCursor(xCurs,yCurs);
+      M5.Lcd.setTextColor(TFT_MAGENTA, TFT_BLACK);
+      M5.Lcd.printf("%.1fC",M5.Axp.GetTempInAXP192());
 
       M5.Lcd.setTextColor(TFT_WHITE, mainBackColour);
       uplinkMessageListenTimer = 0;
@@ -1436,9 +1429,15 @@ void checkForReedSwitches()
   {
     neopixelSerialByteRead = neopixels_serial.read();
     if (neopixelSerialByteRead == 100)
+    {
       mainBackColour = TFT_BLUE;
+      M5.Lcd.fillScreen(TFT_BLUE);
+    }
     else if (neopixelSerialByteRead == 200)
+    {
       mainBackColour = TFT_MAGENTA;
+      M5.Lcd.fillScreen(TFT_MAGENTA);
+    }
   }
 }
 
@@ -1479,16 +1478,18 @@ bool checkForValidPreambleOnUplink()
   if (enableReadUplinkComms)
   {
     // 1.1 wait until all transmitted data sent to Mako (synchronous)
-    GOPRO_SERIAL.flush();
+//   int txDoneWaitMS = 100;
+//   uart_wait_tx_done(uart_number_gopro,pdMS_TO_TICKS(txDoneWaitMS));
+
     uint32_t nowUS = micros();
 
-    downlinkSendMessageDuration = (nowUS >= downlinkSendMessageDuration ? nowUS - downlinkSendMessageDuration : 0xFFFFFFFF - downlinkSendMessageDuration + nowUS);
+    downlinkSendMessageDurationMicroSeconds = (nowUS >= downlinkSendMessageDurationMicroSeconds ? nowUS - downlinkSendMessageDurationMicroSeconds : 0xFFFFFFFF - downlinkSendMessageDurationMicroSeconds + nowUS);
 
     uplinkLingerTimeoutAt = millis()+uplinkMessageLingerPeriodMs;
 
     preambleReceivedAfterMicroSeconds = micros();
 
-    // 1.2 Read received data searching for lead-in pattern from Tracker - MBJAEJ\0
+    // 1.2 Read received data searching for lead-in pattern from Tracker - MBJ\0AEJ\0
     // wait upto uplinkLingerTimeoutAt milliseconds to receive the pre-amble
 
     char uplink_preamble_first_segment[] = "MBJ";
@@ -1496,7 +1497,11 @@ bool checkForValidPreambleOnUplink()
 
     const char* nextByteToFind = uplink_preamble_first_segment;
     const char* nextSecondSegmentByteToFind = uplink_preamble_second_segment;
-    
+
+    const int preambleMBJSize = 256;
+    char  preambleMBJ[preambleMBJSize] = "Preamble MBJ: ";
+    char* nextIndex = preambleMBJ + strlen(preambleMBJ);
+
     while ((GOPRO_SERIAL.available() || 
             !GOPRO_SERIAL.available() && millis() < uplinkLingerTimeoutAt) && 
             *nextByteToFind != 0)
@@ -1504,10 +1509,42 @@ bool checkForValidPreambleOnUplink()
       // throw away trash bytes from half-duplex clash - always present
       char next = GOPRO_SERIAL.read();
       if (next == *nextByteToFind)
+      {
+        if (writeLogToSerial && writeTelemetryLogToSerial)
+          *nextIndex++ = (isalnum(next) ? next : '?');
+
         nextByteToFind++;
+      }
       else
+      {
+        if (writeLogToSerial && writeTelemetryLogToSerial)
+          *nextIndex++ = (isalnum(next) ? next : (next == 0 ? '0' : '?'));
+
         nextByteToFind = uplink_preamble_first_segment;    // make sure contiguous preamble found, reset search for first char of preamble
+      }
+
+      if (writeLogToSerial && writeTelemetryLogToSerial)
+        if (nextIndex == preambleMBJ + preambleMBJSize-10)
+          nextIndex = preambleMBJ;
     }
+
+    if (writeLogToSerial && writeTelemetryLogToSerial)
+    {
+      *nextIndex++ = '\n';  *nextIndex++ = '\0';
+
+      if (writeLogToSerial && writeTelemetryLogToSerial)
+        USB_SERIAL.printf(preambleMBJ);
+
+      if (*nextByteToFind != 0)
+      {
+        if (writeLogToSerial && writeTelemetryLogToSerial)
+          USB_SERIAL.printf("    MBJ Timeout\n");
+      }
+    }
+
+    int preambleAEJSize = 256;
+    char  preambleAEJ[preambleAEJSize] = "Preamble AEJ: ";
+    nextIndex = preambleAEJ + strlen(preambleAEJ);
 
     if (*nextByteToFind == 0)
     {
@@ -1518,9 +1555,38 @@ bool checkForValidPreambleOnUplink()
      {
         char next = GOPRO_SERIAL.read();
         if (next == *nextSecondSegmentByteToFind)
+        {
+          if (writeLogToSerial && writeTelemetryLogToSerial)
+            *nextIndex++ = (isalnum(next) ? next : '?');
           nextSecondSegmentByteToFind++;
+        }
         else
+        {
+          if (writeLogToSerial && writeTelemetryLogToSerial)
+            *nextIndex++ = (isalnum(next) ? next : (next == 0 ? '\0' : '?'));
           nextSecondSegmentByteToFind = uplink_preamble_second_segment;    // make sure contiguous preamble found, reset search for first char of preamble
+        }
+
+        if (writeLogToSerial && writeTelemetryLogToSerial)
+          if (nextIndex == preambleAEJ + preambleAEJSize-10)
+            nextIndex = preambleAEJ;
+      }
+    }
+    else
+    {
+      if (writeLogToSerial && writeTelemetryLogToSerial)
+        USB_SERIAL.printf("\nTimeout: Not Found preamble null terminator for MBJ\n");
+    }
+
+    if (writeLogToSerial && writeTelemetryLogToSerial)
+    {
+      *nextIndex++ = '\n';  *nextIndex++ = '\0';
+      USB_SERIAL.printf(preambleAEJ);
+
+      if (*nextSecondSegmentByteToFind != 0)
+      {
+        if (writeLogToSerial && writeTelemetryLogToSerial)
+          USB_SERIAL.printf("    AEJ Timeout\n");
       }
     }
 
@@ -1544,6 +1610,7 @@ bool checkForValidPreambleOnUplink()
   }
 
   uint32_t nowUS = micros();
+  uplinkRxMicroSeconds = nowUS;
 
   if (validPreambleFound)
   {
@@ -1569,36 +1636,69 @@ bool populateHeadWithMakoTelemetry(BlockHeader& headBlock, const bool validPream
   // 3. Populate the head block buffer with mako telemetry (or nullptr if no pre-amble found)
   if (validPreambleFound)
   {
+    uplinkRxMicroSeconds = micros();
+
+    // Allow max of 2ms to get a byte
+    const uint32_t maxWaitOneByteMS = 2;
+    uint32_t endWait = millis() + maxWaitOneByteMS;
+
     // 3.1a Read the uplink message from Serial into the blockBuffer
-    while ((nextBlockByte-blockBuffer) < headMaxPayloadSize)
+    while ((nextBlockByte-blockBuffer) < headMaxPayloadSize && (GOPRO_SERIAL.available() || millis() < endWait))
     {
       // must only listen for data when not sending gps data.
       // after send of gps must flush rx buffer
       if (GOPRO_SERIAL.available())
       {
         *(nextBlockByte++) = GOPRO_SERIAL.read();
-      }
-      else
-      {
-        break;
+        endWait = millis() + maxWaitOneByteMS;
       }
     }
+
+    uint32_t nowUS = micros();
+    uplinkRxMicroSeconds = (nowUS >= uplinkRxMicroSeconds ? nowUS - uplinkRxMicroSeconds : 0xFFFFFFFF - uplinkRxMicroSeconds + nowUS);
+
+    if (writeLogToSerial && writeTelemetryLogToSerial)
+      USB_SERIAL.printf("Rx Time: %lu\n",uplinkRxMicroSeconds);
+ 
     receivedUplinkMessageCount++;
   }
   else
   {
     // 3.1b uplink mako struct to Quibitro will be zero fields
-    memset(nextBlockByte,0,makoHardcodedUplinkMessageLength); 
+    memset(nextBlockByte,0,makoHardcodedUplinkMessageLength);
     nextBlockByte+=makoHardcodedUplinkMessageLength;
   }
-
-  GOPRO_SERIAL.flush();
       
   // entire message received and stored into blockBuffer (makoHardcodedUplinkMessageLength)
   uint16_t uplinkMessageLength = nextBlockByte-blockBuffer;
 
   if (writeLogToSerial && writeTelemetryLogToSerial)
-    USB_SERIAL.printf("Mako uplinkMessageLength == %hu\n",uplinkMessageLength);
+  {
+    USB_SERIAL.printf("Mako uplinkMessageLength == %hu    ",uplinkMessageLength);
+
+    char  firstLastBytes[512]="";
+    
+    char* nextIndex = firstLastBytes;
+
+    if (uplinkMessageLength > 10)
+    {
+      int bytesToDisplay=5;
+
+      for (int i=0; i<bytesToDisplay; i++)
+        *nextIndex++ = (isalnum(*(blockBuffer+i)) ? *(blockBuffer+i) : '?');
+
+      *nextIndex++=' ';
+      *nextIndex++=' ';
+      *nextIndex++=' ';
+
+      for (int i=uplinkMessageLength-bytesToDisplay; i<uplinkMessageLength; i++)
+        *nextIndex++ = (isalnum(*(blockBuffer+i)) ? *(blockBuffer+i) : '?');
+    }
+    *nextIndex++='\n';
+    *nextIndex++='\0';
+
+    USB_SERIAL.printf(firstLastBytes);
+  }
 
   // check integrity of Mako message here - increment good count or bad count
   if (validPreambleFound)
@@ -1612,7 +1712,7 @@ bool populateHeadWithMakoTelemetry(BlockHeader& headBlock, const bool validPream
       else
       {
         if (writeLogToSerial)
-          USB_SERIAL.printf("decodeUplink bad msg length %%2!=0 %hu\n", uplinkMessageLength);
+          USB_SERIAL.printf("decodeUplink bad msg length %%2!=0 %hu  Rx Time: %lu\n", uplinkMessageLength, uplinkRxMicroSeconds);
 
         headBlock.resetPayload();
 
@@ -1633,11 +1733,11 @@ bool populateHeadWithMakoTelemetry(BlockHeader& headBlock, const bool validPream
         if (writeLogToSerial)
         {
           if (uplinkMessageLengthBad)
-            USB_SERIAL.printf("decodeUplink bad msg length %hu && checksum bad %hu\n", uplinkMessageLength, uplink_checksum);
+            USB_SERIAL.printf("decodeUplink bad msg length %hu && checksum bad %hu  Rx Time: %lu\n", uplinkMessageLength, uplink_checksum, uplinkRxMicroSeconds);
           else if (uplinkMessageLengthBad)
-            USB_SERIAL.printf("decodeUplink bad msg length only %hu\n", uplinkMessageLength);
+            USB_SERIAL.printf("decodeUplink bad msg length only %hu  Rx Time: %lu\n", uplinkMessageLength, uplinkRxMicroSeconds);
           else if (uplink_checksum_bad)
-            USB_SERIAL.printf("decodeUplink bad msg checksum only %hu\n", uplink_checksum);
+            USB_SERIAL.printf("decodeUplink bad msg checksum only %hu  Rx Time: %lu\n", uplink_checksum, uplinkRxMicroSeconds);
         }
         
         // clear blockBuffer
@@ -1808,8 +1908,9 @@ void populateCurrentLemonTelemetry(LemonTelemetryForJson& l, TinyGPSPlus& g)
 
 void populateFinalLemonTelemetry(LemonTelemetryForJson& l)
 {
-  l.downlink_send_duration = downlinkSendMessageDuration;
-  l.uplink_latency = preambleReceivedAfterMicroSeconds;
+  l.downlink_send_duration = downlinkSendMessageDurationMicroSeconds;
+  l.uplink_preamble_latency = preambleReceivedAfterMicroSeconds;
+  l.uplink_rx_latency = uplinkRxMicroSeconds;
 }
 
 void constructLemonTelemetryForStorage(struct LemonTelemetryForStorage& s, const LemonTelemetryForJson l, const uint16_t uplinkMessageLength)
@@ -1832,8 +1933,8 @@ void constructLemonTelemetryForStorage(struct LemonTelemetryForStorage& s, const
   s.gps_knots = (uint16_t)(l.gps_knots * 10.0);            // 48
   
   s.downlink_send_duration = l.downlink_send_duration; 
-  s.uplink_latency = l.uplink_latency; 
-  s.imu_gyro_z = l.imu_gyro_z; 
+  s.uplink_preamble_latency = l.uplink_preamble_latency; 
+  s.uplink_rx_latency = l.uplink_rx_latency;
   s.imu_lin_acc_x = l.imu_lin_acc_x; s.imu_lin_acc_y = l.imu_lin_acc_y; s.imu_lin_acc_z = l.imu_lin_acc_z;
   s.imu_rot_acc_x = l.imu_rot_acc_x; s.imu_rot_acc_y = l.imu_rot_acc_y; s.imu_rot_acc_z = l.imu_rot_acc_z;
   s.uplinkBadMessagePercentage = uplinkBadMessagePercentage;      // 88
@@ -1936,9 +2037,9 @@ bool decodeIntoLemonTelemetryForUpload(uint8_t* msg, const uint16_t length, stru
   l.gps_knots = ((float)decode_uint16(msg)) / 10.0;        // 44
 
   l.downlink_send_duration = decode_uint32(msg);
-  l.uplink_latency = decode_uint32(msg);
+  l.uplink_preamble_latency = decode_uint32(msg);
   
-  l.imu_gyro_z = decode_float(msg);
+  l.uplink_rx_latency = decode_uint32(msg);
   l.imu_lin_acc_x = decode_float(msg);
   l.imu_lin_acc_y = decode_float(msg);
   l.imu_lin_acc_z = decode_float(msg);
@@ -2550,7 +2651,7 @@ void buildUplinkTelemetryMessageV6a(char* payload, const struct MakoUplinkTeleme
           "\"mako_imu_rot_acc_x\":%f,\"mako_imu_rot_acc_y\":%f,\"mako_imu_rot_acc_z\":%f,"
           "\"mako_rx_good_checksum_msgs\":%hu,"
 
-          "\"downlink_send_duration\":%lu,\"uplink_latency\":%lu,\"lemon_imu_gyro_z\":%f,"
+          "\"downlink_send_duration\":%lu,\"uplink_preamble_latency\":%lu,\"uplink_rx_latency\":%lu,"
           "\"lemon_imu_lin_acc_x\":%f,\"lemon_imu_lin_acc_y\":%f,\"lemon_imu_lin_acc_z\":%f,"
           "\"lemon_imu_rot_acc_x\":%f,\"lemon_imu_rot_acc_y\":%f,\"lemon_imu_rot_acc_z\":%f,"
           "\"uplink_bad_percentage\":%.1f,"
@@ -2595,8 +2696,8 @@ void buildUplinkTelemetryMessageV6a(char* payload, const struct MakoUplinkTeleme
           m.imu_rot_acc_x, m.imu_rot_acc_y, m.imu_rot_acc_z,
           m.good_checksum_msgs,
           l.downlink_send_duration,
-          l.uplink_latency,    
-          l.imu_gyro_z,
+          l.uplink_preamble_latency,    
+          l.uplink_rx_latency,
           l.imu_lin_acc_x, l.imu_lin_acc_y, l.imu_lin_acc_z,
           l.imu_rot_acc_x, l.imu_rot_acc_y, l.imu_rot_acc_z,
           l.uplinkBadMessagePercentage,
@@ -2657,8 +2758,8 @@ enum e_q_upload_status uploadTelemetryToPrivateMQTT(MakoUplinkTelemetryForJson* 
         {
           toggleRedLED();
           uploadStatus = Q_SUCCESS_SEND;
-          if (writeLogToSerial)
-            USB_SERIAL.printf("PrivateMQTT Client sent message %s\n", mqtt_payload);
+//          if (writeLogToSerial)
+  //          USB_SERIAL.printf("PrivateMQTT Client sent message %s\n", mqtt_payload);
           privateMQTTUploadCount++;
         }
         else
