@@ -92,6 +92,8 @@ const uint32_t maxTimeBeforeAlertNoGPSByte = 2000;
 uint32_t timeNextGoodFixExpectedBy = 0;
 uint32_t timeNextGPSByteExpectedBy = 0;
 
+enum e_user_action{NO_USER_ACTION=0x0000, HIGHLIGHT_USER_ACTION=0x0001,RECORD_BREADCRUMB_TRAIL_USER_ACTION=0x0002,LEAK_DETECTED_USER_ACTION=0x0004};
+
 #ifdef ENABLE_TELEGRAM_BOT_AT_COMPILE_TIME
 #include <WiFiClientSecure.h>
 #include <UniversalTelegramBot.h>
@@ -1458,9 +1460,13 @@ bool doesHeadCommitRequireForce(BlockHeader& block)
   MakoUplinkTelemetryForJson makoJSON;
   decodeMakoUplinkMessageV5a(makoPayloadBuffer, makoJSON, preventGlobalUpdate);
 
-  if (makoJSON.user_action & 0x01)
+enum e_user_action{NO_USER_ACTION=0x0000, HIGHLIGHT_USER_ACTION=0x0001,RECORD_BREADCRUMB_TRAIL_USER_ACTION=0x0002,LEAK_DETECTED_USER_ACTION=0x0004};
+
+  if (makoJSON.user_action & HIGHLIGHT_USER_ACTION ||                 // PIN Record Activated
+      makoJSON.user_action & RECORD_BREADCRUMB_TRAIL_USER_ACTION ||   // Track Record Activated
+      makoJSON.user_action & LEAK_DETECTED_USER_ACTION)               // Leak Detected in Mako
   {
-    // highlight action - requires forced head commit.
+    // highlight action - requires forced head commit to upload every message.
     forceHeadCommit = true;
   }
   
@@ -2062,7 +2068,7 @@ bool decodeIntoLemonTelemetryForUpload(uint8_t* msg, const uint16_t length, stru
 
 void checkMakoJSONForAlarms(struct MakoUplinkTelemetryForJson& m)
 {
-  if (m.user_action & 0x0004)
+  if (m.user_action & LEAK_DETECTED_USER_ACTION)
   {
       makoReportsLeak = true;
   }
