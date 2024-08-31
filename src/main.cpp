@@ -62,8 +62,8 @@ const int NEOPIXELS_BAUD_RATE = 9600;
 #endif
 
 #define GOPRO_SERIAL Serial1
-bool enableReadUplinkComms = false;
-bool enableGPSRead = false;
+bool enableReadUplinkComms = true;
+bool enableGPSRead = true;
 bool enableAllUplinkMessageIntegrityChecks = true;
 bool enableConnectToPrivateMQTT = true;
 bool enableUploadToPrivateMQTT = true;
