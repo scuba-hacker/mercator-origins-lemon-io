@@ -189,7 +189,7 @@ const char STATS_HTML[] = R"rawliteral(
             </div>
        </div>
 
-       <iframe src=\"/webserial\" width=\"1000\" height=\"1000\" frameborder=\"0\"></iframe>
+       <iframe src="/webserial" width="1000" height="1000" frameborder="0"></iframe>
 
        <script>
 

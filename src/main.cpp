@@ -47,7 +47,9 @@ const int SCREEN_LENGTH = 240;
 const int SCREEN_WIDTH = 135;
 
 const int GPS_BAUD_RATE = 9600;
-const int UPLINK_BAUD_RATE = 9600;
+ const int UPLINK_BAUD_RATE = 9600;     
+// const int UPLINK_BAUD_RATE = 19200;  // max baudrate for mako Tx due to mako phototransistor being 15 uS rise time, Lemon limited to 19200 as a result.
+// const int UPLINK_BAUD_RATE = 460800; // max baud rate for Lemon Tx on GPIO pin
 const int NEOPIXELS_BAUD_RATE = 9600;
 
 // make sure this is disabled if writeLogToSerial is false
@@ -60,17 +62,17 @@ const int NEOPIXELS_BAUD_RATE = 9600;
 #endif
 
 #define GOPRO_SERIAL Serial1
-bool enableReadUplinkComms = true;
-bool enableGPSRead = true;
+bool enableReadUplinkComms = false;
+bool enableGPSRead = false;
 bool enableAllUplinkMessageIntegrityChecks = true;
-bool enableConnectToPrivateMQTT = true;
-bool enableUploadToPrivateMQTT = true;
+bool enableConnectToPrivateMQTT = false;
+bool enableUploadToPrivateMQTT = false;
 const bool enableIMUSensor = false;
 const bool enableOTAServer = true;          // over the air updates
 const bool enableTelegram = false;          // requires 35KB heap to send message (open/close secure connection)
 
 bool writeLogToSerial = false;
-const bool writeTelemetryLogToSerial = false; // writeLogToSerial must also be true
+bool writeTelemetryLogToSerial = false; // writeLogToSerial must also be true
 
 const bool enableConnectToTwitter = false;
 const bool enableConnectToSMTP = false;
@@ -795,7 +797,7 @@ void toggleRedLED()
 
 bool haltAllProcessingDuringOTAUpload = false;
 
-void disableFeaturesForOTA(bool screenToRed=true)
+void disableFeaturesForOTA()
 {
   enableConnectToPrivateMQTT = false;
   enableUploadToPrivateMQTT = false;
@@ -803,9 +805,16 @@ void disableFeaturesForOTA(bool screenToRed=true)
   processUplinkMessage = false;
   enableAllUplinkMessageIntegrityChecks = false;
   enableGPSRead = false;
-  if (screenToRed)
-    M5.Lcd.fillScreen(TFT_RED);
+  writeLogToSerial = false;
+  writeTelemetryLogToSerial = false;
 
+  gps_serial.end();
+  GOPRO_SERIAL.end();
+  neopixels_serial.end();
+
+  localMQTT.disconnect();
+  remoteMQTT.disconnect();
+  
   redLEDStatus = LOW;
   digitalWrite(RED_LED_GPIO, redLEDStatus);  // turn on red led
 
@@ -820,8 +829,10 @@ void disableFeaturesForOTA(bool screenToRed=true)
 
   telemetryPipeline.teardown();
 
-  ws.closeAll();          // close all websocket connections for test page
-  WebSerial.closeAll();   // close all websocket connetions for WebSerial
+      #ifdef USE_WEBSERIAL
+        ws.closeAll();          // close all websocket connections for test page
+        WebSerial.closeAll();   // close all websocket connetions for WebSerial
+      #endif
 }
 
 TaskHandle_t mainTaskHandle = nullptr;
@@ -829,7 +840,7 @@ BaseType_t mainTaskCoreId = 0;
 
 void uploadOTABeginCallback(AsyncElegantOtaClass* originator)
 {
-  disableFeaturesForOTA(false);   // prevent LCD call due to separate thread calling this
+  disableFeaturesForOTA();
 }
 
 void setup()
@@ -1069,9 +1080,8 @@ void loop()
   shutdownIfUSBPowerOff();
 
   if (haltAllProcessingDuringOTAUpload)
-  {
-    delay(500);
-    dumpHeapUsage("Halted=true");
+  {  
+    delay(100);
     toggleRedLED();
     return;
   }
@@ -2570,14 +2580,16 @@ bool setupOTAWebServer(const char* _ssid, const char* _password, const char* lab
       AsyncElegantOTA.setUploadBeginCallback(uploadOTABeginCallback);
       AsyncElegantOTA.begin(&asyncWebServer);    // Start AsyncElegantOTA
 
-      static bool webSerialInitialised = false;
 
-      if (!webSerialInitialised)
-      {
-        WebSerial.begin(&asyncWebServer);
-        WebSerial.msgCallback(webSerialReceiveMessage);
-        webSerialInitialised = true;
-      }
+      #ifdef USE_WEBSERIAL
+        static bool webSerialInitialised = false;
+        if (!webSerialInitialised)
+        {
+          WebSerial.begin(&asyncWebServer);
+          WebSerial.msgCallback(webSerialReceiveMessage);
+          webSerialInitialised = true;
+        }
+      #endif
 
       if (writeLogToSerial)
         USB_SERIAL.println("setupOTAWebServer: calling asyncWebServer.begin");
