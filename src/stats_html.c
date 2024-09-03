@@ -87,6 +87,7 @@ const char STATS_HTML[] = R"rawliteral(
            <h1>LEMON STATISTICS</h1>
        </div>
        <div class="content">
+           <button class="button button-blue" id="mapButton">Map</button>
            <button class="button button-green" id="updateButton">Update</button>
            <button class="button button-red" id="rebootButton">Reboot</button>
            <div class="card-grid">
@@ -270,6 +271,14 @@ const char STATS_HTML[] = R"rawliteral(
        window.location.href = "/update";
    }
 
+   // Function to handle update button click
+   function handleMapButtonClick() {
+       window.location.href = "/map";
+   }
+
+   // Attach event listener to the update button
+   document.getElementById("mapButton").addEventListener("click", handleMapButtonClick);
+
    // Attach event listener to the update button
    document.getElementById("updateButton").addEventListener("click", handleUpdateButtonClick);
 
@@ -296,6 +305,14 @@ const char STATS_HTML[] = R"rawliteral(
        switch(event.key) {
            case 'u':
                handleUpdateButtonClick();
+               break;
+       }
+   }
+
+  function handleKeyDown(event) {
+       switch(event.key) {
+           case 'm':
+               handleMapButtonClick();
                break;
        }
    }

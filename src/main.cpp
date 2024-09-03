@@ -47,9 +47,9 @@ const int SCREEN_LENGTH = 240;
 const int SCREEN_WIDTH = 135;
 
 const int GPS_BAUD_RATE = 9600;
- const int UPLINK_BAUD_RATE = 9600;     
+// const int UPLINK_BAUD_RATE = 9600;     
 // const int UPLINK_BAUD_RATE = 19200;  // max baudrate for mako Tx due to mako phototransistor being 15 uS rise time, Lemon limited to 19200 as a result.
-// const int UPLINK_BAUD_RATE = 460800; // max baud rate for Lemon Tx on GPIO pin
+const int UPLINK_BAUD_RATE = 9600; // max baud rate for Lemon Tx on GPIO pin
 const int NEOPIXELS_BAUD_RATE = 9600;
 
 // make sure this is disabled if writeLogToSerial is false
@@ -288,6 +288,9 @@ long milliSecondsToWaitForShutDown = 500;
 
 extern const uint8_t STATS_HTML[];
 extern const uint32_t STATS_HTML_SIZE;
+
+extern const uint8_t MAP_HTML[];
+extern const uint32_t MAP_HTML_SIZE;
 
 void shutdownIfUSBPowerOff();
 void toggleOTAActive();
@@ -2553,6 +2556,12 @@ bool setupOTAWebServer(const char* _ssid, const char* _password, const char* lab
       asyncWebServer.on("/stats", HTTP_GET, [](AsyncWebServerRequest * request) 
       {
           AsyncWebServerResponse *response = request->beginResponse_P(200, "text/html", STATS_HTML, STATS_HTML_SIZE); 
+          request->send(response);
+      });
+
+      asyncWebServer.on("/map", HTTP_GET, [](AsyncWebServerRequest * request)
+      {
+          AsyncWebServerResponse *response = request->beginResponse_P(200, "text/html", MAP_HTML, MAP_HTML_SIZE); 
           request->send(response);
       });
     
