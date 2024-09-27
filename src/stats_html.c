@@ -50,6 +50,14 @@ const char STATS_HTML[] = R"rawliteral(
            font-size: 1.2rem;
            color: #1282A2;
        }
+       /* Styling for the drop-down */
+       select {
+           padding: 10px;
+           font-size: 18px;
+           border-radius: 5px;
+           margin: 10px;
+           border: 1px solid #ccc;
+       }
        .button {
            display: inline-block;
            padding: 10px 20px;
@@ -90,6 +98,15 @@ const char STATS_HTML[] = R"rawliteral(
            <button class="button button-blue" id="mapButton">Map</button>
            <button class="button button-green" id="updateButton">Update</button>
            <button class="button button-red" id="rebootButton">Reboot</button>
+
+            <br><br>
+
+          <select id="sortedWaypointsDropdown">
+               <!-- Options will be populated dynamically -->
+           </select>
+
+            <button class="button button-green" id="showOnMapButton">Show On Map</button>
+
            <div class="card-grid">
                <div class="card">
                    <p class="card-title">Fixes</p>
@@ -261,10 +278,33 @@ const char STATS_HTML[] = R"rawliteral(
            body: 'button=' + encodeURIComponent(buttonId)
        });
    }
+
    // Function to handle button clicks
-   function handleButtonClick(buttonId) {
-       sendPostRequest(window.location.href, buttonId);
+    function handleButtonClick(buttonId) {
+    if (buttonId == "showOnMapButton")
+        sendSelectionPostRequest(window.location.href, buttonId);
+    else
+        sendPostRequest(window.location.href, buttonId);
    }
+
+   function sendSelectionPostRequest(url, buttonId) {
+    activateButton(buttonId);
+
+    // Get the selected choice from the drop-down
+    var dropdown = document.getElementById("sortedWaypointsDropdown");
+    var selectedChoice = dropdown.options[dropdown.selectedIndex].value;
+
+    // Send the POST request with both button and choice
+    fetch(url, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/x-www-form-urlencoded'
+        },
+        body: 'button=' + encodeURIComponent(buttonId) + '&choice=' + encodeURIComponent(selectedChoice)
+    });
+   }
+
+
 
    // Function to handle update button click
    function handleUpdateButtonClick() {
@@ -287,6 +327,117 @@ const char STATS_HTML[] = R"rawliteral(
    });
 
 
+   document.getElementById("showOnMapButton").addEventListener("click", function() {
+        handleButtonClick("showOnMapButton");
+    });
+
+   // Array of strings to populate the drop-down
+   // from navigation array copy/paste into temp.txt
+
+   var waypoints = [   
+   ' < No Waypoint Shown >',
+    'Canoe',
+    'The Sub',
+    'Scimitar Car 5.5m',
+    'Spitfire Car 6m',
+    'Lightning Boat 5.5m',
+    'Caves Centre',
+    'Lion Entrance @ Caves',
+    'Red Isis Bike @ Caves',
+    'Blue Raleigh Bike @ Caves',
+    'Cave PC Laptop',
+    'Cargo 2.5m',
+    'The Hole 18m',
+    'Dance Platform 6m',
+    'Bus 2m',
+    'Confined Area',
+    'Commer Van 6m',
+    'White Boat 7m',
+    'Cargo 8m',
+    'Cargo Rusty 8m',
+    'Portacabin 8m',
+    'Shallow Platform 2m',
+    'Milk Float 6.5m',
+    'Chicken Hutch Boat 6.5m',
+    'Skittles Sweet Bowl 5.5m',
+    'Sticky Up Boat 5m',
+    'Lady of Kent Search Light 5m',
+    'Traffic Lights 7m',
+    'Half Die Hard Taxi 8m',
+    'Boat In A Hole 7m',
+    'Iron Fish 2m',
+    'Wreck Site 6m',
+    'Dive/Spike Boat 7m',
+    'White Day boat by platform 6m',
+    'Port Holes Boat 4.5m',
+    'Dragon Boat 7.5m',
+    'Dive Bell 4m',
+    'Lifeboat 6.5m',
+    'London Black Cab 7m',
+    'RIB Boat 6m',
+    'Tin/Cabin Boat 7m',
+    'Thorpe Orange Boat 5.5m',
+    'VW Camper Van and Seahorse 5.5m',
+    'Listing Sharon 7.5m',
+    'Plane 6m',
+    'Holey Ship 4.5m',
+    'Claymore 6.5m',
+    'Swim Through - no crates 6m',
+    'Swim Through - mid 6m',
+    'Swim Through - crates 6m',
+    'Orca Van 5.5m',
+    'Dinghy Boat',
+    'Quarry Machine in Reeds',
+    'Metal Grated Box',
+    '4 crates in a line',
+    'Lone crate',
+    'Collapsed Metal',
+    'Boat with Chain Links',
+    'Pot in a box',
+    'Seahorse Mid-Water',
+    'Headless Nick',
+    'Headless Tom Reeds',
+    'Cement Mixer',
+    'Tyre',
+    'Roadworks Sign',
+    'Fireworks Launcher',
+    '2 Buried Boats in Reeds',
+    'Half Buried Solo Boat',
+    'Half Buried Bike',
+    'Desk with Keyboard',
+    'La Mouette Boat',
+    'Memorial Stone - Kit 7.5m',
+    'Fruit Machine 5.5m',
+    'Lone Crate 7m',
+    '? near plane 6m',
+    'Cotton Reel 3m',
+    'Dumpy Cylinder 6m',
+    'Disused Pontoon',
+    'Cafe Jetty',
+    'Mid Jetty',
+    'Old Slipway'
+    ];
+
+   // Sort the array alphabetically
+   waypoints.sort();
+
+     // Get the drop-down element
+   var dropdown = document.getElementById("sortedWaypointsDropdown");
+
+   // Function to dynamically populate the drop-down
+   function populateDropdown(optionsArray) {
+       // Loop through the array
+       optionsArray.forEach(function(item) {
+           // Create a new option element
+           var option = document.createElement("option");
+           option.text = item;
+           // Add the option to the drop-down
+           dropdown.add(option);
+       });
+   }
+
+   // Populate the drop-down on page load
+   populateDropdown(waypoints);
    
    // Function to send a GET request
    function sendGetRequest(url) {

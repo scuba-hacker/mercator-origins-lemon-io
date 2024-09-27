@@ -40,6 +40,10 @@ JsonDocument readings;
 
 #include "TinyGPSPlus.h"
 #include <TelemetryPipeline.h>
+#include <NavigationWaypoints.h>
+
+String showOnMapRequest;
+int showOnMapRequestIndex = -1;
 
 TelemetryPipeline telemetryPipeline;
 
@@ -988,6 +992,12 @@ void setup()
 
 char* customiseSentence(char* sentence)
 {  
+  if (showOnMapRequestIndex >= 0)
+  {
+    // spoof GPS to be reporting lat/long at selected feature
+
+  }
+
   // A temporary hack to infiltrate internet upload status into
   // the byte that is normally fixed at M representing Metres units
   // for difference between sea level and geoid. Have to also correct checksum.
@@ -1345,6 +1355,7 @@ void loop()
       int16_t yCurs = M5.Lcd.getCursorY();
 
       M5.Lcd.printf("     %-15s", IPBuffer); //(WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() : "No WiFi         "));
+//      M5.Lcd.printf("     %i %-15s", showOnMapRequestIndex, showOnMapRequest.c_str()); //(WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() : "No WiFi         "));
 
       M5.Lcd.setCursor(xCurs,yCurs);
       M5.Lcd.setTextColor(TFT_MAGENTA, TFT_BLACK);
@@ -2564,15 +2575,42 @@ bool setupOTAWebServer(const char* _ssid, const char* _password, const char* lab
           AsyncWebServerResponse *response = request->beginResponse_P(200, "text/html", MAP_HTML, MAP_HTML_SIZE); 
           request->send(response);
       });
-    
+          
       asyncWebServer.on("/stats", HTTP_POST, [&](AsyncWebServerRequest *request)
       {
-              AsyncWebParameter* p = request->getParam("button",true,false);
-              if (p)
+              AsyncWebParameter* pButton = request->getParam("button",true,false);
+
+              if (pButton)
               {
                   request->send(200, "text/html", "ok");
-                  if (p->value() == String("rebootButton"))
+                  if (pButton->value() == String("rebootButton"))
+                  {
                     esp_restart();
+                  }
+                  else if (pButton->value() == String("showOnMapButton"))
+                  {
+                    AsyncWebParameter* pChoice = request->getParam("choice",true,false);
+                    if (pChoice)
+                    {
+                      showOnMapRequest=pChoice->value();
+
+                      showOnMapRequestIndex = -1;
+
+                      String searchWaypoint;
+                      for (int i=0; i<WraysburyWaypoints::getWaypointsCount(); i++)
+                      {
+                        searchWaypoint=WraysburyWaypoints::waypoints[i]._label;
+                        if (searchWaypoint.indexOf(showOnMapRequest) != -1)
+                        {
+                          showOnMapRequestIndex = i;
+                          break;
+                        }
+                      }
+                      
+                      if (waypointIndex == -1)
+                        showOnMapRequest = "";
+                    }
+                  }
               }
               else
               {
