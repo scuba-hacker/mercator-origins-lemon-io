@@ -95,7 +95,8 @@ const char STATS_HTML[] = R"rawliteral(
            <h1>LEMON STATISTICS</h1>
        </div>
        <div class="content">
-           <button class="button button-blue" id="mapButton">Map</button>
+           <button class="button button-blue" id="bluepadMapButton">Bluepad Map</button>
+           <button class="button button-blue" id="mapButton">Local Map</button>
            <button class="button button-green" id="updateButton">Update</button>
            <button class="button button-red" id="rebootButton">Reboot</button>
 
@@ -105,7 +106,15 @@ const char STATS_HTML[] = R"rawliteral(
                <!-- Options will be populated dynamically -->
            </select>
 
-            <button class="button button-green" id="showOnMapButton">Show On Map</button>
+            <button class="button button-green" id="showOnMapButton">Override Location</button>
+
+            <br><br>
+
+          <select id="sortedWaypointsDropdown2">
+               <!-- Options will be populated dynamically -->
+           </select>
+
+            <button class="button button-blue" id="setTargetButton">Set Target Feature</button>
 
            <div class="card-grid">
                <div class="card">
@@ -284,27 +293,45 @@ const char STATS_HTML[] = R"rawliteral(
     if (buttonId == "showOnMapButton")
         sendSelectionPostRequest(window.location.href, buttonId);
     else
-        sendPostRequest(window.location.href, buttonId);
+        if (buttonId == "setTargetButton")
+            sendSetTargetSelectionPostRequest(window.location.href, buttonId);
+        else
+            sendPostRequest(window.location.href, buttonId);
    }
 
    function sendSelectionPostRequest(url, buttonId) {
     activateButton(buttonId);
 
-    // Get the selected choice from the drop-down
+    // Get the selected feature to show from the drop-down
     var dropdown = document.getElementById("sortedWaypointsDropdown");
-    var selectedChoice = dropdown.options[dropdown.selectedIndex].value;
+    var selectedFeature = dropdown.options[dropdown.selectedIndex].value;
 
-    // Send the POST request with both button and choice
+    // Send the POST request with both button and feature choice
     fetch(url, {
         method: 'POST',
         headers: {
             'Content-Type': 'application/x-www-form-urlencoded'
         },
-        body: 'button=' + encodeURIComponent(buttonId) + '&choice=' + encodeURIComponent(selectedChoice)
+        body: 'button=' + encodeURIComponent(buttonId) + '&choice=' + encodeURIComponent(selectedFeature)
     });
    }
 
+   function sendSetTargetSelectionPostRequest(url, buttonId) {
+    activateButton(buttonId);
 
+    // Get the selected target from the drop-down
+    var dropdown = document.getElementById("sortedWaypointsDropdown2");
+    var selectedTarget = dropdown.options[dropdown.selectedIndex].value;
+
+    // Send the POST request with both button and target
+    fetch(url, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/x-www-form-urlencoded'
+        },
+        body: 'button=' + encodeURIComponent(buttonId) + '&target=' + encodeURIComponent(selectedTarget)
+    });
+   }
 
    // Function to handle update button click
    function handleUpdateButtonClick() {
@@ -316,8 +343,16 @@ const char STATS_HTML[] = R"rawliteral(
        window.location.href = "/map";
    }
 
+   // Function to handle update button click
+   function handleBluepadMapButtonClick() {
+       window.location.href = "https://www.bluepad.co.uk";
+   }
+
    // Attach event listener to the update button
    document.getElementById("mapButton").addEventListener("click", handleMapButtonClick);
+
+   // Attach event listener to the update button
+   document.getElementById("bluepadMapButton").addEventListener("click", handleBluepadMapButtonClick);
 
    // Attach event listener to the update button
    document.getElementById("updateButton").addEventListener("click", handleUpdateButtonClick);
@@ -326,9 +361,12 @@ const char STATS_HTML[] = R"rawliteral(
        handleButtonClick("rebootButton");
    });
 
-
    document.getElementById("showOnMapButton").addEventListener("click", function() {
         handleButtonClick("showOnMapButton");
+    });
+
+    document.getElementById("setTargetButton").addEventListener("click", function() {
+        handleButtonClick("setTargetButton");
     });
 
    // Array of strings to populate the drop-down
@@ -422,17 +460,21 @@ const char STATS_HTML[] = R"rawliteral(
    waypoints.sort();
 
      // Get the drop-down element
-   var dropdown = document.getElementById("sortedWaypointsDropdown");
+   var dropdown1 = document.getElementById("sortedWaypointsDropdown");
+   var dropdown2 = document.getElementById("sortedWaypointsDropdown2");
 
    // Function to dynamically populate the drop-down
    function populateDropdown(optionsArray) {
        // Loop through the array
        optionsArray.forEach(function(item) {
-           // Create a new option element
+
            var option = document.createElement("option");
            option.text = item;
-           // Add the option to the drop-down
-           dropdown.add(option);
+           dropdown1.add(option);
+
+           var option2 = document.createElement("option");
+           option2.text = item;
+           dropdown2.add(option2);
        });
    }
 
@@ -457,11 +499,6 @@ const char STATS_HTML[] = R"rawliteral(
            case 'u':
                handleUpdateButtonClick();
                break;
-       }
-   }
-
-  function handleKeyDown(event) {
-       switch(event.key) {
            case 'm':
                handleMapButtonClick();
                break;

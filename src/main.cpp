@@ -45,6 +45,9 @@ JsonDocument readings;
 String showOnMapRequest;
 int showOnMapRequestIndex = -1;
 
+String setTargetRequest;
+int setTargetRequestIndex = -1;
+
 TelemetryPipeline telemetryPipeline;
 
 const int SCREEN_LENGTH = 240;
@@ -992,28 +995,139 @@ void setup()
 
 char* customiseSentence(char* sentence)
 {  
-  if (showOnMapRequestIndex >= 0)
-  {
-    // spoof GPS to be reporting lat/long at selected feature
+  const int minimumSentenceLength = 48;
 
+  int startSentenceIndex = 0;
+  char* startSentence = sentence;
+  for (int i=0; i < minimumSentenceLength; i++)
+  {
+    if (sentence[i] == '$')
+    {
+      startSentence = sentence + i;
+      startSentenceIndex = i;
+      break;
+    }
   }
 
-  // A temporary hack to infiltrate internet upload status into
-  // the byte that is normally fixed at M representing Metres units
-  // for difference between sea level and geoid. Have to also correct checksum.
-  const uint32_t padding = 8;
-  char* next=sentence;
-  char* end=sentence+strlen(sentence)-padding;
+  if (writeLogToSerial)
+  {
+    USB_SERIAL.printf("0. startSentence index = %i\n",startSentenceIndex);
+  }
+
+  const bool isGNGGA = ((strncmp(startSentence,"$GPGGA",6) == 0 ||
+                         strncmp(startSentence,"$GNGGA",6) == 0));
+
+  const bool isGNRMC = ((strncmp(startSentence,"$GPRMC",6) == 0 ||
+                         strncmp(startSentence,"$GNRMC",6) == 0));
+
+  bool overrideLocation = false;
+
+  if (writeLogToSerial)
+  {
+    USB_SERIAL.println("0. checking for override location");
+    USB_SERIAL.printf("0.0 showOnMapRequestIndex=%i isGNGAA=%i isGNRMC=%i strlen(startSentence)=%zu\n",showOnMapRequestIndex, (isGNGGA ? 1 : 0),(isGNRMC ? 1 : 0), strnlen(startSentence,minimumSentenceLength));
+    USB_SERIAL.printf("0.1 %s\n",startSentence);
+  }
+
+  if (  showOnMapRequestIndex >= 0 && 
+        (isGNGGA || isGNRMC) && 
+        strnlen(startSentence,minimumSentenceLength) >= minimumSentenceLength)
+  {
+    if (writeLogToSerial)
+      USB_SERIAL.println("1. Entered override location");
+    
+    overrideLocation = true;
+    // spoof GPS to be reporting lat/long at selected feature
+    double longOverride = WraysburyWaypoints::waypoints[showOnMapRequestIndex]._long;
+    double latOverride = WraysburyWaypoints::waypoints[showOnMapRequestIndex]._lat;
+
+    char directionLong = 'E';
+    char directionLat = 'N';
   
-  char override = '\0';
+    if (longOverride < 0.0)
+    {
+      directionLong = 'W';
+      longOverride = -longOverride;
+    }
+
+    if (latOverride < 0.0)
+    {
+      directionLat = 'S';
+      latOverride = -latOverride;
+    }
+
+    int longDegrees = (int)longOverride;
+    double longMinutesActual = (longOverride - (double)longDegrees) * 60.0;
+    int longMinutes = longMinutesActual;
+    int longMinuteFraction = (longMinutesActual - longMinutes) * 100000.0;
+
+    int latDegrees = (int)latOverride;
+    double latMinutesActual = (latOverride - (double)latDegrees) * 60.0;
+    int latMinutes = latMinutesActual;
+    int latMinuteFraction = (latMinutesActual - latMinutes) * 100000.0;
+
+    const int lengthNMEALocation = 24;
+    char newLocation[100];
+  
+    snprintf(newLocation, sizeof(newLocation), "%02d%02d.%05d,%c,%03d%02d.%05d,%c",
+                          latDegrees,latMinutes,latMinuteFraction, directionLat, 
+                          longDegrees,longMinutes, longMinuteFraction, directionLong);
+
+    if (writeLogToSerial)
+    {
+        USB_SERIAL.printf("1.1 %.60s    <-- new location\n", newLocation);
+    }
+
+    int validDataRMCOffset = 16 + startSentenceIndex;
+    char validDataGoodFixOverride = 'A';
+    int copyOffset = -1;
+
+    if (isGNGGA)
+    {
+      copyOffset = 17 + startSentenceIndex;
+      validDataRMCOffset = -1;
+    }
+    else if (isGNRMC)
+    {
+      copyOffset = 19 + startSentenceIndex;
+      // always assume valid fix for a location override
+      startSentence[validDataRMCOffset] = validDataGoodFixOverride;
+    }
+
+    if (copyOffset >= 0)
+    {
+      if (writeLogToSerial)
+      {
+        USB_SERIAL.println("2. Override Location");
+        USB_SERIAL.printf("3.0 %s    <-- Old Sentence\n", startSentence);
+      }
+
+      memcpy(sentence+copyOffset,newLocation,lengthNMEALocation);
+ 
+      if (writeLogToSerial)
+        USB_SERIAL.printf("4.0 %s    <-- New Location Sentence\n", startSentence);
+    }
+    else if (writeLogToSerial)
+      USB_SERIAL.println("2. Not Overriding Location");
+  }
+  
+  char overrideForNoInternetConnection = '\0';
 
   if (telemetryPipeline.getPipelineLength() > 2)
   {
-     override = 'N';
+     overrideForNoInternetConnection = 'N';
   }
 
-  if (override)
+  if (overrideForNoInternetConnection && isGNGGA)
   {
+    // Infiltrate internet upload status into
+    // the byte that is normally fixed at M representing Metres units
+    // for difference between sea level and geoid.
+
+    const uint32_t padding = 8;
+    char* next=sentence;
+    char* end=sentence+strlen(sentence)-padding;
+
     while (*next++ != '$' && next < end);
 
     if (next == end)
@@ -1038,9 +1152,9 @@ char* customiseSentence(char* sentence)
             // next char change to be indicative of upload to internet status
             if (telemetryPipeline.getPipelineLength() > 2)
             {
-              // overwrite the character in the sentence which is normally 'M'
+              // overwrite the character in the sentence which is normally 'M' for Unit of altitude
               priorVal = *next;
-              newVal = *next = override;
+              newVal = *next = overrideForNoInternetConnection;
             }
             else
             {
@@ -1048,34 +1162,83 @@ char* customiseSentence(char* sentence)
             }
           }
         }
+      }
+    }
+  }
 
-        // correct the checksum by xoring itself with old value and new value
-        // and storing back in same place in sentence.
-        if (*next == '*')
+  bool overrideForTarget = false;
+
+  if (setTargetRequestIndex >= 0 && isGNGGA)
+  {
+    overrideForTarget = true;
+    // Infiltrate internet upload status into
+    // the byte that is normally fixed at M representing Metres units
+    // for difference between sea level and geoid.
+
+    const uint32_t padding = 8;
+    char* next=sentence;
+    char* end=sentence+strlen(sentence)-padding;
+
+    while (*next++ != '$' && next < end);
+
+    if (next == end)
+      return sentence;
+  
+    next+=2;
+  
+    // sentences: GPGGA or GNGGA - search for 14th comma
+    if (*next++ == 'G' && *next++ == 'G' && *next++ == 'A')
+    {
+      uint8_t commas=0;
+      while (*next && next < end)
+      {
+        if (*next++ == ',')
         {
-          next++;
-          
-          // following two bytes are checksum in hex
-          uint8_t checksum_byte_1 = (uint8_t)(*next++);
-          uint8_t checksum_byte_2 = (uint8_t)(*next--);
+          commas++;
   
-          uint8_t checksum = (checksum_byte_1 >= 'A' ? checksum_byte_1 - 'A' + 10 : checksum_byte_1) * 16;
-          checksum += (checksum_byte_2 >= 'A' ? checksum_byte_2 - 'A' + 10 : checksum_byte_2);
-  
-          checksum = checksum ^ priorVal ^ newVal;
-  
-          uint8_t msn = ((checksum & 0xF0) >> 4);
-          uint8_t lsn = ((checksum & 0x0F));
-  
-          *next++ = (msn > 9 ? 'A' + msn - 10 : '0' + msn);
-          *next++ = (lsn > 9 ? 'A' + lsn - 10 : '0' + lsn);
+          if (commas == 10)
+          {
+            // overwrite the character in the sentence which is normally 'M' for Unit of geoid separation
+            *next = setTargetRequestIndex+33; // make sure visible char
+
+            if (*next == 'M')     // exception for target mapping to M as M means no set target
+              *next = -2;
+          }
         }
       }
     }
   }
-  
+
+  // if change has been made, recalculate checksum and populate
+  if (overrideForNoInternetConnection || overrideLocation || overrideForTarget)
+  {
+    unsigned char checksum = 0;
+    // Start after the '$' character
+    char *p = startSentence + 1;
+
+    // XOR each character until '*' or end of string
+    while (*p && *p != '*') {
+        checksum ^= *p;
+        p++;
+    }
+
+    // Find the position of the '*' character (p already points to it after the loop)
+    if (*p == '*') {
+        // Advance pointer by 1 to move past '*'
+        p++;
+        // Update checksum in hex
+        *p++ = "0123456789ABCDEF"[checksum >> 4];  // High nibble
+        *p++ = "0123456789ABCDEF"[checksum & 0x0F]; // Low nibble
+    }
+
+    if (writeLogToSerial)
+      USB_SERIAL.printf("5.0 %s    <-- All updates new  Location Sentence\n", startSentence);
+  }
+
   return sentence;
 }
+
+
 
 uint32_t mainBackColour = TFT_BLACK;
 
@@ -1354,8 +1517,9 @@ void loop()
       int16_t xCurs = M5.Lcd.getCursorX();
       int16_t yCurs = M5.Lcd.getCursorY();
 
-      M5.Lcd.printf("     %-15s", IPBuffer); //(WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() : "No WiFi         "));
+//      M5.Lcd.printf("     %-15s", IPBuffer); //(WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() : "No WiFi         "));
 //      M5.Lcd.printf("     %i %-15s", showOnMapRequestIndex, showOnMapRequest.c_str()); //(WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() : "No WiFi         "));
+      M5.Lcd.printf("     %i %-15s", setTargetRequestIndex, setTargetRequest.c_str()); //(WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() : "No WiFi         "));
 
       M5.Lcd.setCursor(xCurs,yCurs);
       M5.Lcd.setTextColor(TFT_MAGENTA, TFT_BLACK);
@@ -2365,7 +2529,6 @@ void checkForLeak(const char* msg, const uint8_t pin)
   }
 }
 
-
 const char* scanForKnownNetwork() // return first known network found
 {
   const char* network = nullptr;
@@ -2380,7 +2543,7 @@ const char* scanForKnownNetwork() // return first known network found
       // Print SSID and RSSI for each device found
       String SSID = WiFi.SSID(i);
 
-      delay(10);
+//      delay(10);
       
       // Check if the current device starts with the peerSSIDPrefix
       if (strcmp(SSID.c_str(), ssid_1) == 0)
@@ -2606,12 +2769,35 @@ bool setupOTAWebServer(const char* _ssid, const char* _password, const char* lab
                           break;
                         }
                       }
-                      
-                      if (waypointIndex == -1)
+
+                      if (showOnMapRequestIndex == -1)
                         showOnMapRequest = "";
                     }
                   }
-              }
+                  else if (pButton->value() == String("setTargetButton"))
+                  {
+                    AsyncWebParameter* pTarget = request->getParam("target",true,false);
+                    if (pTarget)
+                    {
+                      setTargetRequest=pTarget->value();
+
+                      setTargetRequestIndex = -1;
+
+                      String searchWaypoint;
+                      for (int i=0; i<WraysburyWaypoints::getWaypointsCount(); i++)
+                      {
+                        searchWaypoint=WraysburyWaypoints::waypoints[i]._label;
+                        if (searchWaypoint.indexOf(setTargetRequest) != -1)
+                        {
+                          setTargetRequestIndex = i;
+                          break;
+                        }
+                      }
+
+                      if (setTargetRequestIndex == -1)
+                        setTargetRequest = "";
+                    }
+                  }             }
               else
               {
                 request->send(200, "text/plain", "invalid");
