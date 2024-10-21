@@ -53,10 +53,11 @@ TelemetryPipeline telemetryPipeline;
 const int SCREEN_LENGTH = 240;
 const int SCREEN_WIDTH = 135;
 
-const int GPS_BAUD_RATE = 9600;
+ const int GPS_BAUD_RATE = 9600;
 // const int UPLINK_BAUD_RATE = 9600;     
-// const int UPLINK_BAUD_RATE = 19200;  // max baudrate for mako Tx due to mako phototransistor being 15 uS rise time, Lemon limited to 19200 as a result.
-const int UPLINK_BAUD_RATE = 9600; // max baud rate for Lemon Tx on GPIO pin
+const int UPLINK_BAUD_RATE = 57600;  // 57600 115200 max baudrate for mako Tx due to mako phototransistor being 15 uS rise time, Lemon limited to 19200 as a result.
+
+// const int UPLINK_BAUD_RATE = 9600; // max baud rate for Lemon Tx on GPIO pin
 const int NEOPIXELS_BAUD_RATE = 9600;
 
 // make sure this is disabled if writeLogToSerial is false
@@ -238,9 +239,6 @@ template <typename T> struct vector
   T x, y, z;
 };
 
-const char* preamble_pattern = "MBJAEJ";
-char uplink_preamble_pattern2[] = "MBJMBJMBJMBJMBJMBJMBJMBJMBJMBJMBJMBJMBJMBJMBJMBJMBJMBJAEJ";
-
 uint16_t sideCount = 0, topCount = 0;
 vector<float> magnetometer_vector, accelerometer_vector;
 
@@ -260,9 +258,9 @@ float KBToPrivateMQTT = 0.0;
 float KBFromMako = 0.0;
 
 bool accumulateMissedMessageCount = false;    // start-up
-const uint32_t delayBeforeCountingMissedMessages = 60000; // Allow 60 second start-up
+const uint32_t delayBeforeCountingMissedMessages = 60000; // Allow 60 second start-up before counting lost/missed messages
 
-const uint32_t uplinkMessageLingerPeriodMs = 300;   // max milliseconds to wait for Mako pre-amble to reply
+const uint32_t uplinkMessageLingerPeriodMs = 30;   // max milliseconds to wait for Mako pre-amble to reply
 uint32_t uplinkLingerTimeoutAt = 0;
 uint32_t downlinkSendMessageDurationMicroSeconds = 0;   // Latency processing GPS message and downlink msg send to Mako complete.
 uint32_t preambleReceivedAfterMicroSeconds = 0;         // Latency between start of preamble and end of preamble received from Mako.
@@ -936,8 +934,6 @@ void setup()
   p_primaryButton = &M5.BtnA;
   p_secondButton = &M5.BtnB;
 
-  delay(500);
-
   if (enableOTAServer)
   {
     sendLemonStatus(LC_SEARCH_WIFI);
@@ -979,10 +975,6 @@ void setup()
   {
     localMQTT.begin();
     remoteMQTT.begin();
-    // do any keep alive stuff here 
-    //    qubitro_mqttClient.setConnectionTimeout(qubitro_connection_timeout_ms);
-    //    qubitro_mqttClient.setKeepAliveInterval(qubitro_keep_alive_interval_ms);
-
   }
 
 #ifdef ENABLE_SMTP_AT_COMPILE_TIME
@@ -2749,6 +2741,11 @@ bool setupOTAWebServer(const char* _ssid, const char* _password, const char* lab
                   if (pButton->value() == String("rebootButton"))
                   {
                     esp_restart();
+                  }
+                  else if (pButton->value() == String("clearCountersButton"))
+                  {
+                    uplinkMessageMissingCount = consoleDownlinkMsgCount = privateMQTTUploadCount = 0;
+                    badUplinkMessageCount = badLengthUplinkMsgCount = badChkSumUplinkMsgCount = goodUplinkMessageCount = 0;
                   }
                   else if (pButton->value() == String("showOnMapButton"))
                   {

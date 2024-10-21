@@ -76,6 +76,10 @@ const char STATS_HTML[] = R"rawliteral(
            background-color: #e74c3c;
            color: #fff;
        }
+       .button-amber {
+           background-color: #FFBF00;
+           color: #fff;
+       }
        .button-orange {
            background-color: #e67e22;
            color: #fff;
@@ -99,6 +103,7 @@ const char STATS_HTML[] = R"rawliteral(
            <button class="button button-blue" id="mapButton">Local Map</button>
            <button class="button button-green" id="updateButton">Update</button>
            <button class="button button-red" id="rebootButton">Reboot</button>
+           <button class="button button-amber" id="clearCountersButton">Clear Counters</button>
 
             <br><br>
 
@@ -359,6 +364,10 @@ const char STATS_HTML[] = R"rawliteral(
 
    document.getElementById("rebootButton").addEventListener("click", function() {
        handleButtonClick("rebootButton");
+   });
+
+   document.getElementById("clearCountersButton").addEventListener("click", function() {
+       handleButtonClick("clearCountersButton");
    });
 
    document.getElementById("showOnMapButton").addEventListener("click", function() {
