@@ -33,7 +33,7 @@ AsyncWebSocket ws("/ws");
 const int32_t timeBetweenSendingStatsUpdates = 1100;
 int32_t timeOfNextStatUpdate = 0;
 
-#include <ArduinoJSON.h>
+#include <ArduinoJson.h>
 JsonDocument readings;
 
 #include <WebSerial.h>
