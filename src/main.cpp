@@ -1,64 +1,56 @@
 #include <Arduino.h>
 
-// https://www.hackster.io/pradeeplogu0/real-time-gps-monitoring-with-qubitro-and-m5stickc-a2bc7c
-// https://github.com/mikalhart/TinyGPSPlus/blob/master/README.md
-// http://arduiniana.org/libraries/tinygpsplus/
-
-//possible fix to deepSleep with timer #31 - https://github.com/m5stack/M5StickC-Plus/pull/31
-//Sleep causing unresponsive device #13 https://github.com/m5stack/M5StickC-Plus/issues/13
-//AXP192.cpp SetSleep() is different than the one for M5StickC #1 https://github.com/m5stack/M5StickC-Plus/issues/1
-
-// compilation switches
-
-//#define ENABLE_TWITTER_AT_COMPILE_TIME
-//#define ENABLE_SMTP_AT_COMPILE_TIME
-
-#include <M5StickCPlus.h>
-
 // rename the git file "mercator_secrets_template.c" to the filename below, filling in your wifi credentials etc.
 #include "mercator_secrets.c"
 
+#include <M5StickCPlus.h>
+
 #include <WiFi.h>
-
-#define MERCATOR_ELEGANTOTA_LEMON_BANNER
-#define MERCATOR_OTA_DEVICE_LABEL "LEMON-IO"
-
 #include <Update.h>
 #include <AsyncTCP.h>
 #include <ESPAsyncWebServer.h>
 #include <AsyncElegantOTA.h>
+
+#include <ArduinoJson.h>
+#include <WebSerial.h>
+#include "TinyGPSPlus.h"
+#include <NavigationWaypoints.h>
+#include <TelemetryPipeline.h>
+#define PICOMQTT_MAX_MESSAGE_SIZE 4096
+#include <PicoMQTT.h>
+#include <WiFi.h>
+#include <ESP32Ping.h>
+
+#ifdef ENABLE_TELEGRAM_BOT_AT_COMPILE_TIME
+  #include <WiFiClientSecure.h>
+  #include <UniversalTelegramBot.h>
+  WiFiClientSecure secured_client;
+  UniversalTelegramBot telegramBot(TELEGRAM_BOT_TOKEN, secured_client);
+#endif
+
+// ****** Start Webserver ****** 
+// Async Webserver and websocket for streaming statistics
 AsyncElegantOtaClass AsyncElegantOTA;
 AsyncWebSocket ws("/ws");
 
-const int32_t timeBetweenSendingStatsUpdates = 1100;
+// Override ElegantOTA web page to have the Lemon banner graphic and Lemon-IO device label
+#define MERCATOR_ELEGANTOTA_LEMON_BANNER
+#define MERCATOR_OTA_DEVICE_LABEL "LEMON-IO"
+
+// Duty cycle for sending statistics updates to stats web page
+const int32_t timeBetweenSendingStatsUpdates = 990;
 int32_t timeOfNextStatUpdate = 0;
 
-#include <ArduinoJson.h>
-JsonDocument readings;
-
-#include <WebSerial.h>
-
-#include "TinyGPSPlus.h"
-#include <TelemetryPipeline.h>
-#include <NavigationWaypoints.h>
-
+// Store overriden lat/long and target (testing/diagnostics) set from lemon stats web page
 String showOnMapRequest;
 int showOnMapRequestIndex = -1;
 
 String setTargetRequest;
 int setTargetRequestIndex = -1;
 
-TelemetryPipeline telemetryPipeline;
-
-const int SCREEN_LENGTH = 240;
-const int SCREEN_WIDTH = 135;
-
- const int GPS_BAUD_RATE = 9600;
-// const int UPLINK_BAUD_RATE = 9600;     
-const int UPLINK_BAUD_RATE = 57600;  // 57600 115200 max baudrate for mako Tx due to mako phototransistor being 15 uS rise time, Lemon limited to 19200 as a result.
-
-// const int UPLINK_BAUD_RATE = 9600; // max baud rate for Lemon Tx on GPIO pin
-const int NEOPIXELS_BAUD_RATE = 9600;
+// Json document for sending statistics to the lemon stats web page
+JsonDocument readings;
+// ****** End Webserver ****** 
 
 // make sure this is disabled if writeLogToSerial is false
 //#define USE_WEBSERIAL
@@ -69,7 +61,10 @@ const int NEOPIXELS_BAUD_RATE = 9600;
   #define USB_SERIAL Serial
 #endif
 
-#define GOPRO_SERIAL Serial1
+// START FEATURE ENABLE FLAGS
+bool writeLogToSerial = false;
+bool writeTelemetryLogToSerial = false; // writeLogToSerial must also be true
+
 bool enableReadUplinkComms = true;
 bool enableGPSRead = true;
 bool enableAllUplinkMessageIntegrityChecks = true;
@@ -77,18 +72,35 @@ bool enableConnectToPrivateMQTT = true;
 bool enableUploadToPrivateMQTT = true;
 const bool enableIMUSensor = false;
 const bool enableOTAServer = true;          // over the air updates
-const bool enableTelegram = false;          // requires 35KB heap to send message (open/close secure connection)
 
-bool writeLogToSerial = false;
-bool writeTelemetryLogToSerial = false; // writeLogToSerial must also be true
+//#define ENABLE_TELEGRAM_BOT_AT_COMPILE_TIME
+#ifdef ENABLE_TELEGRAM_BOT_AT_COMPILE_TIME
+  const bool enableTelegram = false;          // requires 35KB heap to send message (open/close secure connection)
+#endif
+// END FEATURE ENABLE FLAGS
 
-const bool enableConnectToTwitter = false;
-const bool enableConnectToSMTP = false;
-uint32_t consoleDownlinkMsgCount = 0;
+// ################## START SERIAL/UART/GPIO CONFIGURATION
+const int GPS_BAUD_RATE = 9600;
+const int UPLINK_BAUD_RATE = 57600;  // 57600 115200 max baudrate for mako Tx due to mako phototransistor being 15 uS rise time, Lemon limited to 19200 as a result.
+const int NEOPIXELS_BAUD_RATE = 9600;
 
-const String ssid_not_connected = "-";
-String ssid_connected = ssid_not_connected;
+#define GOPRO_SERIAL Serial1
 
+const uint8_t GROVE_GPS_RX_PIN = 33;   // only used for test without RS485 cable
+const uint8_t GROVE_GPS_TX_PIN = 32;   // only used for test without RS485 cable
+
+const uint8_t HAT_GPS_TX_PIN = 26;
+const uint8_t HAT_GPS_RX_PIN = 36;
+
+const uint8_t IR_LED_GPIO = 9;
+const uint8_t TX_TO_NEOPIXELS_GPIO = IR_LED_GPIO;
+const uint8_t RX_TO_NEOPIXELS_GPIO = 0;
+
+const uint8_t RED_LED_GPIO = 10;
+uint8_t redLEDStatus = HIGH;
+// ################## END SERIAL/UART CONFIGURATION
+
+// ################## START LANTERN NEO-PIXEL CONFIGURATION
 enum e_display_brightness {OFF_DISPLAY = 0, DIM_DISPLAY = 25, HALF_BRIGHT_DISPLAY = 50, BRIGHTEST_DISPLAY = 100};
 const e_display_brightness ScreenBrightness = BRIGHTEST_DISPLAY;
 
@@ -96,76 +108,49 @@ enum e_lemon_status{LC_NONE=0, LC_STARTUP=1, LC_SEARCH_WIFI=2, LC_FOUND_WIFI=3, 
                     LC_NO_FIX=6, LC_GOOD_FIX=7, LC_ALL_OFF=8, LC_DIVE_IN_PROGRESS=64, LC_NO_STATUS_UPDATE=127, LC_NO_INTERNET=128};
 
 e_lemon_status lemonStatus = LC_STARTUP;
+// ################## END LANTERN NEO-PIXEL CONFIGURATION
 
-const uint32_t maxTimeBeforeAlertNoFix = 3000;
-const uint32_t maxTimeBeforeAlertNoGPSByte = 2000;
-uint32_t timeNextGoodFixExpectedBy = 0;
-uint32_t timeNextGPSByteExpectedBy = 0;
-
-enum e_user_action{NO_USER_ACTION=0x0000, HIGHLIGHT_USER_ACTION=0x0001,RECORD_BREADCRUMB_TRAIL_USER_ACTION=0x0002,LEAK_DETECTED_USER_ACTION=0x0004};
-
-#ifdef ENABLE_TELEGRAM_BOT_AT_COMPILE_TIME
-#include <WiFiClientSecure.h>
-#include <UniversalTelegramBot.h>
-
-WiFiClientSecure secured_client;
-UniversalTelegramBot telegramBot(TELEGRAM_BOT_TOKEN, secured_client);
-#endif
-
-#ifdef ENABLE_TWITTER_AT_COMPILE_TIME
-// see mercator_secrets.c for Twitter login credentials
-#include <WiFiClientSecure.h>   // Twitter
-#include <TweESP32.h>          // Install from Github - https://github.com/witnessmenow/TweESP32
-#include <TwitterServerCert.h> // included with above
-#include <UrlEncode.h> //Install from library manager
-#include <ArduinoJson.h> //Install from library manager
-bool connectToTwitter = false;
-WiFiClientSecure secureTwitterClient;
-TweESP32 twitter(secureTwitterClient, twitterConsumerKey, twitterConsumerSecret, twitterAccessToken, twitterAccessTokenSecret, twitterBearerToken);
-char tweet[512];
-#endif
-
-#ifdef ENABLE_SMTP_AT_COMPILE_TIME
-// see mercator_secrets.c for SMTP login credentials
-#include <ESP_Mail_Client.h>
-SMTPSession smtp;
-#endif
-
-#define PICOMQTT_MAX_MESSAGE_SIZE 4096
-
-#include <PicoMQTT.h>
-
-PicoMQTT::Client localMQTT(
+// ################## START MQTT Configuration
+PicoMQTT::Client localMQTT(       // credentials stored in mercator_secrets.c
     private_mqqt_local_host,      // broker address (or IP)
     private_mqqt_local_port,      // broker port (defaults to 1883)
-    private_mqqt_client_id, // Client ID
-    private_mqqt_username,  // MQTT username
-    private_mqqt_password   // MQTT password
-);
-
-PicoMQTT::Client remoteMQTT(
-    private_mqqt_remote_host,      // broker address (or IP)
-    private_mqqt_remote_port,      // broker port (defaults to 1883)
-    private_mqqt_client_id,         // Client ID
+    private_mqqt_client_id,       // Client ID
     private_mqqt_username,        // MQTT username
-    private_mqqt_password          // MQTT password
+    private_mqqt_password         // MQTT password
 );
 
-// see mercator_secrets.c for Private MQTT login credentials
-#include <WiFi.h>
-#include <ESP32Ping.h>
+PicoMQTT::Client remoteMQTT(      // credentials stored in mercator_secrets.c
+    private_mqqt_remote_host,     // broker address (or IP)
+    private_mqqt_remote_port,     // broker port (defaults to 1883)
+    private_mqqt_client_id,       // Client ID
+    private_mqqt_username,        // MQTT username
+    private_mqqt_password         // MQTT password
+);
 
 uint32_t private_mqtt_upload_min_duty_ms = 50; // throttle upload to private mqtt ms
 uint32_t last_private_mqtt_upload_at = 0;
+const int16_t mqtt_payload_size = 2560;
+char mqtt_payload[mqtt_payload_size];
+uint32_t currentPrivateMQTTUploadAt = 0, lastPrivateMQTTUploadAt = 0;
+uint32_t privateMQTTUploadDutyCycle = 0;
+bool usingDevNetwork = false;
+// ################## END MQTT Configuration
+
+
+// #### START IN-MEMORY TELEMETRY-PIPELINE / MESSAGE BUFFER CONFIG
+TelemetryPipeline telemetryPipeline;
 
 const uint32_t telemetry_online_head_commit_duty_ms = 1900;
 const uint32_t telemetry_offline_head_commit_duty_ms = 10000;
 uint32_t last_head_committed_at = 0;
 bool g_offlineStorageThrottleApplied = false;
+// #### END IN-MEMORY TELEMETRY-PIPELINE / MESSAGE BUFFER CONFIG
 
-//const int16_t g_storageThrottleDutyCycle = 20; // upload once every 20 messages, or once every 10 seconds - giving 66 minutes of storage.
-//int16_t g_throttledMessageCount = -1;
 
+// #### START WIFI CONFIG AND LABELS
+WiFiClient wifiClient;
+const String ssid_not_connected = "-";
+String ssid_connected = ssid_not_connected;
 
 char IPBuffer[16];
 char IPLocalGateway[16];
@@ -173,11 +158,14 @@ char WiFiSSID[36];
 const char* no_wifi_label="No WiFi";
 const char* wait_ip_label="Wait IP";
 const char* lost_ip_label="Lost IP";
-bool usingDevNetwork = false;
+// #### END WIFI CONFIG AND LABELS
 
-const int16_t mqtt_payload_size = 2560;
-char mqtt_payload[mqtt_payload_size];
-WiFiClient wifiClient;
+const uint32_t maxTimeBeforeAlertNoFix = 3000;
+const uint32_t maxTimeBeforeAlertNoGPSByte = 2000;
+uint32_t timeNextGoodFixExpectedBy = 0;
+uint32_t timeNextGPSByteExpectedBy = 0;
+
+enum e_user_action{NO_USER_ACTION=0x0000, HIGHLIGHT_USER_ACTION=0x0001,RECORD_BREADCRUMB_TRAIL_USER_ACTION=0x0002,LEAK_DETECTED_USER_ACTION=0x0004};
 
 // Mask with 0x01 to see if successful
 enum e_q_upload_status {Q_SUCCESS=1, Q_SUCCESS_SEND=3, Q_SUCCESS_NO_SEND=5, Q_SUCCESS_NOT_ENABLED=7, 
@@ -198,17 +186,6 @@ bool processUplinkMessage = true;
 
 uint8_t journey_activity_count = 0;
 const char* journey_activity_indicator = "\\|/-";
-
-uint32_t currentPrivateMQTTUploadAt = 0, lastPrivateMQTTUploadAt = 0;
-uint32_t privateMQTTUploadDutyCycle = 0;
-
-const uint8_t RED_LED_GPIO = 10;
-const uint8_t IR_LED_GPIO = 9;
-
-const uint8_t TX_TO_NEOPIXELS_GPIO = IR_LED_GPIO;
-const uint8_t RX_TO_NEOPIXELS_GPIO = 0;
-
-uint8_t redLEDStatus = HIGH;
 
 TinyGPSPlus gps;
 int uart_number_gps = 2;
@@ -242,6 +219,7 @@ template <typename T> struct vector
 uint16_t sideCount = 0, topCount = 0;
 vector<float> magnetometer_vector, accelerometer_vector;
 
+uint32_t consoleDownlinkMsgCount = 0;
 uint32_t receivedUplinkMessageCount = 0;
 uint32_t goodUplinkMessageCount = 0;
 uint32_t badUplinkMessageCount = 0;
@@ -274,12 +252,6 @@ int32_t checkInternetConnectivityDutyCycle = 10000; // 30 seconds between each c
 const uint16_t pipelineBackedUpLength = 10;
 
 
-
-const uint8_t GROVE_GPS_RX_PIN = 33;
-const uint8_t GROVE_GPS_TX_PIN = 32;
-
-const uint8_t HAT_GPS_TX_PIN = 26;
-const uint8_t HAT_GPS_RX_PIN = 36;
 
 const uint8_t M5_POWER_SWITCH_PIN = 255;
 
@@ -976,13 +948,6 @@ void setup()
     localMQTT.begin();
     remoteMQTT.begin();
   }
-
-#ifdef ENABLE_SMTP_AT_COMPILE_TIME
-  if (enableConnectToSMTP && WiFi.status() == WL_CONNECTED)
-  {
-    sendTestByEmail();
-  }
-#endif
 }
 
 char* customiseSentence(char* sentence)
@@ -1369,10 +1334,6 @@ void loop()
         }
 
         populateCurrentLemonTelemetry(latestLemonTelemetry, gps);
-
-#ifdef ENABLE_TWITTER_AT_COMPILE_TIME
-        sendAnyTwitterMessagesRequired();
-#endif
 
       }
       else
@@ -3043,157 +3004,5 @@ enum e_q_upload_status uploadTelemetryToPrivateMQTT(MakoUplinkTelemetryForJson* 
   return uploadStatus;
 }
 
-#ifdef ENABLE_SMTP_AT_COMPILE_TIME
-void sendTestByEmail()
-{
-  ESP_Mail_Session session;
-
-  session.server.host_name = SMTP_SERVER ;
-  session.server.port = SMTP_PORT;
-  session.login.email = SENDER_EMAIL;
-  session.login.password = SENDER_PASSWORD;
-  session.login.user_domain = "";
-
-  if (!smtp.connect(&session))
-  {
-    if (writeLogToSerial)
-      USB_SERIAL.println("Error connecting to SMTP", + smtp.errorReason());
-    return;
-  }
-
-  SMTP_Message emailMessage;
-
-  emailMessage.sender.name = "Mercator Origins";
-  emailMessage.sender.email = SENDER_EMAIL;
-  emailMessage.subject = "Mercator Origins Test Email";
-  emailMessage.addRecipient("BluepadLabs", RECIPIENT_EMAIL);
-
-  //Send HTML message
-  String htmlMsg = "<div style=\"color:#FF0000;\"><h1>Hello Bluepad Labs!</h1><p>This is a test email from Mercator Origins.</p></div>";
-  emailMessage.html.content = htmlMsg.c_str();
-  emailMessage.html.content = htmlMsg.c_str();
-  emailMessage.text.charSet = "us-ascii";
-  emailMessage.html.transfer_encoding = Content_Transfer_Encoding::enc_7bit;
-
-  if (!MailClient.sendMail(&smtp, &emailMessage))
-  {
-    if (writeLogToSerial)
-      USB_SERIAL.println("Error sending Email, " + smtp.errorReason());
-  }
-}
-
-void sendLocationByEmail()
-{
-  ESP_Mail_Session session;
-
-  session.server.host_name = SMTP_SERVER ;
-  session.server.port = SMTP_PORT;
-  session.login.email = SENDER_EMAIL;
-  session.login.password = SENDER_PASSWORD;
-  session.login.user_domain = "";
-
-  if (!smtp.connect(&session))
-  {
-    if (writeLogToSerial)
-      USB_SERIAL.println("Error connecting to SMTP, " + smtp.errorReason());
-    return;
-  }
-  else
-  {
-    if (writeLogToSerial)
-      USB_SERIAL.println("Connected to SMTP Ok");
-  }
-  SMTP_Message emailMessage;
-
-  emailMessage.sender.name = "Mercator Origins";
-  emailMessage.sender.email = SENDER_EMAIL;
-  emailMessage.subject = "Mercator Origins Location Fix";
-  emailMessage.addRecipient("BluepadLabs", RECIPIENT_EMAIL);
-
-  //Send HTML message
-  String htmlMsg = "<div style=\"color:#FF0000;\"><h1>Hello BluePad Labs!</h1><p>This is a location email sent from Mercator Origins</p></div>";
-  emailMessage.html.content = htmlMsg.c_str();
-  emailMessage.html.content = htmlMsg.c_str();
-  emailMessage.text.charSet = "us-ascii";
-  emailMessage.html.transfer_encoding = Content_Transfer_Encoding::enc_7bit;
-
-  if (!MailClient.sendMail(&smtp, &emailMessage) && writeLogToSerial)
-    USB_SERIAL.println("Error sending Email, " + smtp.errorReason());
-  else
-    USB_SERIAL.println("Error sending Email, " + smtp.errorReason());
-
-}
-#endif
 
 
-#ifdef ENABLE_TWITTER_AT_COMPILE_TIME
-
-void buildTwitterTelemetryTweet(char* payload, bool SOS)
-{
-  if (SOS)
-  {
-    sprintf(payload, "Ignore. This is a test: SOS Live Dive Log UTC: %02d:%02d:%02d: https://www.google.co.uk/maps/@%f,%f,14z Depth %.1f, water_temp %.1f, heading %.0f, console_temp %.1f, console_humidity %.1f, console_mB %.0f",
-            gps.time.hour(), gps.time.minute(), gps.time.second(),
-            gps.location.lat(),
-            gps.location.lng(),
-            depth,
-            water_temperature,
-            magnetic_heading_compensated,
-            enclosure_temperature,
-            enclosure_humidity,
-            enclosure_air_pressure);
-  }
-  else
-  {
-    sprintf(payload, "Scuba Hacker's Mercator Origins Live Dive Log UTC: %02d:%02d:%02d: https://www.google.co.uk/maps/@%f,%f,14z Depth %.1f, water_temp %.1f, heading %.0f, console_temp %.1f, console_humidity %.1f, console_mB %.0f",
-            gps.time.hour(), gps.time.minute(), gps.time.second(),
-            gps.location.lat(),
-            gps.location.lng(),
-            depth,
-            water_temperature,
-            magnetic_heading_compensated,
-            enclosure_temperature,
-            enclosure_humidity,
-            enclosure_air_pressure);
-  }
-}
-
-bool sendOriginsTweet(char* tweet)
-{
-  bool success = false;
-  if (enableConnectToTwitter && WiFi.status() == WL_CONNECTED)
-  {
-    //Required for Oauth for sending tweets
-    twitter.timeConfig();
-    // Checking the cert is the best way on an ESP32i
-    // This will verify the server is trusted.
-    secureTwitterClient.setCACert(twitter_server_cert);
-
-    success = twitter.sendTweet(tweet);
-
-    if (writeLogToSerial)
-    {  
-      if (success)
-        USB_SERIAL.printf("Twitter send tweet successful: %s", tweet);
-      else
-        USB_SERIAL.printf("Twitter send tweet failed: %s", tweet);
-    }
-  }
-  return success;
-}
-
-void sendAnyTwitterMessagesRequired()
-{
-  if (console_requests_send_tweet)
-  {
-    if (console_requests_emergency_tweet)
-    {
-      console_requests_emergency_tweet = false;
-    }
-
-    console_requests_send_tweet = false;
-    buildTwitterTelemetryTweet(tweet, true); // this is an SOS
-    sendOriginsTweet(tweet);
-  }
-}
-#endif

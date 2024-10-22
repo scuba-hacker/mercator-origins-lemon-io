@@ -1,0 +1,194 @@
+
+
+// compilation switches
+
+//#define ENABLE_TWITTER_AT_COMPILE_TIME
+//#define ENABLE_SMTP_AT_COMPILE_TIME
+
+#ifdef ENABLE_TWITTER_AT_COMPILE_TIME
+// see mercator_secrets.c for Twitter login credentials
+#include <WiFiClientSecure.h>   // Twitter
+#include <TweESP32.h>          // Install from Github - https://github.com/witnessmenow/TweESP32
+#include <TwitterServerCert.h> // included with above
+#include <UrlEncode.h> //Install from library manager
+#include <ArduinoJson.h> //Install from library manager
+bool connectToTwitter = false;
+WiFiClientSecure secureTwitterClient;
+TweESP32 twitter(secureTwitterClient, twitterConsumerKey, twitterConsumerSecret, twitterAccessToken, twitterAccessTokenSecret, twitterBearerToken);
+char tweet[512];
+#endif
+
+#ifdef ENABLE_SMTP_AT_COMPILE_TIME
+// see mercator_secrets.c for SMTP login credentials
+#include <ESP_Mail_Client.h>
+SMTPSession smtp;
+#endif
+
+const bool enableConnectToTwitter = false;
+const bool enableConnectToSMTP = false;
+
+#ifdef ENABLE_TWITTER_AT_COMPILE_TIME
+        sendAnyTwitterMessagesRequired();
+#endif
+
+#ifdef ENABLE_TWITTER_AT_COMPILE_TIME
+
+void buildTwitterTelemetryTweet(char* payload, bool SOS)
+{
+  if (SOS)
+  {
+    sprintf(payload, "Ignore. This is a test: SOS Live Dive Log UTC: %02d:%02d:%02d: https://www.google.co.uk/maps/@%f,%f,14z Depth %.1f, water_temp %.1f, heading %.0f, console_temp %.1f, console_humidity %.1f, console_mB %.0f",
+            gps.time.hour(), gps.time.minute(), gps.time.second(),
+            gps.location.lat(),
+            gps.location.lng(),
+            depth,
+            water_temperature,
+            magnetic_heading_compensated,
+            enclosure_temperature,
+            enclosure_humidity,
+            enclosure_air_pressure);
+  }
+  else
+  {
+    sprintf(payload, "Scuba Hacker's Mercator Origins Live Dive Log UTC: %02d:%02d:%02d: https://www.google.co.uk/maps/@%f,%f,14z Depth %.1f, water_temp %.1f, heading %.0f, console_temp %.1f, console_humidity %.1f, console_mB %.0f",
+            gps.time.hour(), gps.time.minute(), gps.time.second(),
+            gps.location.lat(),
+            gps.location.lng(),
+            depth,
+            water_temperature,
+            magnetic_heading_compensated,
+            enclosure_temperature,
+            enclosure_humidity,
+            enclosure_air_pressure);
+  }
+}
+
+bool sendOriginsTweet(char* tweet)
+{
+  bool success = false;
+  if (enableConnectToTwitter && WiFi.status() == WL_CONNECTED)
+  {
+    //Required for Oauth for sending tweets
+    twitter.timeConfig();
+    // Checking the cert is the best way on an ESP32i
+    // This will verify the server is trusted.
+    secureTwitterClient.setCACert(twitter_server_cert);
+
+    success = twitter.sendTweet(tweet);
+
+    if (writeLogToSerial)
+    {  
+      if (success)
+        USB_SERIAL.printf("Twitter send tweet successful: %s", tweet);
+      else
+        USB_SERIAL.printf("Twitter send tweet failed: %s", tweet);
+    }
+  }
+  return success;
+}
+
+void sendAnyTwitterMessagesRequired()
+{
+  if (console_requests_send_tweet)
+  {
+    if (console_requests_emergency_tweet)
+    {
+      console_requests_emergency_tweet = false;
+    }
+
+    console_requests_send_tweet = false;
+    buildTwitterTelemetryTweet(tweet, true); // this is an SOS
+    sendOriginsTweet(tweet);
+  }
+}
+#endif
+
+#ifdef ENABLE_SMTP_AT_COMPILE_TIME
+  if (enableConnectToSMTP && WiFi.status() == WL_CONNECTED)
+  {
+    sendTestByEmail();
+  }
+#endif
+
+
+#ifdef ENABLE_SMTP_AT_COMPILE_TIME
+void sendTestByEmail()
+{
+  ESP_Mail_Session session;
+
+  session.server.host_name = SMTP_SERVER ;
+  session.server.port = SMTP_PORT;
+  session.login.email = SENDER_EMAIL;
+  session.login.password = SENDER_PASSWORD;
+  session.login.user_domain = "";
+
+  if (!smtp.connect(&session))
+  {
+    if (writeLogToSerial)
+      USB_SERIAL.println("Error connecting to SMTP", + smtp.errorReason());
+    return;
+  }
+
+  SMTP_Message emailMessage;
+
+  emailMessage.sender.name = "Mercator Origins";
+  emailMessage.sender.email = SENDER_EMAIL;
+  emailMessage.subject = "Mercator Origins Test Email";
+  emailMessage.addRecipient("BluepadLabs", RECIPIENT_EMAIL);
+
+  //Send HTML message
+  String htmlMsg = "<div style=\"color:#FF0000;\"><h1>Hello Bluepad Labs!</h1><p>This is a test email from Mercator Origins.</p></div>";
+  emailMessage.html.content = htmlMsg.c_str();
+  emailMessage.html.content = htmlMsg.c_str();
+  emailMessage.text.charSet = "us-ascii";
+  emailMessage.html.transfer_encoding = Content_Transfer_Encoding::enc_7bit;
+
+  if (!MailClient.sendMail(&smtp, &emailMessage))
+  {
+    if (writeLogToSerial)
+      USB_SERIAL.println("Error sending Email, " + smtp.errorReason());
+  }
+}
+
+void sendLocationByEmail()
+{
+  ESP_Mail_Session session;
+
+  session.server.host_name = SMTP_SERVER ;
+  session.server.port = SMTP_PORT;
+  session.login.email = SENDER_EMAIL;
+  session.login.password = SENDER_PASSWORD;
+  session.login.user_domain = "";
+
+  if (!smtp.connect(&session))
+  {
+    if (writeLogToSerial)
+      USB_SERIAL.println("Error connecting to SMTP, " + smtp.errorReason());
+    return;
+  }
+  else
+  {
+    if (writeLogToSerial)
+      USB_SERIAL.println("Connected to SMTP Ok");
+  }
+  SMTP_Message emailMessage;
+
+  emailMessage.sender.name = "Mercator Origins";
+  emailMessage.sender.email = SENDER_EMAIL;
+  emailMessage.subject = "Mercator Origins Location Fix";
+  emailMessage.addRecipient("BluepadLabs", RECIPIENT_EMAIL);
+
+  //Send HTML message
+  String htmlMsg = "<div style=\"color:#FF0000;\"><h1>Hello BluePad Labs!</h1><p>This is a location email sent from Mercator Origins</p></div>";
+  emailMessage.html.content = htmlMsg.c_str();
+  emailMessage.html.content = htmlMsg.c_str();
+  emailMessage.text.charSet = "us-ascii";
+  emailMessage.html.transfer_encoding = Content_Transfer_Encoding::enc_7bit;
+
+  if (!MailClient.sendMail(&smtp, &emailMessage) && writeLogToSerial)
+    USB_SERIAL.println("Error sending Email, " + smtp.errorReason());
+  else
+    USB_SERIAL.println("Error sending Email, " + smtp.errorReason());
+
+}
+#endif
