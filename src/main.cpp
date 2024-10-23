@@ -81,7 +81,25 @@ const bool enableOTAServer = true;          // over the air updates
 
 // ################## START SERIAL/UART/GPIO CONFIGURATION
 const int GPS_BAUD_RATE = 9600;
-const int UPLINK_BAUD_RATE = 57600;  // 57600 115200 max baudrate for mako Tx due to mako phototransistor being 15 uS rise time, Lemon limited to 19200 as a result.
+
+/*
+// Max Baudrates for the IR LED (opto Schmitt Trigger)
+// also works for both up and downlink: 57600, 71000
+const int UPLINK_BAUD_RATE = 71000;  // 57600 115200 max baudrate for mako Tx due to mako phototransistor being 15 uS rise time, Lemon limited to 19200 as a result.
+*/
+
+// ******** Tx = GPIO2 Max Speed Tests ********
+// GPIO2 Tx works for 57600, 71000, 91000, 576000
+// at 1,700,000 getting about 10% bad msgs - 5% missing uplinks and 5% bad length uplinks (may help to have a small pause before sending response)
+// at 2,100,000 getting about 14% bad msgs -  7% missing uplinks and 7% bad length uplinks
+// ^^^^ add 3ms linger time before mako replying to lemon to get rid of all bad messages at 2,100,000
+// ^^^^^ probably also works at 1,700,000
+// Other rates to try which did work with tx only to Mako when not expecting a reply: 
+//    922190, 1100000,1500000,1900000
+// rates that did not work TO mako prior to changing reply to wired from IR LED:
+//    921600, 1800000
+const int UPLINK_BAUD_RATE = 57600;       // max working test so far: 2,100,000
+
 const int NEOPIXELS_BAUD_RATE = 9600;
 
 #define GOPRO_SERIAL Serial1
@@ -933,7 +951,7 @@ void setup()
 
   // setup second serial port for sending/receiving data to/from GoPro
   GOPRO_SERIAL.setRxBufferSize(1024); // was 256 - must set before begin
-  GOPRO_SERIAL.begin(UPLINK_BAUD_RATE, SERIAL_8N1, HAT_GPS_RX_PIN, HAT_GPS_TX_PIN);
+  GOPRO_SERIAL.begin(UPLINK_BAUD_RATE, SERIAL_8N2, HAT_GPS_RX_PIN, HAT_GPS_TX_PIN);
 
   // cannot use Pin 0 for receive of GPS (resets on startup), can use Pin 36, can use 26
   // cannot use Pin 0 for transmit of GPS (resets on startup), only Pin 26 can be used for transmit.
