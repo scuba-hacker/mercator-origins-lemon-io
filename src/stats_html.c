@@ -381,8 +381,12 @@ const char STATS_HTML[] = R"rawliteral(
    // Array of strings to populate the drop-down
    // from navigation array copy/paste into temp.txt
 
-   var waypoints = [   
-   ' < No Waypoint Shown >',
+   var waypoints = [
+    '< No Waypoint Shown >',
+    'Manor',
+    'Home Test',
+    'Vobster Jetty',
+    'Vobster Pontoon',
     'Canoe',
     'The Sub',
     'Scimitar Car 5.5m',

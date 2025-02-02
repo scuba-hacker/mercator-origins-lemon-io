@@ -2712,7 +2712,7 @@ bool setupOTAWebServer(const char* _ssid, const char* _password, const char* lab
           
       asyncWebServer.on("/stats", HTTP_POST, [&](AsyncWebServerRequest *request)
       {
-              AsyncWebParameter* pButton = request->getParam("button",true,false);
+              const AsyncWebParameter* pButton = request->getParam("button",true,false);
 
               if (pButton)
               {
@@ -2728,7 +2728,7 @@ bool setupOTAWebServer(const char* _ssid, const char* _password, const char* lab
                   }
                   else if (pButton->value() == String("showOnMapButton"))
                   {
-                    AsyncWebParameter* pChoice = request->getParam("choice",true,false);
+                    const AsyncWebParameter* pChoice = request->getParam("choice",true,false);
                     if (pChoice)
                     {
                       showOnMapRequest=pChoice->value();
@@ -2752,7 +2752,7 @@ bool setupOTAWebServer(const char* _ssid, const char* _password, const char* lab
                   }
                   else if (pButton->value() == String("setTargetButton"))
                   {
-                    AsyncWebParameter* pTarget = request->getParam("target",true,false);
+                    const AsyncWebParameter* pTarget = request->getParam("target",true,false);
                     if (pTarget)
                     {
                       setTargetRequest=pTarget->value();
