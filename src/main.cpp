@@ -1173,9 +1173,9 @@ MQTTConnectionResult publishMQTTTestMessageOnDutyCycle(const char* topic="test_m
     if (millis() - lastTestMessagePublishedAt > testPublishDutyCycle)
     {
       char message[128];
-      snprintf(message,sizeof(message),"This is a test message from Lemon_V2 (%s)", privateMQTT.getEncryptionStatus());
+      snprintf(message,sizeof(message),"[%lu] This is a test message from Lemon_V2 (%s)", millis(), privateMQTT.getEncryptionStatus());
       result = privateMQTT.publish(topic, message);
-      USB_SERIAL_PRINTF("Publish MQTT Test message on topic %s (%s)  Result = %s\n", topic, privateMQTT.getEncryptionStatus(), MercatorMQTT::resultToText(result));
+      USB_SERIAL_PRINTF("[%lu] Publish MQTT3 Test message on topic %s (%s)  Result = %s\n", millis(), topic, privateMQTT.getEncryptionStatus(), MercatorMQTT::resultToText(result));
       lastTestMessagePublishedAt = millis();
     }
     return result;
