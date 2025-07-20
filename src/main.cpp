@@ -106,7 +106,7 @@ bool enableConnectToPrivateMQTT = true;
 bool enableUploadToPrivateMQTT = true;
 const bool enableOTAServer = true;          // over the air updates
 
-const bool publishMQTTTestMessages = false;
+const bool publishMQTTTestMessages = true;
 
 //#define ENABLE_TELEGRAM_BOT_AT_COMPILE_TIME
 #ifdef ENABLE_TELEGRAM_BOT_AT_COMPILE_TIME
@@ -171,8 +171,7 @@ MQTTConfig mqttConfig = {
     private_mqqt_password,
     private_local_gateway,
     private_dev_ssid,
-    enableMQTTEncryption,  // enable_tls
-    nullptr         // ca_cert (optional)
+    enableMQTTEncryption
 };
 
 MercatorMQTT privateMQTT(mqttConfig);
@@ -883,13 +882,8 @@ void setup()
   digitalWrite(TX_TO_NEOPIXELS_GPIO, HIGH); // switch off
   pinMode(RX_TO_NEOPIXELS_GPIO, INPUT);
 
-  if (!writeLogToSerial)
-  {
-    Serial.end();
-
-    const bool invert = false;
-    neopixels_serial.begin(NEOPIXELS_ARDUINO_BAUD_RATE, SERIAL_8N1, RX_TO_NEOPIXELS_GPIO, TX_TO_NEOPIXELS_GPIO, invert);
-  }
+  const bool invert = false;
+  neopixels_serial.begin(NEOPIXELS_ARDUINO_BAUD_RATE, SERIAL_8N1, RX_TO_NEOPIXELS_GPIO, TX_TO_NEOPIXELS_GPIO, invert);
 
   sendLemonStatus(LC_STARTUP);
 
