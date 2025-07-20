@@ -3,7 +3,24 @@
 // rename the git file "mercator_secrets_template.c" to the filename below, filling in your wifi credentials etc.
 #include "mercator_secrets.c"
 
-#include <M5StickCPlus.h>
+#include <UMS3.h>
+UMS3 ProS3;
+
+#include <U8g2lib.h>
+#define OLED_RST_BROWN     12
+#define OLED_DC_PURPLE     13
+#define OLED_CS_ORANGE     14
+#define OLED_CLK_YELLOW    15
+#define OLED_DIN_MOSI_BLUE 16
+U8G2_SSD1309_128X64_NONAME0_F_4W_HW_SPI u8g2(U8G2_R0, OLED_CS_ORANGE, OLED_DC_PURPLE, OLED_RST_BROWN);
+
+#include <SPI.h>
+
+#include "FS.h"
+#include "SPIFFS.h"
+
+#include <Button.h>
+#include <colours.h>
 
 #include <WiFi.h>
 #include <Update.h>
@@ -20,6 +37,10 @@
 #include <PicoMQTT.h>
 #include <WiFi.h>
 #include <ESP32Ping.h>
+
+#define DEBOUNCE_MS 10
+#define RED_BUTTON_GPIO 42
+Button redButton = Button(RED_BUTTON_GPIO, true, DEBOUNCE_MS);
 
 #ifdef ENABLE_TELEGRAM_BOT_AT_COMPILE_TIME
   #include <WiFiClientSecure.h>
@@ -58,7 +79,7 @@ JsonDocument readings;
 #ifdef USE_WEBSERIAL
   #define USB_SERIAL WebSerial
 #else
-  #define USB_SERIAL Serial
+  #define USB_SERIAL Serial0
 #endif
 
 // START FEATURE ENABLE FLAGS
@@ -70,7 +91,6 @@ bool enableGPSRead = true;
 bool enableAllUplinkMessageIntegrityChecks = true;
 bool enableConnectToPrivateMQTT = true;
 bool enableUploadToPrivateMQTT = true;
-const bool enableIMUSensor = false;
 const bool enableOTAServer = true;          // over the air updates
 
 //#define ENABLE_TELEGRAM_BOT_AT_COMPILE_TIME
@@ -81,12 +101,6 @@ const bool enableOTAServer = true;          // over the air updates
 
 // ################## START SERIAL/UART/GPIO CONFIGURATION
 const int GPS_BAUD_RATE = 9600;
-
-/*
-// Max Baudrates for the IR LED (opto Schmitt Trigger)
-// also works for both up and downlink: 57600, 71000
-const int UPLINK_BAUD_RATE = 71000;  // 57600 115200 max baudrate for mako Tx due to mako phototransistor being 15 uS rise time, Lemon limited to 19200 as a result.
-*/
 
 // ******** Tx = GPIO2 Max Speed Tests ********
 // GPIO2 Tx works for 57600, 71000, 91000, 576000
@@ -100,23 +114,27 @@ const int UPLINK_BAUD_RATE = 71000;  // 57600 115200 max baudrate for mako Tx du
 //    921600, 1800000
 const int UPLINK_BAUD_RATE = 57600;       // max working test so far: 2,100,000
 
-const int NEOPIXELS_BAUD_RATE = 9600;
+const int NEOPIXELS_ARDUINO_BAUD_RATE = 9600;
 
-#define GOPRO_SERIAL Serial1
+#define MAKO_GOPRO_SERIAL Serial1
 
-const uint8_t GROVE_GPS_RX_PIN = 33;   // only used for test without RS485 cable
-const uint8_t GROVE_GPS_TX_PIN = 32;   // only used for test without RS485 cable
+const uint8_t GPS_TX_GPIO = 38;
+const uint8_t GPS_RX_GPIO = 39;
 
-const uint8_t HAT_GPS_TX_PIN = 26;
-const uint8_t HAT_GPS_RX_PIN = 36;
+const uint8_t MAKO_GOPRO_TX_GPIO = 38;    // should be called mako gopro GPIO
+const uint8_t MAKO_GOPRO_RX_GPIO = 39;    // should be called mako gopro GPIO
 
-const uint8_t IR_LED_GPIO = 9;
-const uint8_t TX_TO_NEOPIXELS_GPIO = IR_LED_GPIO;
-const uint8_t RX_TO_NEOPIXELS_GPIO = 0;
+const uint8_t IR_LED_GPIO = 9; // not used
+const uint8_t TX_TO_NEOPIXELS_GPIO = 40;
+const uint8_t RX_TO_NEOPIXELS_GPIO = 41;
 
-const uint8_t RED_LED_GPIO = 10;
-uint8_t redLEDStatus = HIGH;
+const uint8_t STATUS_LED_GPIO = 42;
+
+#define STATUS_LED_ON HIGH
+#define STATUS_LED_OFF LOW
 // ################## END SERIAL/UART CONFIGURATION
+
+uint8_t statusLED = STATUS_LED_OFF;
 
 // ################## START LANTERN NEO-PIXEL CONFIGURATION
 enum e_display_brightness {OFF_DISPLAY = 0, DIM_DISPLAY = 25, HALF_BRIGHT_DISPLAY = 50, BRIGHTEST_DISPLAY = 100};
@@ -194,8 +212,6 @@ enum e_q_upload_status {Q_SUCCESS=1, Q_SUCCESS_SEND=3, Q_SUCCESS_NO_SEND=5, Q_SU
 bool otaActive = false; // OTA updates toggle
 AsyncWebServer asyncWebServer(80);
 
-bool imuAvailable = true;
-
 const char* leakAlarmMsg = "    Float\n\n    Leak!";
 
 uint32_t fixCount = 0;
@@ -209,10 +225,10 @@ TinyGPSPlus gps;
 int uart_number_gps = 2;
 HardwareSerial gps_serial(uart_number_gps);
 
-int uart_number_gopro = 1;
-HardwareSerial ss_to_gopro(uart_number_gopro);
+int uart_number_mako_gopro = 1;
+HardwareSerial ss_to_mako_gopro(uart_number_mako_gopro);
 
-HardwareSerial& neopixels_serial = Serial;
+HardwareSerial& neopixels_serial = Serial0;
 
 bool diveInProgress = false;
 
@@ -269,17 +285,10 @@ int32_t checkInternetConnectivityDutyCycle = 10000; // 30 seconds between each c
 
 const uint16_t pipelineBackedUpLength = 10;
 
-
-
-const uint8_t M5_POWER_SWITCH_PIN = 255;
+const uint8_t LEAK_DETECTOR_GPIO = 42;
 
 Button* p_primaryButton = nullptr;
-Button* p_secondButton = nullptr;
 void updateButtonsAndBuzzer();
-
-const float minimumUSBVoltage = 4.0;
-long USBVoltageDropTime = 0;
-long milliSecondsToWaitForShutDown = 500;
 
 extern const uint8_t STATS_HTML[];
 extern const uint32_t STATS_HTML_SIZE;
@@ -287,20 +296,18 @@ extern const uint32_t STATS_HTML_SIZE;
 extern const uint8_t MAP_HTML[];
 extern const uint32_t MAP_HTML_SIZE;
 
-void shutdownIfUSBPowerOff();
 void toggleOTAActive();
 void toggleWiFiActive();
 
-void checkForLeak(const char* msg, const uint8_t pin);
-void checkForReedSwitches();
+void checkForLeak(const char* msg);
+
+void checkForFloatBoxReedSwitches();
 
 bool setupOTAWebServer(const char* _ssid, const char* _password, const char* label, uint32_t timeout, bool wifiOnly);
 
 void updateButtonsAndBuzzer()
 {
   p_primaryButton->read();
-  p_secondButton->read();
-  M5.Beep.update();
 }
 
 struct MakoStats
@@ -522,9 +529,7 @@ void sendFakeGPSData_No_Fix();
 void sendFakeGPSData_No_GPS();
 void toggleOTAActive();
 void toggleWiFiActive();
-void shutdownIfUSBPowerOff();
-void fadeToBlackAndShutdown();
-void checkForLeak(const char* msg, const uint8_t pin);
+
 const char* scanForKnownNetwork();
 bool connectToWiFiAndInitOTA(const bool wifiOnly, int repeatScanAttempts);
 bool setupOTAWebServer(const char* _ssid, const char* _password, const char* label, uint32_t timeout, bool wifiOnly);
@@ -610,19 +615,9 @@ void initWebSocket() {
 
 void getM5ImuSensorData(struct LemonTelemetryForJson& t)
 {
-  const float uninitialisedIMU = 0.0;
-  
-  // gyro x/y/z now not used
-  if (enableIMUSensor)
-  {
-    M5.IMU.getAccelData(&t.imu_lin_acc_x, &t.imu_lin_acc_y, &t.imu_lin_acc_z);
-    M5.IMU.getAhrsData(&t.imu_rot_acc_x, &t.imu_rot_acc_y, &t.imu_rot_acc_z);
-  }
-  else
-  {
-    t.imu_lin_acc_x = t.imu_lin_acc_y = t.imu_lin_acc_z = uninitialisedIMU;
-    t.imu_rot_acc_x = t.imu_rot_acc_y = t.imu_rot_acc_z = uninitialisedIMU;
-  }
+  const float uninitialisedIMU = 0.0;  
+  t.imu_lin_acc_x = t.imu_lin_acc_y = t.imu_lin_acc_z = uninitialisedIMU;
+  t.imu_rot_acc_x = t.imu_rot_acc_y = t.imu_rot_acc_z = uninitialisedIMU;
 }
 
 void WiFiStationConnected(WiFiEvent_t event, WiFiEventInfo_t info)
@@ -787,10 +782,30 @@ void dumpHeapUsage(const char* msg)
   }
 }
 
-void toggleRedLED()
+void toggleStatusLED()
 {
-  redLEDStatus = (redLEDStatus == HIGH ? LOW : HIGH );
-  digitalWrite(RED_LED_GPIO, redLEDStatus);
+  statusLED = !statusLED;
+  ProS3.setPixelPower(statusLED);
+  ProS3.writePixel();
+}
+
+void statusLEDOn()
+{
+  statusLED = true;
+  ProS3.setPixelPower(statusLED);
+  ProS3.writePixel();
+}
+
+void statusLEDOff()
+{
+  statusLED = false;
+  ProS3.setPixelPower(statusLED);
+  ProS3.writePixel();
+}
+
+void statusLEDColour()
+{
+    ProS3.setPixelColor(128,128,0);
 }
 
 bool haltAllProcessingDuringOTAUpload = false;
@@ -807,14 +822,13 @@ void disableFeaturesForOTA()
   writeTelemetryLogToSerial = false;
 
   gps_serial.end();
-  GOPRO_SERIAL.end();
+  MAKO_GOPRO_SERIAL.end();
   neopixels_serial.end();
 
   localMQTT.disconnect();
   remoteMQTT.disconnect();
   
-  redLEDStatus = LOW;
-  digitalWrite(RED_LED_GPIO, redLEDStatus);  // turn on red led
+  statusLEDOn();
 
   haltAllProcessingDuringOTAUpload = true;
 
@@ -843,30 +857,46 @@ void uploadOTABeginCallback(AsyncElegantOtaClass* originator)
 
 void setup()
 {
-    localMQTT.connected_callback = [] {
-      if (writeLogToSerial)
-        USB_SERIAL.println("Local MQTT connected");
-    };
+  ProS3.begin();
+  statusLEDColour();
+  statusLEDOn();
 
-    localMQTT.disconnected_callback = [] {
-      if (writeLogToSerial)
-        USB_SERIAL.println("Local MQTT disconnected");
-    };
+  SPI.begin(OLED_CLK_YELLOW, /*MISO=*/-1, OLED_DIN_MOSI_BLUE, OLED_CS_ORANGE);
+  u8g2.begin();
 
-    remoteMQTT.connected_callback = [] {
-      if (writeLogToSerial)
-        USB_SERIAL.println("Remote MQTT connected");
-    };
+  localMQTT.connected_callback = [] {
+    if (writeLogToSerial)
+      USB_SERIAL.println("Local MQTT connected");
+  };
 
-    remoteMQTT.disconnected_callback = [] {
-      if (writeLogToSerial)
-        USB_SERIAL.println("Remote MQTT disconnected");
-    };
+  localMQTT.disconnected_callback = [] {
+    if (writeLogToSerial)
+      USB_SERIAL.println("Local MQTT disconnected");
+  };
+
+  remoteMQTT.connected_callback = [] {
+    if (writeLogToSerial)
+      USB_SERIAL.println("Remote MQTT connected");
+  };
+
+  remoteMQTT.disconnected_callback = [] {
+    if (writeLogToSerial)
+      USB_SERIAL.println("Remote MQTT disconnected");
+  };
 
   mainTaskCoreId = xPortGetCoreID();
   mainTaskHandle = xTaskGetCurrentTaskHandle();
 
-  M5.begin();
+  Serial.begin(115200);
+  Serial.flush();
+  delay(50);
+  Serial.print("ProS3 Lemon initializing...");
+
+  if (!SPIFFS.begin(true)) {
+    Serial.println("SPIFFS mount failed");
+  } else {
+    Serial.println("SPIFFS mounted OK");
+  }
 
   WiFi.onEvent(WiFiStationConnected, WiFiEvent_t::ARDUINO_EVENT_WIFI_STA_CONNECTED);
   WiFi.onEvent(WiFiGotIP, WiFiEvent_t::ARDUINO_EVENT_WIFI_STA_GOT_IP);
@@ -885,44 +915,23 @@ void setup()
   BlockHeader::s_overrideMaxPayloadSize(maxPipelineBlockPayloadSize);  // 400 messages with 256 byte max payload. 
   telemetryPipeline.init(&millis,maxPipelineBufferKB);
 
-  if (enableIMUSensor)
-  {
-    M5.Imu.Init();
-  }
-  else
-  {
-    if (writeLogToSerial)
-    {
-      USB_SERIAL.println("IMU Sensor Off");
-    }
-    M5.Lcd.println("IMU Sensor Off");
-    imuAvailable = false;
-  }
-
-  pinMode(RED_LED_GPIO, OUTPUT); // Red LED - the interior LED to M5 Stick
-  digitalWrite(RED_LED_GPIO, redLEDStatus); // switch off as redLEDStatus is HIGH
+  statusLEDOff();
 
   pinMode(TX_TO_NEOPIXELS_GPIO, OUTPUT);
   digitalWrite(TX_TO_NEOPIXELS_GPIO, HIGH); // switch off
-
   pinMode(RX_TO_NEOPIXELS_GPIO, INPUT);
 
   if (!writeLogToSerial)
   {
     Serial.end();
-    const bool invert = true; // Invertion of Tx needed due to using the IR Led as transmit
-    neopixels_serial.begin(NEOPIXELS_BAUD_RATE, SERIAL_8N1, RX_TO_NEOPIXELS_GPIO, TX_TO_NEOPIXELS_GPIO, invert);
-    neopixels_serial.setRxInvert(!invert);    // Need to not invert the Rx.
+
+    const bool invert = false;
+    neopixels_serial.begin(NEOPIXELS_ARDUINO_BAUD_RATE, SERIAL_8N1, RX_TO_NEOPIXELS_GPIO, TX_TO_NEOPIXELS_GPIO, invert);
   }
 
   sendLemonStatus(LC_STARTUP);
 
-  M5.Lcd.setRotation(0);
-  M5.Lcd.setTextSize(2);
-  M5.Axp.ScreenBreath(ScreenBrightness);
-
-  p_primaryButton = &M5.BtnA;
-  p_secondButton = &M5.BtnB;
+  p_primaryButton = &redButton;
 
   if (enableOTAServer)
   {
@@ -942,16 +951,11 @@ void setup()
   // https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/peripherals/uart.html
   //  uart_set_mode(uart_number, UART_MODE_RS485_HALF_DUPLEX);
 
-  M5.Lcd.setRotation(1);
-  M5.Lcd.setTextSize(2);
-  M5.Lcd.setTextColor(TFT_WHITE, TFT_BLACK);
-  M5.Lcd.setCursor(0, 0);
-
-  gps_serial.begin(GPS_BAUD_RATE, SERIAL_8N1, GROVE_GPS_RX_PIN, GROVE_GPS_TX_PIN);   // pin 33=rx (white M5), pin 32=tx (yellow M5), specifies the grove SCL/SDA pins for Rx/Tx
+  gps_serial.begin(GPS_BAUD_RATE, SERIAL_8N1, GPS_RX_GPIO, GPS_TX_GPIO);   // pin 33=rx (white M5), pin 32=tx (yellow M5), specifies the grove SCL/SDA pins for Rx/Tx
 
   // setup second serial port for sending/receiving data to/from GoPro
-  GOPRO_SERIAL.setRxBufferSize(1024); // was 256 - must set before begin
-  GOPRO_SERIAL.begin(UPLINK_BAUD_RATE, SERIAL_8N2, HAT_GPS_RX_PIN, HAT_GPS_TX_PIN);
+  MAKO_GOPRO_SERIAL.setRxBufferSize(1024); // was 256 - must set before begin
+  MAKO_GOPRO_SERIAL.begin(UPLINK_BAUD_RATE, SERIAL_8N2, MAKO_GOPRO_RX_GPIO, MAKO_GOPRO_TX_GPIO);
 
   // cannot use Pin 0 for receive of GPS (resets on startup), can use Pin 36, can use 26
   // cannot use Pin 0 for transmit of GPS (resets on startup), only Pin 26 can be used for transmit.
@@ -1228,12 +1232,10 @@ int neopixelSerialByteRead = initNeopixelSerialByteRead;
 
 void loop()
 {
-  shutdownIfUSBPowerOff();
-
   if (haltAllProcessingDuringOTAUpload)
   {  
     delay(100);
-    toggleRedLED();
+    toggleStatusLED();
     return;
   }
 
@@ -1242,11 +1244,12 @@ void loop()
     if (mainBackColour == TFT_BLACK)
     {
       mainBackColour = TFT_ORANGE;
-      M5.Lcd.fillScreen(TFT_ORANGE);
+      // Do what for e-paper leak?
+//      M5.Lcd.fillScreen(TFT_ORANGE);
     }
   }
 
-  M5.Lcd.setTextColor(TFT_WHITE,mainBackColour);
+//  M5.Lcd.setTextColor(TFT_WHITE,mainBackColour);
 
   updateButtonsAndBuzzer();
 
@@ -1270,7 +1273,7 @@ void loop()
 
   while (enableGPSRead && gps_serial.available() > 0)
   {
-    checkForLeak(leakAlarmMsg, M5_POWER_SWITCH_PIN);
+    checkForLeak(leakAlarmMsg);
 
     if (ws.count() && millis() > timeOfNextStatUpdate)
     {
@@ -1306,12 +1309,12 @@ void loop()
         // Only require uplink message for GGA.
 
         //////////////////////////////////////////////////////////
-        // send message to outgoing serial connection to gopro
-        GOPRO_SERIAL.write(customiseSentence(gps.getSentence()));
+        // send message to outgoing serial connection to mako gopro
+        MAKO_GOPRO_SERIAL.write(customiseSentence(gps.getSentence()));
         consoleDownlinkMsgCount++;
 // breaks good uplinks - keep commented out
 //          int txDoneWaitMS = 100;
-//         uart_wait_tx_done(uart_number_gopro,pdMS_TO_TICKS(txDoneWaitMS));
+//         uart_wait_tx_done(uart_number_mako_gopro,pdMS_TO_TICKS(txDoneWaitMS));
 
         if (gps.isSentenceGGA())
         {
@@ -1336,7 +1339,7 @@ void loop()
         {
           // clear the onscreen counter that increments whilst attempting to get first valid location
           nofix_byte_loop_count = -1;
-          M5.Lcd.fillScreen(TFT_BLACK);
+//          M5.Lcd.fillScreen(TFT_BLACK);
         }
 
         updateButtonsAndBuzzer();
@@ -1361,8 +1364,9 @@ void loop()
         {
           // Bytes are being received but no valid location fix has been seen since startup
           // Increment byte count shown until first fix received.
-          M5.Lcd.setCursor(50, 100);
-          M5.Lcd.printf("%d", nofix_byte_loop_count++);
+
+//          M5.Lcd.setCursor(50, 100);
+//          M5.Lcd.printf("%d", nofix_byte_loop_count++);
         }
       }
     }
@@ -1375,18 +1379,18 @@ void loop()
   if (nofix_byte_loop_count > 0)
   {
     // No fix only shown on first acquisition.
-    M5.Lcd.setCursor(55, 5);
-    M5.Lcd.setTextSize(4);
-    M5.Lcd.print("No Fix\n\n   Lemon\n");
-    M5.Lcd.setCursor(110, 45);
-    M5.Lcd.printf("%c", journey_activity_indicator[(++journey_activity_count) % 4]);
+//    M5.Lcd.setCursor(55, 5);
+//    M5.Lcd.setTextSize(4);
+//    M5.Lcd.print("No Fix\n\n   Lemon\n");
+//    M5.Lcd.setCursor(110, 45);
+//    M5.Lcd.printf("%c", journey_activity_indicator[(++journey_activity_count) % 4]);
     sendLemonStatus(LC_NO_FIX);
 
-    // tells gopro M5 that gps is alive but no fix yet.
-    // gopro M5 can choose to show this data for test purposes, otherwise in
+    // tells mako gopro M5 that gps is alive but no fix yet.
+    // mako gopro M5 can choose to show this data for test purposes, otherwise in
     // swimming pool like new malden or putney there may be no gps signal so
     // won't be able to test the rest, eg compass, temperature, humidity, buttons, reed switches
-    // note the leak sensor is active at all times in the gopro M5.
+    // note the leak sensor is active at all times in the mako gopro M5.
     sendFakeGPSData_No_Fix();
 
     delay(250); // no fix wait
@@ -1398,18 +1402,18 @@ void loop()
     // to have gaps in the stream. There is no indication if GPS stream hangs
     // after first byte received, eg no bytes within 10 seconds.
 
-    M5.Lcd.setCursor(55, 5);
-    M5.Lcd.setTextSize(4);
-    M5.Lcd.print("No GPS\n\n   Lemon\n");
-    M5.Lcd.setCursor(110, 45);
-    M5.Lcd.printf("%c", journey_activity_indicator[(++journey_activity_count) % 4]);
+ //   M5.Lcd.setCursor(55, 5);
+ //   M5.Lcd.setTextSize(4);
+ //   M5.Lcd.print("No GPS\n\n   Lemon\n");
+ //   M5.Lcd.setCursor(110, 45);
+ //   M5.Lcd.printf("%c", journey_activity_indicator[(++journey_activity_count) % 4]);
     sendLemonStatus(LC_NO_GPS);
 
-    // tells gopro M5 that gps is alive but no fix yet.
-    // gopro M5 can choose to show this data for test purposes, otherwise in
+    // tells mako gopro M5 that gps is alive but no fix yet.
+    // mako gopro M5 can choose to show this data for test purposes, otherwise in
     // swimming pool like new malden or putney there may be no gps signal so
     // won't be able to test the rest, eg compass, temperature, humidity, buttons, reed switches
-    // note the leak sensor is active at all times in the gopro M5.
+    // note the leak sensor is active at all times in the mako gopro M5.
     sendFakeGPSData_No_GPS();
 
     delay(250); // no fix wait
@@ -1438,65 +1442,68 @@ void loop()
       if (tempDenominator > 0)
         uplinkBadMessagePercentage = 100.0*float(badUplinkMessageCount+uplinkMessageMissingCount)/tempDenominator;
       
-      M5.Lcd.setCursor(5, 5);
-      M5.Lcd.setTextColor(TFT_WHITE, mainBackColour);
-          
-      M5.Lcd.setTextSize(3);
+      // OLED-UPDATE-HERE
+      // M5.Lcd.setCursor(5, 5);
+      // M5.Lcd.setTextColor(TFT_WHITE, mainBackColour);          
+      // M5.Lcd.setTextSize(3);
 
       const bool showBadChecksumInsteadofAllBad=true;
 
-      if (showBadChecksumInsteadofAllBad)
-        M5.Lcd.printf("Fix %lu\nR^ %lu !%lu\n",fixCount, goodUplinkMessageCount, badChkSumUplinkMsgCount);
-      else
-        M5.Lcd.printf("Fix %lu\nR^ %lu !%lu\n",fixCount, goodUplinkMessageCount, badUplinkMessageCount);
+      // if (showBadChecksumInsteadofAllBad)
+      //   M5.Lcd.printf("Fix %lu\nR^ %lu !%lu\n",fixCount, goodUplinkMessageCount, badChkSumUplinkMsgCount);
+      // else
+      //   M5.Lcd.printf("Fix %lu\nR^ %lu !%lu\n",fixCount, goodUplinkMessageCount, badUplinkMessageCount);
  
-      if (g_offlineStorageThrottleApplied && telemetryPipeline.isPipelineDraining() == false)
-        M5.Lcd.setTextColor(TFT_WHITE, TFT_RED);
-      else if (g_offlineStorageThrottleApplied && telemetryPipeline.isPipelineDraining())
-        M5.Lcd.setTextColor(TFT_BLACK, TFT_ORANGE);
-      else if (telemetryPipeline.getPipelineLength() > 4)
-        M5.Lcd.setTextColor(TFT_BLACK, TFT_YELLOW);
-      else
-        M5.Lcd.setTextColor(TFT_WHITE, mainBackColour);
+      // if (g_offlineStorageThrottleApplied && telemetryPipeline.isPipelineDraining() == false)
+      //   M5.Lcd.setTextColor(TFT_WHITE, TFT_RED);
+      // else if (g_offlineStorageThrottleApplied && telemetryPipeline.isPipelineDraining())
+      //   M5.Lcd.setTextColor(TFT_BLACK, TFT_ORANGE);
+      // else if (telemetryPipeline.getPipelineLength() > 4)
+      //   M5.Lcd.setTextColor(TFT_BLACK, TFT_YELLOW);
+      // else
+      //   M5.Lcd.setTextColor(TFT_WHITE, mainBackColour);
 
-      const bool showPipeLength=false;
+      // this is a feature flag for testing
+      // const bool showPipeLength=false;
+      // if (showPipeLength)
+      //   M5.Lcd.printf("P %-3hu Mis %hu\n",telemetryPipeline.getPipelineLength(),uplinkMessageMissingCount);
+      // else
+      //   M5.Lcd.printf("L%-3hu Mis %hu\n",badLengthUplinkMsgCount,uplinkMessageMissingCount);
 
-      if (showPipeLength)
-        M5.Lcd.printf("P %-3hu Mis %hu\n",telemetryPipeline.getPipelineLength(),uplinkMessageMissingCount);
-      else
-        M5.Lcd.printf("L%-3hu Mis %hu\n",badLengthUplinkMsgCount,uplinkMessageMissingCount);
+      // if (WiFi.status() != WL_CONNECTED)
+      //   M5.Lcd.setTextColor(TFT_WHITE, TFT_RED);
+      // else
+      //   M5.Lcd.setTextColor(TFT_WHITE, mainBackColour);
 
-      if (WiFi.status() != WL_CONNECTED)
-        M5.Lcd.setTextColor(TFT_WHITE, TFT_RED);
-      else
-        M5.Lcd.setTextColor(TFT_WHITE, mainBackColour);
-
-      const bool showListenTimer = false;
-
-      if (showListenTimer)       
-        M5.Lcd.printf("Q %lu UT %lu  \n",privateMQTTUploadCount,uplinkMessageListenTimer);
-      else
-        M5.Lcd.printf("Q %lu !%.1f%%\n",privateMQTTUploadCount,uplinkBadMessagePercentage);
+      // this is a feature flag for testing
+      // const bool showListenTimer = false;
+      // if (showListenTimer)       
+      //   M5.Lcd.printf("Q %lu UT %lu  \n",privateMQTTUploadCount,uplinkMessageListenTimer);
+      // else
+      //   M5.Lcd.printf("Q %lu !%.1f%%\n",privateMQTTUploadCount,uplinkBadMessagePercentage);
       
-      M5.Lcd.setTextSize(2);
+      // M5.Lcd.setTextSize(2);
 
-      if (WiFi.status() != WL_CONNECTED) 
-        M5.Lcd.setTextColor(TFT_WHITE, TFT_RED);
-      else
-        M5.Lcd.setTextColor(TFT_WHITE, mainBackColour);
+      // if (WiFi.status() != WL_CONNECTED) 
+      //   M5.Lcd.setTextColor(TFT_WHITE, TFT_RED);
+      // else
+      //   M5.Lcd.setTextColor(TFT_WHITE, mainBackColour);
 
-      int16_t xCurs = M5.Lcd.getCursorX();
-      int16_t yCurs = M5.Lcd.getCursorY();
+      // int16_t xCurs = M5.Lcd.getCursorX();
+      // int16_t yCurs = M5.Lcd.getCursorY();
 
-//      M5.Lcd.printf("     %-15s", IPBuffer); //(WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() : "No WiFi         "));
-//      M5.Lcd.printf("     %i %-15s", showOnMapRequestIndex, showOnMapRequest.c_str()); //(WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() : "No WiFi         "));
-      M5.Lcd.printf("     %i %-15s", setTargetRequestIndex, setTargetRequest.c_str()); //(WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() : "No WiFi         "));
+      // Option 1 for this line output
+//      // M5.Lcd.printf("     %-15s", IPBuffer); //(WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() : "No WiFi         "));
+      // Option 2 for this line output
+//      // M5.Lcd.printf("     %i %-15s", showOnMapRequestIndex, showOnMapRequest.c_str()); //(WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() : "No WiFi         "));
+      // Option 3 for this line output - this is the one I have been using most recently
+//      M5.Lcd.printf("     %i %-15s", setTargetRequestIndex, setTargetRequest.c_str()); //(WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() : "No WiFi         "));
 
-      M5.Lcd.setCursor(xCurs,yCurs);
-      M5.Lcd.setTextColor(TFT_MAGENTA, TFT_BLACK);
-      M5.Lcd.printf("%.1fC",M5.Axp.GetTempInAXP192());
+      // M5.Lcd.setCursor(xCurs,yCurs);
+      // M5.Lcd.setTextColor(TFT_MAGENTA, TFT_BLACK);
+      // M5.Lcd.printf("%.1fC",M5.Axp.GetTempInAXP192());
 
-      M5.Lcd.setTextColor(TFT_WHITE, mainBackColour);
+      // M5.Lcd.setTextColor(TFT_WHITE, mainBackColour);
       uplinkMessageListenTimer = 0;
 
       if (ws.count() && millis() > timeOfNextStatUpdate)
@@ -1568,9 +1575,9 @@ void loop()
     timeOfNextLemonStatus = millis() + lemonStatusDutyCycle;
   }
 
-  checkForLeak(leakAlarmMsg, M5_POWER_SWITCH_PIN);
+  checkForLeak(leakAlarmMsg);
 
-  checkForReedSwitches();
+  checkForFloatBoxReedSwitches();
 
 #ifdef ENABLE_TELEGRAM_BOT_AT_COMPILE_TIME
   if (enableTelegram && now > timeOfNextTelegramBotUpdateSendMsg)
@@ -1584,20 +1591,23 @@ void loop()
 #endif
 }
 
-void checkForReedSwitches()
+// This is only a test function for the Arduino neopixel UART
+void checkForFloatBoxReedSwitches()
 {
   while (!writeLogToSerial && neopixels_serial.available())
   {
     neopixelSerialByteRead = neopixels_serial.read();
+    // have an indication on the screen of a byte read and which byte
+    // these map to the reed switches that are in the float box
     if (neopixelSerialByteRead == 100)
     {
       mainBackColour = TFT_BLUE;
-      M5.Lcd.fillScreen(TFT_BLUE);
+//      M5.Lcd.fillScreen(TFT_BLUE);
     }
     else if (neopixelSerialByteRead == 200)
     {
       mainBackColour = TFT_MAGENTA;
-      M5.Lcd.fillScreen(TFT_MAGENTA);
+//      M5.Lcd.fillScreen(TFT_MAGENTA);
     }
   }
 }
@@ -1642,10 +1652,6 @@ bool checkForValidPreambleOnUplink()
   // If uplink messages are to be decoded look for pre-amble sequence on Serial Rx
   if (enableReadUplinkComms)
   {
-    // 1.1 wait until all transmitted data sent to Mako (synchronous)
-//   int txDoneWaitMS = 100;
-//   uart_wait_tx_done(uart_number_gopro,pdMS_TO_TICKS(txDoneWaitMS));
-
     uint32_t nowUS = micros();
 
     downlinkSendMessageDurationMicroSeconds = (nowUS >= downlinkSendMessageDurationMicroSeconds ? nowUS - downlinkSendMessageDurationMicroSeconds : 0xFFFFFFFF - downlinkSendMessageDurationMicroSeconds + nowUS);
@@ -1654,7 +1660,7 @@ bool checkForValidPreambleOnUplink()
 
     preambleReceivedAfterMicroSeconds = micros();
 
-    // 1.2 Read received data searching for lead-in pattern from Tracker - MBJ\0AEJ\0
+    // 1.1 Read received data searching for lead-in pattern from Tracker - MBJ\0AEJ\0
     // wait upto uplinkLingerTimeoutAt milliseconds to receive the pre-amble
 
     char uplink_preamble_first_segment[] = "MBJ";
@@ -1667,12 +1673,12 @@ bool checkForValidPreambleOnUplink()
     char  preambleMBJ[preambleMBJSize] = "Preamble MBJ: ";
     char* nextIndex = preambleMBJ + strlen(preambleMBJ);
 
-    while ((GOPRO_SERIAL.available() || 
-            !GOPRO_SERIAL.available() && millis() < uplinkLingerTimeoutAt) && 
+    while ((MAKO_GOPRO_SERIAL.available() || 
+            !MAKO_GOPRO_SERIAL.available() && millis() < uplinkLingerTimeoutAt) && 
             *nextByteToFind != 0)
     {
       // throw away trash bytes from half-duplex clash - always present
-      char next = GOPRO_SERIAL.read();
+      char next = MAKO_GOPRO_SERIAL.read();
       if (next == *nextByteToFind)
       {
         if (writeLogToSerial && writeTelemetryLogToSerial)
@@ -1714,11 +1720,11 @@ bool checkForValidPreambleOnUplink()
     if (*nextByteToFind == 0)
     {
       // found an MBJ now find an AEJ, ignoring any other MBJs
-     while ((GOPRO_SERIAL.available() || 
-            !GOPRO_SERIAL.available() && millis() < uplinkLingerTimeoutAt) && 
+     while ((MAKO_GOPRO_SERIAL.available() || 
+            !MAKO_GOPRO_SERIAL.available() && millis() < uplinkLingerTimeoutAt) && 
             *nextSecondSegmentByteToFind != 0)
      {
-        char next = GOPRO_SERIAL.read();
+        char next = MAKO_GOPRO_SERIAL.read();
         if (next == *nextSecondSegmentByteToFind)
         {
           if (writeLogToSerial && writeTelemetryLogToSerial)
@@ -1808,13 +1814,13 @@ bool populateHeadWithMakoTelemetry(BlockHeader& headBlock, const bool validPream
     uint32_t endWait = millis() + maxWaitOneByteMS;
 
     // 3.1a Read the uplink message from Serial into the blockBuffer
-    while ((nextBlockByte-blockBuffer) < headMaxPayloadSize && (GOPRO_SERIAL.available() || millis() < endWait))
+    while ((nextBlockByte-blockBuffer) < headMaxPayloadSize && (MAKO_GOPRO_SERIAL.available() || millis() < endWait))
     {
       // must only listen for data when not sending gps data.
       // after send of gps must flush rx buffer
-      if (GOPRO_SERIAL.available())
+      if (MAKO_GOPRO_SERIAL.available())
       {
-        *(nextBlockByte++) = GOPRO_SERIAL.read();
+        *(nextBlockByte++) = MAKO_GOPRO_SERIAL.read();
         endWait = millis() + maxWaitOneByteMS;
       }
     }
@@ -2088,9 +2094,9 @@ void constructLemonTelemetryForStorage(struct LemonTelemetryForStorage& s, const
   s.consoleDownlinkMsgCount = consoleDownlinkMsgCount;    // GLOBAL
   s.telemetry_timestamp = lastGoodUplinkMessage;          // GLOBAL
   s.fixCount = fixCount;                                  // GLOBAL
-  s.vBusVoltage = (uint16_t)(M5.Axp.GetVBusVoltage() * 1000.0);
-  s.vBusCurrent = (uint16_t)(M5.Axp.GetVBusCurrent() * 100.0);
-  s.vBatVoltage = (uint16_t)(M5.Axp.GetBatVoltage() * 1000.0);
+  s.vBusVoltage = (uint16_t)(0.11);
+  s.vBusCurrent = (uint16_t)(0.11);
+  s.vBatVoltage = (uint16_t)(0.11);
   s.uplinkMessageMissingCount = (uint16_t)(uplinkMessageMissingCount);          // 40
   s.uplinkMessageLength = uplinkMessageLength;            // GLOBAL
   s.gps_hdop = (uint16_t)(l.gps_hdop * 10.0);
@@ -2339,7 +2345,7 @@ const char* fake_no_fix = "$GPRMC,235316.000,A,4003.9040,N,10512.5792,W,0.09,144
 
 void sendFakeGPSData_No_Fix()
 {
-  GOPRO_SERIAL.write(fake_no_fix);
+  MAKO_GOPRO_SERIAL.write(fake_no_fix);
   delay(100);
 }
 
@@ -2347,23 +2353,22 @@ const char* fake_no_gps = "$GPRMC,092204.999,A,4250.5589,S,14718.5084,E,0.00,89.
 
 void sendFakeGPSData_No_GPS()
 {
-  GOPRO_SERIAL.write(fake_no_gps);
+  MAKO_GOPRO_SERIAL.write(fake_no_gps);
   delay(100);
 }
 
-
 void toggleOTAActive()
 {
-  M5.Lcd.fillScreen(TFT_ORANGE);
-  M5.Lcd.setCursor(10, 10);
-  M5.Lcd.setTextSize(3);
-  M5.Lcd.setTextColor(TFT_WHITE, TFT_BLUE);
-  M5.Lcd.setRotation(1);
+  // M5.Lcd.fillScreen(TFT_ORANGE);
+  // M5.Lcd.setCursor(10, 10);
+  // M5.Lcd.setTextSize(3);
+  // M5.Lcd.setTextColor(TFT_WHITE, TFT_BLUE);
+  // M5.Lcd.setRotation(1);
 
   if (otaActive)
   {
     asyncWebServer.end();
-    M5.Lcd.println("OTA Disabled");
+    // M5.Lcd.println("OTA Disabled");
     otaActive = false;
     delay (2000);
   }
@@ -2372,131 +2377,87 @@ void toggleOTAActive()
     if (WiFi.status() == WL_CONNECTED)
     {
       asyncWebServer.begin();
-      M5.Lcd.printf("OTA Enabled");
+      // M5.Lcd.printf("OTA Enabled");
       otaActive = true;
     }
     else
     {
-      M5.Lcd.println("Error: Enable Wifi First");
+      // M5.Lcd.println("Error: Enable Wifi First");
     }
     delay (200);
   }
 
-  M5.Lcd.fillScreen(TFT_BLACK);
+  // M5.Lcd.fillScreen(TFT_BLACK);
 }
 
 void toggleWiFiActive()
 {
-  M5.Lcd.fillScreen(TFT_ORANGE);
-  M5.Lcd.setCursor(0, 0);
+  // M5.Lcd.fillScreen(TFT_ORANGE);
+  // M5.Lcd.setCursor(0, 0);
 
   if (WiFi.status() == WL_CONNECTED)
   {
     if (otaActive)
     {
       asyncWebServer.end();
-      M5.Lcd.println("OTA Disabled");
+//      M5.Lcd.println("OTA Disabled");
       otaActive = false;
     }
 
     WiFi.disconnect();
     ssid_connected = ssid_not_connected;
-    M5.Lcd.printf("Wifi Disabled");
+    // M5.Lcd.printf("Wifi Disabled");
     delay (2000);
   }
   else
   {
-    M5.Lcd.printf("Wifi Connecting");
+    // M5.Lcd.printf("Wifi Connecting");
 
     const bool wifiOnly = true;
     const int scanAttempts = 3;
     connectToWiFiAndInitOTA(wifiOnly,scanAttempts);
  
-    M5.Lcd.fillScreen(TFT_ORANGE);
-    M5.Lcd.setCursor(10, 10);
-    M5.Lcd.setTextSize(3);
-    M5.Lcd.setRotation(1);
-    M5.Lcd.setTextColor(TFT_WHITE, TFT_BLUE);
+    // M5.Lcd.fillScreen(TFT_ORANGE);
+    // M5.Lcd.setCursor(10, 10);
+    // M5.Lcd.setTextSize(3);
+    // M5.Lcd.setRotation(1);
+    // M5.Lcd.setTextColor(TFT_WHITE, TFT_BLUE);
 
-    M5.Lcd.printf(WiFi.status() == WL_CONNECTED ? "Wifi Enabled" : "No Connect");
+    // M5.Lcd.printf(WiFi.status() == WL_CONNECTED ? "Wifi Enabled" : "No Connect");
     
-    M5.Lcd.setTextColor(TFT_WHITE, TFT_BLACK);
+    // M5.Lcd.setTextColor(TFT_WHITE, TFT_BLACK);
     delay(2000);
   }
   
-  M5.Lcd.fillScreen(TFT_BLACK);
+  // M5.Lcd.fillScreen(TFT_BLACK);
 }
 
-void shutdownIfUSBPowerOff()
-{
-  if (M5.Axp.GetVBusVoltage() < minimumUSBVoltage)
-  {
-    if (USBVoltageDropTime == 0)
-      USBVoltageDropTime = millis();
-    else
-    {
-      if (millis() > USBVoltageDropTime + milliSecondsToWaitForShutDown)
-      {
-        M5.Axp.PowerOff();
-      }
-    }
-  }
-  else
-  {
-    if (USBVoltageDropTime != 0)
-      USBVoltageDropTime = 0;
-  }
-}
-
-void fadeToBlackAndShutdown()
-{
-  for (int i = 90; i > 0; i=i-15)
-  {
-    M5.Axp.ScreenBreath(i);             // fade to black
-    delay(100);
-  }
-
-  M5.Axp.PowerOff();
-}
-
-void checkForLeak(const char* msg, const uint8_t pin)
+void checkForLeak(const char* msg)
 {
   bool leakStatus = false;
 
-  if (pin == M5_POWER_SWITCH_PIN)
-  {
-    leakStatus = (M5.Axp.GetBtnPress());
-  }
-  else
-  {
-    leakStatus = !(digitalRead(pin));
-  }
+  leakStatus = !(digitalRead(LEAK_DETECTOR_GPIO));
 
   if (leakStatus)
   {
-    M5.Lcd.fillScreen(TFT_RED);
-    M5.Lcd.setTextSize(3);
-    M5.Lcd.setCursor(5, 10);
-    M5.Lcd.setTextColor(TFT_WHITE, TFT_RED);
-    M5.Lcd.print(msg);
-    M5.Beep.setBeep(1200, 100);
-    M5.Beep.beep();
+    // M5.Lcd.fillScreen(TFT_RED);
+    // M5.Lcd.setTextSize(3);
+    // M5.Lcd.setCursor(5, 10);
+    // M5.Lcd.setTextColor(TFT_WHITE, TFT_RED);
+    // M5.Lcd.print(msg);
     delay(100);
     updateButtonsAndBuzzer();
 
-    M5.Lcd.fillScreen(TFT_ORANGE);
-    M5.Lcd.setCursor(5, 10);
-    M5.Lcd.setTextColor(TFT_YELLOW, TFT_ORANGE);
-    M5.Lcd.print(msg);
-    M5.Beep.setBeep(1500, 100);
-    M5.Beep.beep();
+    // M5.Lcd.fillScreen(TFT_ORANGE);
+    // M5.Lcd.setCursor(5, 10);
+    // M5.Lcd.setTextColor(TFT_YELLOW, TFT_ORANGE);
+    // M5.Lcd.print(msg);
     delay(100);
 
     updateButtonsAndBuzzer();
-    M5.Lcd.setTextSize(2);
-    M5.Lcd.setTextColor(TFT_WHITE, TFT_BLACK);
-    M5.Lcd.fillScreen(TFT_BLACK);
-    M5.Beep.mute();
+    // M5.Lcd.setTextSize(2);
+    // M5.Lcd.setTextColor(TFT_WHITE, TFT_BLACK);
+    // M5.Lcd.fillScreen(TFT_BLACK);
   }
 }
 
@@ -2504,7 +2465,7 @@ const char* scanForKnownNetwork() // return first known network found
 {
   const char* network = nullptr;
 
-  M5.Lcd.println("Scan WiFi\nSSIDs...");
+//  M5.Lcd.println("Scan WiFi\nSSIDs...");
   int8_t scanResults = WiFi.scanNetworks();
 
   if (scanResults != 0)
@@ -2531,14 +2492,14 @@ const char* scanForKnownNetwork() // return first known network found
 
   if (network)
   {
-      M5.Lcd.printf("Found:\n%s",network);
+      // M5.Lcd.printf("Found:\n%s",network);
 
     if (writeLogToSerial)
       USB_SERIAL.printf("Found:\n%s\n",network);
   }
   else
   {
-    M5.Lcd.println("None\nFound");
+    // M5.Lcd.println("None\nFound");
     if (writeLogToSerial)
       USB_SERIAL.println("No networks Found\n");
   }
@@ -2554,9 +2515,9 @@ bool connectToWiFiAndInitOTA(const bool wifiOnly, int repeatScanAttempts)
   if (wifiOnly && WiFi.status() == WL_CONNECTED)
     return true;
 
-  M5.Lcd.setCursor(0, 0);
-  M5.Lcd.fillScreen(TFT_BLACK);
-  M5.Lcd.setTextSize(2);
+  // M5.Lcd.setCursor(0, 0);
+  // M5.Lcd.fillScreen(TFT_BLACK);
+  // M5.Lcd.setTextSize(2);
 
   while (repeatScanAttempts-- &&
          (WiFi.status() != WL_CONNECTED ||
@@ -2616,10 +2577,10 @@ void webSerialReceiveMessage(uint8_t *data, size_t len){
   WebSerial.println(d);
 
   if (d == "ON"){
-    digitalWrite(RED_LED_GPIO, LOW);
+    statusLEDOn();
   }
   else if (d=="OFF"){
-    digitalWrite(RED_LED_GPIO, HIGH);
+    statusLEDOff();
   }
   else if (d=="serial-off")
   {
@@ -2643,9 +2604,9 @@ bool setupOTAWebServer(const char* _ssid, const char* _password, const char* lab
 
   bool forcedCancellation = false;
 
-  M5.Lcd.setCursor(0, 0);
-  M5.Lcd.fillScreen(TFT_BLACK);
-  M5.Lcd.setTextSize(2);
+  // M5.Lcd.setCursor(0, 0);
+  // M5.Lcd.fillScreen(TFT_BLACK);
+  // M5.Lcd.setTextSize(2);
   bool connected = false;
   WiFi.mode(WIFI_STA);
   WiFi.config(INADDR_NONE, INADDR_NONE, INADDR_NONE, INADDR_NONE);
@@ -2658,7 +2619,7 @@ bool setupOTAWebServer(const char* _ssid, const char* _password, const char* lab
 #endif
 
   // Wait for connection for max of timeout/1000 seconds
-  M5.Lcd.printf("%s Wifi", label);
+  // M5.Lcd.printf("%s Wifi", label);
   int count = timeout / 500;
   while (WiFi.status() != WL_CONNECTED && --count > 0)
   {
@@ -2671,10 +2632,10 @@ bool setupOTAWebServer(const char* _ssid, const char* _password, const char* lab
       break;
     }
 
-    M5.Lcd.print(".");
+    // M5.Lcd.print(".");
     delay(500);
   }
-  M5.Lcd.print("\n\n");
+  // M5.Lcd.print("\n\n");
 
   if (WiFi.status() == WL_CONNECTED )
   {
@@ -2810,45 +2771,39 @@ bool setupOTAWebServer(const char* _ssid, const char* _password, const char* lab
       if (writeLogToSerial)
         USB_SERIAL.println("setupOTAWebServer: OTA setup complete");
 
-      M5.Lcd.setRotation(0);
+      // M5.Lcd.setRotation(0);
       
-      M5.Lcd.fillScreen(TFT_BLACK);
-      M5.Lcd.setCursor(0,155);
-      M5.Lcd.setTextSize(2);
-      M5.Lcd.printf("%s\n\n",WiFi.localIP().toString());
-      M5.Lcd.println(WiFi.macAddress());
-      connected = true;
+      // M5.Lcd.fillScreen(TFT_BLACK);
+      // M5.Lcd.setCursor(0,155);
+      // M5.Lcd.setTextSize(2);
+      // M5.Lcd.printf("%s\n\n",WiFi.localIP().toString());
+      // M5.Lcd.println(WiFi.macAddress());
+      // connected = true;
       otaActive = true;
-  
-      M5.Lcd.qrcode("http://"+WiFi.localIP().toString()+"/update",0,0,135);
-  
+    
       delay(2000);
 
       connected = true;
   
       updateButtonsAndBuzzer();
-  
-      if (p_secondButton->isPressed())
-      {
-        M5.Lcd.print("\n\n20\nsecond pause");
-        delay(20000);
       }
-    }
   }
   else
   {
     if (forcedCancellation)
-      M5.Lcd.print("\nCancelled\nConnect\nAttempts");
+    {
+      // M5.Lcd.print("\nCancelled\nConnect\nAttempts");
+    }
     else
     {
       if (writeLogToSerial)
         USB_SERIAL.printf("setupOTAWebServer: WiFi failed to connect %s\n",_ssid);
 
-      M5.Lcd.print("No Connect");
+      // M5.Lcd.print("No Connect");
     }
   }
 
-  M5.Lcd.fillScreen(TFT_BLACK);
+  // M5.Lcd.fillScreen(TFT_BLACK);
 
   return connected;
 }
@@ -2983,7 +2938,7 @@ enum e_q_upload_status uploadTelemetryToPrivateMQTT(MakoUplinkTelemetryForJson* 
 
         if (result)
         {
-          toggleRedLED();
+          toggleStatusLED();
           uploadStatus = Q_SUCCESS_SEND;
 //          if (writeLogToSerial)
   //          USB_SERIAL.printf("PrivateMQTT Client sent message %s\n", mqtt_payload);
