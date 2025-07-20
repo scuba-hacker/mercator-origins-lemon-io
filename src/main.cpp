@@ -133,16 +133,14 @@ const int NEOPIXELS_ARDUINO_BAUD_RATE = 9600;
 
 #define MAKO_GOPRO_SERIAL Serial1
 
-const uint8_t GPS_TX_GPIO = 38;
-const uint8_t GPS_RX_GPIO = 39;
+const uint8_t GPS_TX_GPIO = 39;
+const uint8_t GPS_RX_GPIO = 38;
 
-const uint8_t MAKO_GOPRO_TX_GPIO = 38;    // should be called mako gopro GPIO
-const uint8_t MAKO_GOPRO_RX_GPIO = 39;    // should be called mako gopro GPIO
+const uint8_t MAKO_GOPRO_TX_GPIO = 43;    // should be called mako gopro GPIO
+const uint8_t MAKO_GOPRO_RX_GPIO = 44;    // should be called mako gopro GPIO
 
 const uint8_t TX_TO_NEOPIXELS_GPIO = 40;
 const uint8_t RX_TO_NEOPIXELS_GPIO = 41;
-
-const uint8_t STATUS_LED_GPIO = 42;
 
 #define STATUS_LED_ON HIGH
 #define STATUS_LED_OFF LOW
@@ -297,7 +295,7 @@ int32_t checkInternetConnectivityDutyCycle = 10000; // 30 seconds between each c
 
 const uint16_t pipelineBackedUpLength = 10;
 
-const uint8_t LEAK_DETECTOR_GPIO = 42;
+const uint8_t LEAK_DETECTOR_GPIO = 7;
 
 Button* p_primaryButton = nullptr;
 void updateButtonsAndBuzzer();
@@ -1329,6 +1327,7 @@ void loop()
 
 //          M5.Lcd.setCursor(50, 100);
 //          M5.Lcd.printf("%d", nofix_byte_loop_count++);
+          USB_SERIAL_PRINTLN("NO GPS FIX - BYTES BEING RECEIVED");
         }
       }
     }
@@ -1355,6 +1354,8 @@ void loop()
     // note the leak sensor is active at all times in the mako gopro M5.
     sendFakeGPSData_No_Fix();
 
+    USB_SERIAL_PRINTLN("NO GPS FIX - BYTES BEING RECEIVED");
+
     delay(250); // no fix wait
   }
   else if (nofix_byte_loop_count != -1)
@@ -1377,6 +1378,8 @@ void loop()
     // won't be able to test the rest, eg compass, temperature, humidity, buttons, reed switches
     // note the leak sensor is active at all times in the mako gopro M5.
     sendFakeGPSData_No_GPS();
+
+    USB_SERIAL_PRINTLN("NO GPS - NO BYTES RECEIVED FROM GPS FROM STARTUP");
 
     delay(250); // no fix wait
   }
