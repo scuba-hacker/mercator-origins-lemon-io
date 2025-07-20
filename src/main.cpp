@@ -77,10 +77,17 @@ JsonDocument readings;
 //#define USE_WEBSERIAL
 
 #ifdef USE_WEBSERIAL
-  #define USB_SERIAL WebSerial
+  #define USB_SERIAL_BASE WebSerial
 #else
-  #define USB_SERIAL Serial0
+  #define USB_SERIAL_BASE Serial0
 #endif
+
+#define USB_SERIAL_PRINTF(...) do { if (writeLogToSerial) USB_SERIAL_BASE.printf(__VA_ARGS__); } while(0)
+#define USB_SERIAL_PRINTLN(...) do { if (writeLogToSerial) USB_SERIAL_BASE.println(__VA_ARGS__); } while(0)
+#define USB_SERIAL_PRINT(...) do { if (writeLogToSerial) USB_SERIAL_BASE.print(__VA_ARGS__); } while(0)
+
+// Keep USB_SERIAL for non-conditional usage (like WebSerial setup)
+#define USB_SERIAL USB_SERIAL_BASE
 
 // START FEATURE ENABLE FLAGS
 bool writeLogToSerial = false;
@@ -302,7 +309,6 @@ void updateButtonsAndBuzzer()
 {
   p_primaryButton->read();
 }
-
 struct MakoStats
 {
   uint16_t minimum_sensor_read_time;
@@ -496,7 +502,7 @@ void checkConnectivity();
 bool isInternetAccessible();
 bool isScubaMosquittoBrokerAvailable();
 void dumpHeapUsage(const char* msg);
-char* customiseSentence(char* sentence);
+char* customiseNMEASentence(char* sentence, int showOnMapIndex);
 char* getMQTTPayloadBuffer();
 bool doesHeadCommitRequireForce(BlockHeader& block);
 bool checkForValidPreambleOnUplink();
@@ -618,8 +624,7 @@ void WiFiStationConnected(WiFiEvent_t event, WiFiEventInfo_t info)
 {
   strcpy(IPBuffer,wait_ip_label);
   
-  if (writeLogToSerial)
-    USB_SERIAL.printf("***** Connected to %s successfully! *****\n",info.wifi_sta_connected.ssid);
+  USB_SERIAL_PRINTF("***** Connected to %s successfully! *****\n",info.wifi_sta_connected.ssid);
 }
 
 void WiFiGotIP(WiFiEvent_t event, WiFiEventInfo_t info)
@@ -631,8 +636,7 @@ void WiFiGotIP(WiFiEvent_t event, WiFiEventInfo_t info)
   bool isDevNet = (!strcmp(IPLocalGateway,private_local_gateway) && !strcmp(WiFiSSID, private_dev_ssid));
   privateMQTT.setUsingDevNetwork(isDevNet);
 
-  if (writeLogToSerial)
-    USB_SERIAL.printf("***** WiFi CONNECTED IP: %s ******\n",IPBuffer);
+  USB_SERIAL_PRINTF("***** WiFi CONNECTED IP: %s ******\n",IPBuffer);
 }
 
 bool devNetworkInUse()
@@ -651,8 +655,7 @@ void WiFiLostIP(WiFiEvent_t event, WiFiEventInfo_t info)
 
   privateMQTT.setUsingDevNetwork(false);
 
-  if (writeLogToSerial)
-    USB_SERIAL.printf("***** WiFi LOST IP ******\n");
+  USB_SERIAL_PRINTF("***** WiFi LOST IP ******\n");
 }
 
 void WiFiStationDisconnected(WiFiEvent_t event, WiFiEventInfo_t info)
@@ -663,8 +666,7 @@ void WiFiStationDisconnected(WiFiEvent_t event, WiFiEventInfo_t info)
 
   privateMQTT.setUsingDevNetwork(false);
 
-  if (writeLogToSerial)
-    USB_SERIAL.printf("***** WiFi DISCONNECTED: Reason: %d ******\n",info.wifi_sta_disconnected.reason);
+  USB_SERIAL_PRINTF("***** WiFi DISCONNECTED: Reason: %d ******\n",info.wifi_sta_disconnected.reason);
   // Reason 2 
   // Reason 201
 }
@@ -689,47 +691,31 @@ void checkConnectivity()
       // messages are backing up and not draining, either a WiFi or 4G or broker server connection issue
       lastCheckForInternetConnectivityAt = millis();
 
-      if (writeLogToSerial)
-        USB_SERIAL.println("0. checkConnectivity: Pipeline not draining");
+      USB_SERIAL_PRINTLN("0. checkConnectivity: Pipeline not draining");
 
       if (WiFi.status() == WL_CONNECTED)
       {
-        if (writeLogToSerial)
-    		{
-          USB_SERIAL.println("1.1 checkConnectivity: WIFI is connected, ping 8.8.8.8");
-    		}
+        USB_SERIAL_PRINTLN("1.1 checkConnectivity: WIFI is connected, ping 8.8.8.8");
         
         // either a 4G or broker server connection issue
         if (isInternetAccessible())   // ping google DNS
         {
-          if (writeLogToSerial)
-          {
-            USB_SERIAL.println("1.2.1 checkConnectivity: WiFi ok, internet ping success");
-          }
+          USB_SERIAL_PRINTLN("1.2.1 checkConnectivity: WiFi ok, internet ping success");
         }
         else
         {
-          if (writeLogToSerial)
-          {
-            USB_SERIAL.println("1.2.2 checkConnectivity: WiFi ok, ping fail, out of coverage");
-          }
+          USB_SERIAL_PRINTLN("1.2.2 checkConnectivity: WiFi ok, ping fail, out of coverage");
           
           g_offlineStorageThrottleApplied = true;
         }
 
         if (isScubaMosquittoBrokerAvailable())
         {
-          if (writeLogToSerial)
-          {
-            USB_SERIAL.println("1.2.3 checkConnectivity: Scuba MQTT Broker ping success");
-          }
+          USB_SERIAL_PRINTLN("1.2.3 checkConnectivity: Scuba MQTT Broker ping success");
         }
         else
         {
-          if (writeLogToSerial)
-          {
-            USB_SERIAL.println("1.2.4 checkConnectivity: WiFi ok, ping google ok, MQTT Broker fail");
-          }
+          USB_SERIAL_PRINTLN("1.2.4 checkConnectivity: WiFi ok, ping google ok, MQTT Broker fail");
           
           g_offlineStorageThrottleApplied = true;
         }
@@ -739,19 +725,16 @@ void checkConnectivity()
       {
         g_offlineStorageThrottleApplied = true;
         
-        if (writeLogToSerial)
-          USB_SERIAL.println("checkConnectivity: WIFI not connected, attempt reconnect");
+        USB_SERIAL_PRINTLN("checkConnectivity: WIFI not connected, attempt reconnect");
 
         // Do a manual wifi reconnect attempt - synchronous
         if (WiFi.reconnect())
         {
-          if (writeLogToSerial)
-            USB_SERIAL.println("checkConnectivity: WIFI reconnect success");          
+          USB_SERIAL_PRINTLN("checkConnectivity: WIFI reconnect success");          
         }
         else
         {
-          if (writeLogToSerial)
-            USB_SERIAL.println("checkConnectivity: WIFI reconnect fail");          
+          USB_SERIAL_PRINTLN("checkConnectivity: WIFI reconnect fail");          
         }
       }
     }
@@ -771,39 +754,15 @@ bool isScubaMosquittoBrokerAvailable()
 
 void dumpHeapUsage(const char* msg)
 {  
-  if (writeLogToSerial)
-  {
-    multi_heap_info_t info;
-    heap_caps_get_info(&info, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT); // internal RAM, memory capable to store data or to create new task
-    USB_SERIAL.printf("\n%s : free heap bytes: %i  largest free heap block: %i min free ever: %i\n",  msg, info.total_free_bytes, info.largest_free_block, info.minimum_free_bytes);
-  }
+  multi_heap_info_t info;
+  heap_caps_get_info(&info, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT); // internal RAM, memory capable to store data or to create new task
+  USB_SERIAL_PRINTF("\n%s : free heap bytes: %i  largest free heap block: %i min free ever: %i\n",  msg, info.total_free_bytes, info.largest_free_block, info.minimum_free_bytes);
 }
 
-void toggleStatusLED()
-{
-  statusLED = !statusLED;
-  ProS3.setPixelPower(statusLED);
-  ProS3.writePixel();
-}
-
-void statusLEDOn()
-{
-  statusLED = true;
-  ProS3.setPixelPower(statusLED);
-  ProS3.writePixel();
-}
-
-void statusLEDOff()
-{
-  statusLED = false;
-  ProS3.setPixelPower(statusLED);
-  ProS3.writePixel();
-}
-
-void statusLEDColour()
-{
-    ProS3.setPixelColor(128,128,0);
-}
+void toggleStatusLED() { statusLED = !statusLED; ProS3.setPixelPower(statusLED); ProS3.writePixel(); }
+void statusLEDOn()     { statusLED = true;       ProS3.setPixelPower(statusLED); ProS3.writePixel(); }
+void statusLEDOff()    { statusLED = false;      ProS3.setPixelPower(statusLED); ProS3.writePixel(); }
+void statusLEDColour() { ProS3.setPixelColor(128,128,0); }
 
 bool haltAllProcessingDuringOTAUpload = false;
 
@@ -829,19 +788,18 @@ void disableFeaturesForOTA()
 
   haltAllProcessingDuringOTAUpload = true;
 
-  if (writeLogToSerial)
-  {
-    multi_heap_info_t info;
-    heap_caps_get_info(&info, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT); // internal RAM, memory capable to store data or to create new task
-    USB_SERIAL.printf("\n%s : free heap bytes: %i  largest free heap block: %i min free ever: %i\n",  "halted", info.total_free_bytes, info.largest_free_block, info.minimum_free_bytes);
-  }
+  dumpHeapUsage("Disabled OTA stats: ");
 
   telemetryPipeline.teardown();
 
-      #ifdef USE_WEBSERIAL
-        ws.closeAll();          // close all websocket connections for test page
-        WebSerial.closeAll();   // close all websocket connetions for WebSerial
-      #endif
+  dumpHeapUsage("Torn Down Telemetry Pipeline: ");
+
+  #ifdef USE_WEBSERIAL
+    ws.closeAll();          // close all websocket connections for test page
+    WebSerial.closeAll();   // close all websocket connetions for WebSerial
+
+    dumpHeapUsage("Closed Web Sockets and Web Serial : ");
+  #endif
 }
 
 TaskHandle_t mainTaskHandle = nullptr;
@@ -862,10 +820,10 @@ void setup()
   u8g2.begin();
 
   privateMQTT.setConnectionCallbacks(
-    [] { if (writeLogToSerial) USB_SERIAL.println("Local MQTT connected"); },
-    [] { if (writeLogToSerial) USB_SERIAL.println("Local MQTT disconnected"); },
-    [] { if (writeLogToSerial) USB_SERIAL.println("Remote MQTT connected"); },
-    [] { if (writeLogToSerial) USB_SERIAL.println("Remote MQTT disconnected"); }
+    [] { USB_SERIAL_PRINTLN("Local MQTT connected"); },
+    [] { USB_SERIAL_PRINTLN("Local MQTT disconnected"); },
+    [] { USB_SERIAL_PRINTLN("Remote MQTT connected"); },
+    [] { USB_SERIAL_PRINTLN("Remote MQTT disconnected"); }
   );
 
   mainTaskCoreId = xPortGetCoreID();
@@ -891,8 +849,7 @@ void setup()
 
   ssid_connected = ssid_not_connected;
 
-  if (writeLogToSerial)
-    USB_SERIAL.printf("sizeof LemonTelemetry: %lu\n",sizeof(LemonTelemetryForStorage));
+  USB_SERIAL_PRINTF("sizeof LemonTelemetry: %lu\n",sizeof(LemonTelemetryForStorage));
 
   const uint16_t maxPipelineBufferKB = 95;    // if telegram is enabled the pipeline needs to be 60KB or smaller. Without pipeline length can be 95KB.
   const uint16_t maxPipelineBlockPayloadSize = 256; // was 224 - Assuming 120 byte Mako Telemetry Msg and 104 byte Lemon Telemetry Msg
@@ -950,7 +907,7 @@ void setup()
   }
 }
 
-char* customiseSentence(char* sentence)
+char* customiseNMEASentence(char* sentence, int showOnMapIndex)
 {  
   const int minimumSentenceLength = 48;
 
@@ -966,10 +923,7 @@ char* customiseSentence(char* sentence)
     }
   }
 
-  if (writeLogToSerial)
-  {
-    USB_SERIAL.printf("0. startSentence index = %i\n",startSentenceIndex);
-  }
+  USB_SERIAL_PRINTF("0. startSentence index = %i\n",startSentenceIndex);
 
   const bool isGNGGA = ((strncmp(startSentence,"$GPGGA",6) == 0 ||
                          strncmp(startSentence,"$GNGGA",6) == 0));
@@ -979,24 +933,21 @@ char* customiseSentence(char* sentence)
 
   bool overrideLocation = false;
 
-  if (writeLogToSerial)
-  {
-    USB_SERIAL.println("0. checking for override location");
-    USB_SERIAL.printf("0.0 showOnMapRequestIndex=%i isGNGAA=%i isGNRMC=%i strlen(startSentence)=%zu\n",showOnMapRequestIndex, (isGNGGA ? 1 : 0),(isGNRMC ? 1 : 0), strnlen(startSentence,minimumSentenceLength));
-    USB_SERIAL.printf("0.1 %s\n",startSentence);
-  }
+  USB_SERIAL_PRINTLN("0. checking for override location");
+  USB_SERIAL_PRINTF("0.0 showOnMapIndex=%i isGNGAA=%i isGNRMC=%i strlen(startSentence)=%zu\n",showOnMapIndex, (isGNGGA ? 1 : 0),(isGNRMC ? 1 : 0), strnlen(startSentence,minimumSentenceLength));
+  USB_SERIAL_PRINTF("0.1 %s\n",startSentence);
 
-  if (  showOnMapRequestIndex >= 0 && 
+  // 
+  if (  showOnMapIndex >= 0 && 
         (isGNGGA || isGNRMC) && 
         strnlen(startSentence,minimumSentenceLength) >= minimumSentenceLength)
   {
-    if (writeLogToSerial)
-      USB_SERIAL.println("1. Entered override location");
+    USB_SERIAL_PRINTLN("1. Entered override location");
     
     overrideLocation = true;
     // spoof GPS to be reporting lat/long at selected feature
-    double longOverride = WraysburyWaypoints::waypoints[showOnMapRequestIndex]._long;
-    double latOverride = WraysburyWaypoints::waypoints[showOnMapRequestIndex]._lat;
+    double longOverride = WraysburyWaypoints::waypoints[showOnMapIndex]._long;
+    double latOverride = WraysburyWaypoints::waypoints[showOnMapIndex]._lat;
 
     char directionLong = 'E';
     char directionLat = 'N';
@@ -1030,10 +981,7 @@ char* customiseSentence(char* sentence)
                           latDegrees,latMinutes,latMinuteFraction, directionLat, 
                           longDegrees,longMinutes, longMinuteFraction, directionLong);
 
-    if (writeLogToSerial)
-    {
-        USB_SERIAL.printf("1.1 %.60s    <-- new location\n", newLocation);
-    }
+    USB_SERIAL_PRINTF("1.1 %.60s    <-- new location\n", newLocation);
 
     int validDataRMCOffset = 16 + startSentenceIndex;
     char validDataGoodFixOverride = 'A';
@@ -1053,19 +1001,15 @@ char* customiseSentence(char* sentence)
 
     if (copyOffset >= 0)
     {
-      if (writeLogToSerial)
-      {
-        USB_SERIAL.println("2. Override Location");
-        USB_SERIAL.printf("3.0 %s    <-- Old Sentence\n", startSentence);
-      }
+      USB_SERIAL_PRINTLN("2. Override Location");
+      USB_SERIAL_PRINTF("3.0 %s    <-- Old Sentence\n", startSentence);
 
       memcpy(sentence+copyOffset,newLocation,lengthNMEALocation);
  
-      if (writeLogToSerial)
-        USB_SERIAL.printf("4.0 %s    <-- New Location Sentence\n", startSentence);
+      USB_SERIAL_PRINTF("4.0 %s    <-- New Location Sentence\n", startSentence);
     }
-    else if (writeLogToSerial)
-      USB_SERIAL.println("2. Not Overriding Location");
+    else
+      USB_SERIAL_PRINTLN("2. Not Overriding Location");
   }
   
   char overrideForNoInternetConnection = '\0';
@@ -1188,8 +1132,7 @@ char* customiseSentence(char* sentence)
         *p++ = "0123456789ABCDEF"[checksum & 0x0F]; // Low nibble
     }
 
-    if (writeLogToSerial)
-      USB_SERIAL.printf("5.0 %s    <-- All updates new  Location Sentence\n", startSentence);
+    USB_SERIAL_PRINTF("5.0 %s    <-- All updates new  Location Sentence\n", startSentence);
   }
 
   return sentence;
@@ -1288,11 +1231,8 @@ void loop()
 
         //////////////////////////////////////////////////////////
         // send message to outgoing serial connection to mako gopro
-        MAKO_GOPRO_SERIAL.write(customiseSentence(gps.getSentence()));
+        MAKO_GOPRO_SERIAL.write(customiseNMEASentence(gps.getSentence(), showOnMapRequestIndex));
         consoleDownlinkMsgCount++;
-// breaks good uplinks - keep commented out
-//          int txDoneWaitMS = 100;
-//         uart_wait_tx_done(uart_number_mako_gopro,pdMS_TO_TICKS(txDoneWaitMS));
 
         if (gps.isSentenceGGA())
         {
@@ -1307,10 +1247,7 @@ void loop()
         {
           fixCount = newFixCount;
 
-          if (writeLogToSerial)
-          {
-            USB_SERIAL.printf("\nFix: %lu Good GPS Msg: %lu Bad GPS Msg: %lu\n", fixCount, newPassedChecksum, gps.failedChecksum());
-          }
+          USB_SERIAL_PRINTF("\nFix: %lu Good GPS Msg: %lu Bad GPS Msg: %lu\n", fixCount, newPassedChecksum, gps.failedChecksum());
         }
 
         if (nofix_byte_loop_count > -1)
@@ -1561,8 +1498,7 @@ void loop()
   if (enableTelegram && now > timeOfNextTelegramBotUpdateSendMsg)
   {
     bool result = telegramBot.sendSimpleMessage(TELEGRAM_USER_ID, "Heartbeat", "");
-    if (writeLogToSerial)
-      USB_SERIAL.printf("Result of Bot Send - loop(): %d\n",result);
+    USB_SERIAL_PRINTF("Result of Bot Send - loop(): %d\n",result);
     timeOfNextTelegramBotUpdateSendMsg = millis() + telegramBotDutyCycle;
     dumpHeapUsage("loop() - after send telegram");
   }
@@ -1733,14 +1669,12 @@ const char* scanForKnownNetwork() // return first known network found
   {
       // M5.Lcd.printf("Found:\n%s",network);
 
-    if (writeLogToSerial)
-      USB_SERIAL.printf("Found:\n%s\n",network);
+    USB_SERIAL_PRINTF("Found:\n%s\n",network);
   }
   else
   {
     // M5.Lcd.println("None\nFound");
-    if (writeLogToSerial)
-      USB_SERIAL.println("No networks Found\n");
+    USB_SERIAL_PRINTLN("No networks Found\n");
   }
 
   // clean up ram
@@ -1837,14 +1771,12 @@ bool setupOTAWebServer(const char* _ssid, const char* _password, const char* lab
 {
   if (wifiOnly && WiFi.status() == WL_CONNECTED)
   {
-    if (writeLogToSerial)
-      USB_SERIAL.printf("setupOTAWebServer: attempt to connect wifiOnly, already connected - otaActive=%i\n",otaActive);
+    USB_SERIAL_PRINTF("setupOTAWebServer: attempt to connect wifiOnly, already connected - otaActive=%i\n",otaActive);
 
     return true;
   }
 
-  if (writeLogToSerial)
-    USB_SERIAL.printf("setupOTAWebServer: attempt to connect %s wifiOnly=%i when otaActive=%i\n",_ssid, wifiOnly,otaActive);
+  USB_SERIAL_PRINTF("setupOTAWebServer: attempt to connect %s wifiOnly=%i when otaActive=%i\n",_ssid, wifiOnly,otaActive);
 
   bool forcedCancellation = false;
 
@@ -1885,11 +1817,9 @@ bool setupOTAWebServer(const char* _ssid, const char* _password, const char* lab
   {
     if (wifiOnly == false && !otaActive)
     {
-      if (writeLogToSerial)
-        USB_SERIAL.println("setupOTAWebServer: WiFi connected ok, starting up OTA");
+      USB_SERIAL_PRINTLN("setupOTAWebServer: WiFi connected ok, starting up OTA");
 
-      if (writeLogToSerial)
-        USB_SERIAL.println("setupOTAWebServer: calling asyncWebServer.on");
+      USB_SERIAL_PRINTLN("setupOTAWebServer: calling asyncWebServer.on");
 
       asyncWebServer.on("/", HTTP_GET, [](AsyncWebServerRequest * request) 
       {
@@ -1987,8 +1917,7 @@ bool setupOTAWebServer(const char* _ssid, const char* _password, const char* lab
 
       initWebSocket();
 
-      if (writeLogToSerial)
-        USB_SERIAL.println("setupOTAWebServer: calling AsyncElegantOTA.begin");
+      USB_SERIAL_PRINTLN("setupOTAWebServer: calling AsyncElegantOTA.begin");
 
       AsyncElegantOTA.setID(MERCATOR_OTA_DEVICE_LABEL);
       AsyncElegantOTA.setUploadBeginCallback(uploadOTABeginCallback);
@@ -2005,15 +1934,13 @@ bool setupOTAWebServer(const char* _ssid, const char* _password, const char* lab
         }
       #endif
 
-      if (writeLogToSerial)
-        USB_SERIAL.println("setupOTAWebServer: calling asyncWebServer.begin");
+      USB_SERIAL_PRINTLN("setupOTAWebServer: calling asyncWebServer.begin");
 
       asyncWebServer.begin();
 
       dumpHeapUsage("setupOTAWebServer(): after asyncWebServer.begin");
 
-      if (writeLogToSerial)
-        USB_SERIAL.println("setupOTAWebServer: OTA setup complete");
+      USB_SERIAL_PRINTLN("setupOTAWebServer: OTA setup complete");
 
       // M5.Lcd.setRotation(0);
       
@@ -2040,8 +1967,7 @@ bool setupOTAWebServer(const char* _ssid, const char* _password, const char* lab
     }
     else
     {
-      if (writeLogToSerial)
-        USB_SERIAL.printf("setupOTAWebServer: WiFi failed to connect %s\n",_ssid);
+      USB_SERIAL_PRINTF("setupOTAWebServer: WiFi failed to connect %s\n",_ssid);
 
       // M5.Lcd.print("No Connect");
     }

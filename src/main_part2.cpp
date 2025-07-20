@@ -2,6 +2,22 @@
 
 #include "MercatorMQTT.h"
 
+// NOTE THESE EXTERNS and macros can be deleted once this split main is consolidated later
+
+// Import the macros from main.cpp
+extern bool writeLogToSerial;
+extern bool writeTelemetryLogToSerial;
+
+#ifdef USE_WEBSERIAL
+  #define USB_SERIAL_BASE WebSerial
+#else
+  #define USB_SERIAL_BASE Serial0
+#endif
+
+#define USB_SERIAL_PRINTF(...) do { if (writeLogToSerial) USB_SERIAL_BASE.printf(__VA_ARGS__); } while(0)
+#define USB_SERIAL_PRINTLN(...) do { if (writeLogToSerial) USB_SERIAL_BASE.println(__VA_ARGS__); } while(0)
+#define USB_SERIAL_PRINT(...) do { if (writeLogToSerial) USB_SERIAL_BASE.print(__VA_ARGS__); } while(0)
+
 bool checkForValidPreambleOnUplink()
 {
   bool validPreambleFound = false;
@@ -28,7 +44,7 @@ bool checkForValidPreambleOnUplink()
 
     const int preambleMBJSize = 256;
     char  preambleMBJ[preambleMBJSize] = "Preamble MBJ: ";
-    char* nextIndex = preambleMBJ + strlen(preambleMBJ);
+    char* nextCharIndexForSerialOutput = preambleMBJ + strlen(preambleMBJ);
 
     while ((MAKO_GOPRO_SERIAL.available() || 
             !MAKO_GOPRO_SERIAL.available() && millis() < uplinkLingerTimeoutAt) && 
@@ -38,41 +54,37 @@ bool checkForValidPreambleOnUplink()
       char next = MAKO_GOPRO_SERIAL.read();
       if (next == *nextByteToFind)
       {
-        if (writeLogToSerial && writeTelemetryLogToSerial)
-          *nextIndex++ = (isalnum(next) ? next : '?');
+        if (writeTelemetryLogToSerial)
+          *nextCharIndexForSerialOutput++ = (isalnum(next) ? next : '?');
 
         nextByteToFind++;
       }
       else
       {
-        if (writeLogToSerial && writeTelemetryLogToSerial)
-          *nextIndex++ = (isalnum(next) ? next : (next == 0 ? '0' : '?'));
+        if (writeTelemetryLogToSerial)
+          *nextCharIndexForSerialOutput++ = (isalnum(next) ? next : (next == 0 ? '0' : '?'));
 
         nextByteToFind = uplink_preamble_first_segment;    // make sure contiguous preamble found, reset search for first char of preamble
       }
 
-      if (writeLogToSerial && writeTelemetryLogToSerial)
-        if (nextIndex == preambleMBJ + preambleMBJSize-10)
-          nextIndex = preambleMBJ;
+      if (writeTelemetryLogToSerial)
+        if (nextCharIndexForSerialOutput == preambleMBJ + preambleMBJSize-10)
+          nextCharIndexForSerialOutput = preambleMBJ;
     }
 
-    if (writeLogToSerial && writeTelemetryLogToSerial)
+    if (writeTelemetryLogToSerial)
     {
-      *nextIndex++ = '\n';  *nextIndex++ = '\0';
+      *nextCharIndexForSerialOutput++ = '\n';  *nextCharIndexForSerialOutput++ = '\0';
 
-      if (writeLogToSerial && writeTelemetryLogToSerial)
-        USB_SERIAL.printf(preambleMBJ);
+      USB_SERIAL_PRINTF("%s", preambleMBJ);
 
       if (*nextByteToFind != 0)
-      {
-        if (writeLogToSerial && writeTelemetryLogToSerial)
-          USB_SERIAL.printf("    MBJ Timeout\n");
-      }
+          USB_SERIAL_PRINTF("    MBJ Timeout\n");
     }
 
     int preambleAEJSize = 256;
     char  preambleAEJ[preambleAEJSize] = "Preamble AEJ: ";
-    nextIndex = preambleAEJ + strlen(preambleAEJ);
+    nextCharIndexForSerialOutput = preambleAEJ + strlen(preambleAEJ);
 
     if (*nextByteToFind == 0)
     {
@@ -84,37 +96,37 @@ bool checkForValidPreambleOnUplink()
         char next = MAKO_GOPRO_SERIAL.read();
         if (next == *nextSecondSegmentByteToFind)
         {
-          if (writeLogToSerial && writeTelemetryLogToSerial)
-            *nextIndex++ = (isalnum(next) ? next : '?');
+          if (writeTelemetryLogToSerial)
+            *nextCharIndexForSerialOutput++ = (isalnum(next) ? next : '?');
           nextSecondSegmentByteToFind++;
         }
         else
         {
-          if (writeLogToSerial && writeTelemetryLogToSerial)
-            *nextIndex++ = (isalnum(next) ? next : (next == 0 ? '\0' : '?'));
+          if (writeTelemetryLogToSerial)
+            *nextCharIndexForSerialOutput++ = (isalnum(next) ? next : (next == 0 ? '\0' : '?'));
           nextSecondSegmentByteToFind = uplink_preamble_second_segment;    // make sure contiguous preamble found, reset search for first char of preamble
         }
 
-        if (writeLogToSerial && writeTelemetryLogToSerial)
-          if (nextIndex == preambleAEJ + preambleAEJSize-10)
-            nextIndex = preambleAEJ;
+        if (writeTelemetryLogToSerial)
+          if (nextCharIndexForSerialOutput == preambleAEJ + preambleAEJSize-10)
+            nextCharIndexForSerialOutput = preambleAEJ;
       }
     }
     else
     {
-      if (writeLogToSerial && writeTelemetryLogToSerial)
-        USB_SERIAL.printf("\nTimeout: Not Found preamble null terminator for MBJ\n");
+      if (writeTelemetryLogToSerial)
+        USB_SERIAL_PRINTF("\nTimeout: Not Found preamble null terminator for MBJ\n");
     }
 
-    if (writeLogToSerial && writeTelemetryLogToSerial)
+    if (writeTelemetryLogToSerial)
     {
-      *nextIndex++ = '\n';  *nextIndex++ = '\0';
-      USB_SERIAL.printf(preambleAEJ);
+      *nextCharIndexForSerialOutput++ = '\n';  *nextCharIndexForSerialOutput++ = '\0';
+      USB_SERIAL_PRINTF("%s", preambleAEJ);
 
       if (*nextSecondSegmentByteToFind != 0)
       {
         if (writeLogToSerial && writeTelemetryLogToSerial)
-          USB_SERIAL.printf("    AEJ Timeout\n");
+          USB_SERIAL_PRINTF("    AEJ Timeout\n");
       }
     }
 
@@ -123,8 +135,8 @@ bool checkForValidPreambleOnUplink()
       validPreambleFound = true;
       
       // message pre-amble found - read the rest of the received message.
-      if (writeLogToSerial && writeTelemetryLogToSerial)
-        USB_SERIAL.print("\nPre-Amble Found\n");
+      if (writeTelemetryLogToSerial)
+        USB_SERIAL_PRINT("\nPre-Amble Found\n");
     }
     else
     {
@@ -185,8 +197,8 @@ bool populateHeadWithMakoTelemetry(BlockHeader& headBlock, const bool validPream
     uint32_t nowUS = micros();
     uplinkRxMicroSeconds = (nowUS >= uplinkRxMicroSeconds ? nowUS - uplinkRxMicroSeconds : 0xFFFFFFFF - uplinkRxMicroSeconds + nowUS);
 
-    if (writeLogToSerial && writeTelemetryLogToSerial)
-      USB_SERIAL.printf("Rx Time: %lu\n",uplinkRxMicroSeconds);
+    if (writeTelemetryLogToSerial)
+      USB_SERIAL_PRINTF("Rx Time: %lu\n",uplinkRxMicroSeconds);
  
     receivedUplinkMessageCount++;
   }
@@ -200,9 +212,9 @@ bool populateHeadWithMakoTelemetry(BlockHeader& headBlock, const bool validPream
   // entire message received and stored into blockBuffer (makoHardcodedUplinkMessageLength)
   uint16_t uplinkMessageLength = nextBlockByte-blockBuffer;
 
-  if (writeLogToSerial && writeTelemetryLogToSerial)
+  if (writeTelemetryLogToSerial)
   {
-    USB_SERIAL.printf("Mako uplinkMessageLength == %hu    ",uplinkMessageLength);
+    USB_SERIAL_PRINTF("Mako uplinkMessageLength == %hu    ",uplinkMessageLength);
 
     char  firstLastBytes[512]="";
     
@@ -225,7 +237,7 @@ bool populateHeadWithMakoTelemetry(BlockHeader& headBlock, const bool validPream
     *nextIndex++='\n';
     *nextIndex++='\0';
 
-    USB_SERIAL.printf(firstLastBytes);
+    USB_SERIAL_PRINTF("%s", firstLastBytes);
   }
 
   // check integrity of Mako message here - increment good count or bad count
@@ -239,8 +251,7 @@ bool populateHeadWithMakoTelemetry(BlockHeader& headBlock, const bool validPream
         uplink_checksum = *((uint16_t*)(blockBuffer + uplinkMessageLength - 2));
       else
       {
-        if (writeLogToSerial)
-          USB_SERIAL.printf("decodeUplink bad msg length %%2!=0 %hu  Rx Time: %lu\n", uplinkMessageLength, uplinkRxMicroSeconds);
+        USB_SERIAL_PRINTF("decodeUplink bad msg length %%2!=0 %hu  Rx Time: %lu\n", uplinkMessageLength, uplinkRxMicroSeconds);
 
         headBlock.resetPayload();
 
@@ -258,15 +269,12 @@ bool populateHeadWithMakoTelemetry(BlockHeader& headBlock, const bool validPream
       // hardcoding needs to be removed and replaced with length check according to msgtype
       if (uplinkMessageLengthBad || uplink_checksum_bad)
       {
-        if (writeLogToSerial)
-        {
-          if (uplinkMessageLengthBad)
-            USB_SERIAL.printf("decodeUplink bad msg length %hu && checksum bad %hu  Rx Time: %lu\n", uplinkMessageLength, uplink_checksum, uplinkRxMicroSeconds);
-          else if (uplinkMessageLengthBad)
-            USB_SERIAL.printf("decodeUplink bad msg length only %hu  Rx Time: %lu\n", uplinkMessageLength, uplinkRxMicroSeconds);
-          else if (uplink_checksum_bad)
-            USB_SERIAL.printf("decodeUplink bad msg checksum only %hu  Rx Time: %lu\n", uplink_checksum, uplinkRxMicroSeconds);
-        }
+        if (uplinkMessageLengthBad)
+          USB_SERIAL_PRINTF("decodeUplink bad msg length %hu && checksum bad %hu  Rx Time: %lu\n", uplinkMessageLength, uplink_checksum, uplinkRxMicroSeconds);
+        else if (uplinkMessageLengthBad)
+          USB_SERIAL_PRINTF("decodeUplink bad msg length only %hu  Rx Time: %lu\n", uplinkMessageLength, uplinkRxMicroSeconds);
+        else if (uplink_checksum_bad)
+          USB_SERIAL_PRINTF("decodeUplink bad msg checksum only %hu  Rx Time: %lu\n", uplink_checksum, uplinkRxMicroSeconds);
         
         // clear blockBuffer
         headBlock.resetPayload();
@@ -320,8 +328,8 @@ void populateHeadWithLemonTelemetryAndCommit(BlockHeader& headBlock)
   uint8_t* blockBuffer = headBlock.getBuffer(blockMaxPayload);
   uint8_t* nextBlockByte = blockBuffer+roundedUpLength;
 
-  if (writeLogToSerial && writeTelemetryLogToSerial)
-    USB_SERIAL.printf("Mako roundedUpLength == %hu\n",roundedUpLength);
+  if (writeTelemetryLogToSerial)
+    USB_SERIAL_PRINTF("Mako roundedUpLength == %hu\n",roundedUpLength);
 
   uint16_t totalMakoAndLemonLength = roundedUpLength + sizeof(LemonTelemetryForStorage);
 
@@ -335,27 +343,25 @@ void populateHeadWithLemonTelemetryAndCommit(BlockHeader& headBlock)
     
     memcpy(nextBlockByte, (uint8_t*)&lemon_telemetry_for_storage,sizeof(LemonTelemetryForStorage));
     
-    if (writeLogToSerial && writeTelemetryLogToSerial)
-      USB_SERIAL.printf("memcpy done LemonTelemetryForStorage == sizeof %i\n",sizeof(LemonTelemetryForStorage));
+    if (writeTelemetryLogToSerial)
+      USB_SERIAL_PRINTF("memcpy done LemonTelemetryForStorage == sizeof %i\n",sizeof(LemonTelemetryForStorage));
 
     nextBlockByte+=sizeof(LemonTelemetryForStorage);
 
-    if (writeLogToSerial && writeTelemetryLogToSerial)
-      USB_SERIAL.printf("totalMakoAndLemonLength %hu\n",totalMakoAndLemonLength);
+    if (writeTelemetryLogToSerial)
+      USB_SERIAL_PRINTF("totalMakoAndLemonLength %hu\n",totalMakoAndLemonLength);
 
     headBlock.setPayloadSize(totalMakoAndLemonLength);
 
     bool isPipelineFull=false;
     telemetryPipeline.commitPopulatedHeadBlock(headBlock, isPipelineFull);
   
-    if (writeLogToSerial)
-      USB_SERIAL.printf("Commit head block: maxpipeblocklength=%hu longestpipe=%hu pipelineLength=%hu TH=%hu,%hu\n",telemetryPipeline.getMaximumPipelineLength(),telemetryPipeline.getMaximumDepth(),telemetryPipeline.getPipelineLength(),telemetryPipeline.getTailBlockIndex(),telemetryPipeline.getHeadBlockIndex());
+    USB_SERIAL_PRINTF("Commit head block: maxpipeblocklength=%hu longestpipe=%hu pipelineLength=%hu TH=%hu,%hu\n",telemetryPipeline.getMaximumPipelineLength(),telemetryPipeline.getMaximumDepth(),telemetryPipeline.getPipelineLength(),telemetryPipeline.getTailBlockIndex(),telemetryPipeline.getHeadBlockIndex());
   }
   else
   {
     // payload too large to fit into block
-    if (writeLogToSerial)
-      USB_SERIAL.printf("Combined Mako (%hu) and Lemon (%lu) payloads too large (%hu) to fit into telemetry block (%hu)\n",uplinkMessageLength,sizeof(LemonTelemetryForStorage),totalMakoAndLemonLength,blockMaxPayload);
+    USB_SERIAL_PRINTF("Combined Mako (%hu) and Lemon (%lu) payloads too large (%hu) to fit into telemetry block (%hu)\n",uplinkMessageLength,sizeof(LemonTelemetryForStorage),totalMakoAndLemonLength,blockMaxPayload);
   }
 }
 
@@ -373,8 +379,8 @@ void getNextTelemetryMessagesUploadedToPrivateMQTT()
   {
     tailPulls--;
     
-    if (writeLogToSerial && writeTelemetryLogToSerial)
-      USB_SERIAL.printf("tail block pulled\n");
+    if (writeTelemetryLogToSerial)
+      USB_SERIAL_PRINTF("tail block pulled\n");
 
     uint16_t maxPayloadSize = 0;
     uint8_t* makoPayloadBuffer = tailBlock.getBuffer(maxPayloadSize);
@@ -407,15 +413,11 @@ void getNextTelemetryMessagesUploadedToPrivateMQTT()
       
       g_offlineStorageThrottleApplied = false;
       
-      if (writeLogToSerial)
-      {
-        USB_SERIAL.printf("tail block committed:  pipelineLength=%hu TH=%hu,%hu\n",telemetryPipeline.getPipelineLength(),telemetryPipeline.getTailBlockIndex(),telemetryPipeline.getHeadBlockIndex());
-      }
+      USB_SERIAL_PRINTF("tail block committed:  pipelineLength=%hu TH=%hu,%hu\n",telemetryPipeline.getPipelineLength(),telemetryPipeline.getTailBlockIndex(),telemetryPipeline.getHeadBlockIndex());
     }
     else
     {
-      if (writeLogToSerial)
-        USB_SERIAL.printf("tail block NOT committed\n");
+      USB_SERIAL_PRINTF("tail block NOT committed\n");
 
       break;    // do not attempt any more tail pulls this event cycle
     }
@@ -850,8 +852,7 @@ enum e_q_upload_status uploadTelemetryToPrivateMQTT(MakoUplinkTelemetryForJson* 
             break;
           case MQTTConnectionResult::SEND_ERROR:
             uploadStatus = Q_MQTT_CLIENT_SEND_ERROR;
-            if (writeLogToSerial)
-              USB_SERIAL.printf("Private MQTT Client failed to send message. Publish returned false.\n");
+            USB_SERIAL_PRINTF("Private MQTT Client failed to send message. Publish returned false.\n");
             break;
           default:
             uploadStatus = Q_MQTT_CLIENT_SEND_ERROR;
@@ -862,12 +863,10 @@ enum e_q_upload_status uploadTelemetryToPrivateMQTT(MakoUplinkTelemetryForJson* 
     {
       if (WiFi.status() != WL_CONNECTED) {
         uploadStatus = Q_NO_WIFI_CONNECTION;
-        if (writeLogToSerial)
-          USB_SERIAL.println("Private MQTT No Wifi\n");
+        USB_SERIAL_PRINTLN("Private MQTT No Wifi\n");
       } else {
         uploadStatus = Q_MQTT_CLIENT_CONNECT_ERROR;
-        if (writeLogToSerial)
-          USB_SERIAL.printf("Private MQTT Client error - not connected\n");
+        USB_SERIAL_PRINTF("Private MQTT Client error - not connected\n");
       }
     }
   }
@@ -875,8 +874,7 @@ enum e_q_upload_status uploadTelemetryToPrivateMQTT(MakoUplinkTelemetryForJson* 
   {
     uploadStatus = Q_SUCCESS_NOT_ENABLED;
 
-    if (writeLogToSerial)
-      USB_SERIAL.println("Private MQTT Not Enabled\n");
+    USB_SERIAL_PRINTLN("Private MQTT Not Enabled\n");
   }
 
   return uploadStatus;
