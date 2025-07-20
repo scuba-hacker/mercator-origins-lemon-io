@@ -23,7 +23,6 @@ struct MQTTConfig {
     const char* local_gateway;
     const char* dev_ssid;
     bool enable_tls;
-    const char* ca_cert;
 };
 
 class MercatorMQTT {
