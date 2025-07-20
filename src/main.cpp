@@ -204,6 +204,10 @@ const char* wait_ip_label="Wait IP";
 const char* lost_ip_label="Lost IP";
 // #### END WIFI CONFIG AND LABELS
 
+bool restartForGoodOTAScheduled = false;
+uint32_t restartAfterGoodOTAUpdateAt = 0;
+
+
 const uint32_t maxTimeBeforeAlertNoFix = 3000;
 const uint32_t maxTimeBeforeAlertNoGPSByte = 2000;
 uint32_t timeNextGoodFixExpectedBy = 0;
@@ -821,6 +825,12 @@ void uploadOTABeginCallback(AsyncElegantOtaClass* originator)
   disableFeaturesForOTA();
 }
 
+void uploadOTASucceededCallback(AsyncElegantOtaClass* originator)
+{
+  restartAfterGoodOTAUpdateAt = millis() + 3000;
+  restartForGoodOTAScheduled = true;
+}
+
 void setup()
 {
   ProS3.begin();
@@ -1153,8 +1163,6 @@ char* customiseNMEASentence(char* sentence, int showOnMapIndex)
   return sentence;
 }
 
-
-
 uint32_t mainBackColour = TFT_BLACK;
 
 uint32_t timeOfNextLemonStatus = 0;
@@ -1175,7 +1183,7 @@ MQTTConnectionResult publishMQTTTestMessageOnDutyCycle(const char* topic="test_m
       char message[128];
       snprintf(message,sizeof(message),"[%lu] This is a test message from Lemon_V2 (%s)", millis(), privateMQTT.getEncryptionStatus());
       result = privateMQTT.publish(topic, message);
-      USB_SERIAL_PRINTF("[%lu] Publish MQTT3 Test message on topic %s (%s)  Result = %s\n", millis(), topic, privateMQTT.getEncryptionStatus(), MercatorMQTT::resultToText(result));
+      USB_SERIAL_PRINTF("[%lu] Publish MQTT Test message on topic %s (%s)  Result = %s\n", millis(), topic, privateMQTT.getEncryptionStatus(), MercatorMQTT::resultToText(result));
       lastTestMessagePublishedAt = millis();
     }
     return result;
@@ -1183,6 +1191,12 @@ MQTTConnectionResult publishMQTTTestMessageOnDutyCycle(const char* topic="test_m
 
 void loop()
 {
+  if (restartForGoodOTAScheduled && millis() >= restartAfterGoodOTAUpdateAt) 
+  {
+        USB_SERIAL_PRINTLN("Restarting now...");
+        ESP.restart();
+  }
+
   if (haltAllProcessingDuringOTAUpload)
   {  
     delay(100);
@@ -1954,6 +1968,7 @@ bool setupOTAWebServer(const char* _ssid, const char* _password, const char* lab
 
       AsyncElegantOTA.setID(MERCATOR_OTA_DEVICE_LABEL);
       AsyncElegantOTA.setUploadBeginCallback(uploadOTABeginCallback);
+      AsyncElegantOTA.setUploadSucceededCallback(uploadOTASucceededCallback);
       AsyncElegantOTA.begin(&asyncWebServer);    // Start AsyncElegantOTA
 
 
