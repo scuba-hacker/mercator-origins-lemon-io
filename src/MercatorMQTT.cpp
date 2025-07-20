@@ -11,7 +11,18 @@ MercatorMQTT::MercatorMQTT(const MQTTConfig& config, uint32_t minDutyMs, int16_t
     , usingDevNetwork(false)
     , enableConnect(true)
     , enableUpload(true)
+    , useTLS(config.enable_tls)
 {
+    if (useTLS) {
+        // Configure AsyncMqttClient for TLS (port 8883 enables TLS automatically)
+        localAsyncClient.setServer(config.local_host, config.local_port);
+        localAsyncClient.setClientId(config.client_id);
+        localAsyncClient.setCredentials(config.username, config.password);
+        
+        remoteAsyncClient.setServer(config.remote_host, config.remote_port);
+        remoteAsyncClient.setClientId(config.client_id);
+        remoteAsyncClient.setCredentials(config.username, config.password);
+    }
 }
 
 MercatorMQTT::~MercatorMQTT() {
@@ -22,33 +33,63 @@ void MercatorMQTT::setConnectionCallbacks(std::function<void()> localConnected,
                                          std::function<void()> localDisconnected,
                                          std::function<void()> remoteConnected,
                                          std::function<void()> remoteDisconnected) {
-    localClient.connected_callback = localConnected;
-    localClient.disconnected_callback = localDisconnected;
-    remoteClient.connected_callback = remoteConnected;
-    remoteClient.disconnected_callback = remoteDisconnected;
+    if (useTLS) {
+        // Store callbacks for AsyncMqttClient
+        localConnectedCallback = localConnected;
+        localDisconnectedCallback = localDisconnected;
+        remoteConnectedCallback = remoteConnected;
+        remoteDisconnectedCallback = remoteDisconnected;
+        
+        localAsyncClient.onConnect([this](bool sessionPresent) { if (localConnectedCallback) localConnectedCallback(); });
+        localAsyncClient.onDisconnect([this](AsyncMqttClientDisconnectReason reason) { if (localDisconnectedCallback) localDisconnectedCallback(); });
+        remoteAsyncClient.onConnect([this](bool sessionPresent) { if (remoteConnectedCallback) remoteConnectedCallback(); });
+        remoteAsyncClient.onDisconnect([this](AsyncMqttClientDisconnectReason reason) { if (remoteDisconnectedCallback) remoteDisconnectedCallback(); });
+    } else {
+        localClient.connected_callback = localConnected;
+        localClient.disconnected_callback = localDisconnected;
+        remoteClient.connected_callback = remoteConnected;
+        remoteClient.disconnected_callback = remoteDisconnected;
+    }
 }
 
 void MercatorMQTT::begin() {
     if (enableUpload) {
-        localClient.begin();
-        remoteClient.begin();
+        if (useTLS) {
+            // AsyncMqttClient connects automatically when needed
+        } else {
+            localClient.begin();
+            remoteClient.begin();
+        }
     }
 }
 
 void MercatorMQTT::loop() {
     if (enableUpload) {
-        getActiveClient()->loop();
+        if (!useTLS) {
+            getActivePicoClient()->loop();
+        }
+        // AsyncMqttClient handles its own loop internally
     }
 }
 
 void MercatorMQTT::disconnect() {
-    localClient.disconnect();
-    remoteClient.disconnect();
+    if (useTLS) {
+        localAsyncClient.disconnect();
+        remoteAsyncClient.disconnect();
+    } else {
+        localClient.disconnect();
+        remoteClient.disconnect();
+    }
 }
 
 bool MercatorMQTT::isConnected() const {
     if (!enableConnect) return false;
-    return getActiveClient()->connected();
+    if (useTLS) {
+        AsyncMqttClient* client = const_cast<AsyncMqttClient*>(usingDevNetwork ? &localAsyncClient : &remoteAsyncClient);
+        return client->connected();
+    } else {
+        return getActivePicoClient()->connected();
+    }
 }
 
 bool MercatorMQTT::canUpload() const {
@@ -58,12 +99,16 @@ bool MercatorMQTT::canUpload() const {
     return isConnected();
 }
 
-PicoMQTT::Client* MercatorMQTT::getActiveClient() {
+PicoMQTT::Client* MercatorMQTT::getActivePicoClient() {
     return usingDevNetwork ? &localClient : &remoteClient;
 }
 
-PicoMQTT::Client* MercatorMQTT::getActiveClient() const {
+PicoMQTT::Client* MercatorMQTT::getActivePicoClient() const {
     return usingDevNetwork ? const_cast<PicoMQTT::Client*>(&localClient) : const_cast<PicoMQTT::Client*>(&remoteClient);
+}
+
+AsyncMqttClient* MercatorMQTT::getActiveAsyncClient() {
+    return usingDevNetwork ? &localAsyncClient : &remoteAsyncClient;
 }
 
 bool MercatorMQTT::isDevNetwork() const {
@@ -79,18 +124,34 @@ MQTTConnectionResult MercatorMQTT::publish(const char* topic, const char* payloa
         return MQTTConnectionResult::WIFI_NOT_CONNECTED;
     }
     
-    PicoMQTT::Client* client = getActiveClient();
-    if (!client->connected()) {
-        return MQTTConnectionResult::CLIENT_CONNECT_ERROR;
-    }
-    
     lastUploadAt = millis();
-    bool result = client->publish(topic, payload, qos);
     
-    if (result) {
-        return MQTTConnectionResult::SUCCESS;
+    if (useTLS) {
+        AsyncMqttClient* client = getActiveAsyncClient();
+        if (!client->connected()) {
+            // Try to connect if not connected
+            client->connect();
+            return MQTTConnectionResult::CLIENT_CONNECT_ERROR;
+        }
+        
+        uint16_t packetId = client->publish(topic, qos, false, payload);
+        if (packetId != 0) {
+            return MQTTConnectionResult::SUCCESS;
+        } else {
+            return MQTTConnectionResult::SEND_ERROR;
+        }
     } else {
-        return MQTTConnectionResult::SEND_ERROR;
+        PicoMQTT::Client* client = getActivePicoClient();
+        if (!client->connected()) {
+            return MQTTConnectionResult::CLIENT_CONNECT_ERROR;
+        }
+        
+        bool result = client->publish(topic, payload, qos);
+        if (result) {
+            return MQTTConnectionResult::SUCCESS;
+        } else {
+            return MQTTConnectionResult::SEND_ERROR;
+        }
     }
 }
 

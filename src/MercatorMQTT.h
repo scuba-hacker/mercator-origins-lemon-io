@@ -1,6 +1,7 @@
 #pragma once
 
 #include <PicoMQTT.h>
+#include <AsyncMqttClient.h>
 #include <WiFi.h>
 
 enum class MQTTConnectionResult {
@@ -11,7 +12,6 @@ enum class MQTTConnectionResult {
     NOT_ENABLED,
     UNDEFINED_ERROR
 };
-
 struct MQTTConfig {
     const char* local_host;
     int local_port;
@@ -22,12 +22,19 @@ struct MQTTConfig {
     const char* password;
     const char* local_gateway;
     const char* dev_ssid;
+    bool enable_tls;
+    const char* ca_cert;
 };
 
 class MercatorMQTT {
 private:
+    // PicoMQTT clients (for non-TLS)
     PicoMQTT::Client localClient;
     PicoMQTT::Client remoteClient;
+    
+    // AsyncMqttClient clients (for TLS)
+    AsyncMqttClient localAsyncClient;
+    AsyncMqttClient remoteAsyncClient;
     
     uint32_t uploadMinDutyMs;
     uint32_t lastUploadAt;
@@ -37,9 +44,17 @@ private:
     bool usingDevNetwork;
     bool enableConnect;
     bool enableUpload;
+    bool useTLS;
     
-    PicoMQTT::Client* getActiveClient();
-    PicoMQTT::Client* getActiveClient() const;
+    // Callback storage for AsyncMqttClient
+    std::function<void()> localConnectedCallback;
+    std::function<void()> localDisconnectedCallback;
+    std::function<void()> remoteConnectedCallback;
+    std::function<void()> remoteDisconnectedCallback;
+    
+    PicoMQTT::Client* getActivePicoClient();
+    PicoMQTT::Client* getActivePicoClient() const;
+    AsyncMqttClient* getActiveAsyncClient();
     bool isDevNetwork() const;
     
 public:
@@ -67,4 +82,21 @@ public:
     uint32_t getLastUploadTime() const { return lastUploadAt; }
     char* getPayloadBuffer() { return payloadBuffer; }
     int16_t getPayloadSize() const { return payloadSize; }
+    bool isTLSEnabled() const { return useTLS; }
+    const char* getEncryptionStatus() const { return isTLSEnabled() ? "TLS" : "Not Encrypted"; }
+
+    static const char* resultToText(MQTTConnectionResult result)
+    {
+        switch (result) {
+            case MQTTConnectionResult::SUCCESS:            return "SUCCESS";
+            case MQTTConnectionResult::WIFI_NOT_CONNECTED: return "WIFI_NOT_CONNECTED";
+            case MQTTConnectionResult::CLIENT_CONNECT_ERROR: return "CLIENT_CONNECT_ERROR";
+            case MQTTConnectionResult::SEND_ERROR:         return "SEND_ERROR";
+            case MQTTConnectionResult::NOT_ENABLED:        return "NOT_ENABLED";
+            case MQTTConnectionResult::UNDEFINED_ERROR:    return "UNDEFINED_ERROR";
+            default:                                       return "UNKNOWN";
+    }
+}
+
+
 };

@@ -35,6 +35,10 @@ U8G2_SSD1309_128X64_NONAME0_F_4W_HW_SPI u8g2(U8G2_R0, OLED_CS_ORANGE, OLED_DC_PU
 #include <TelemetryPipeline.h>
 #define PICOMQTT_MAX_MESSAGE_SIZE 4096
 #include "MercatorMQTT.h"
+
+#include "root_ca.h"
+extern const char* isrg_root_ca;
+
 #include <WiFi.h>
 #include <ESP32Ping.h>
 
@@ -79,7 +83,7 @@ JsonDocument readings;
 #ifdef USE_WEBSERIAL
   #define USB_SERIAL_BASE WebSerial
 #else
-  #define USB_SERIAL_BASE Serial0
+  #define USB_SERIAL_BASE Serial
 #endif
 
 #define USB_SERIAL_PRINTF(...) do { if (writeLogToSerial) USB_SERIAL_BASE.printf(__VA_ARGS__); } while(0)
@@ -90,8 +94,10 @@ JsonDocument readings;
 #define USB_SERIAL USB_SERIAL_BASE
 
 // START FEATURE ENABLE FLAGS
-bool writeLogToSerial = false;
-bool writeTelemetryLogToSerial = false; // writeLogToSerial must also be true
+bool writeLogToSerial = true;
+bool writeTelemetryLogToSerial = true; // writeLogToSerial must also be true
+
+bool enableMQTTEncryption = true; // Set to true to use encrypted MQTT connections (port 8883, otherwise port 8887)
 
 bool enableReadUplinkComms = true;
 bool enableGPSRead = true;
@@ -99,6 +105,8 @@ bool enableAllUplinkMessageIntegrityChecks = true;
 bool enableConnectToPrivateMQTT = true;
 bool enableUploadToPrivateMQTT = true;
 const bool enableOTAServer = true;          // over the air updates
+
+const bool publishMQTTTestMessages = false;
 
 //#define ENABLE_TELEGRAM_BOT_AT_COMPILE_TIME
 #ifdef ENABLE_TELEGRAM_BOT_AT_COMPILE_TIME
@@ -131,7 +139,6 @@ const uint8_t GPS_RX_GPIO = 39;
 const uint8_t MAKO_GOPRO_TX_GPIO = 38;    // should be called mako gopro GPIO
 const uint8_t MAKO_GOPRO_RX_GPIO = 39;    // should be called mako gopro GPIO
 
-const uint8_t IR_LED_GPIO = 9; // not used
 const uint8_t TX_TO_NEOPIXELS_GPIO = 40;
 const uint8_t RX_TO_NEOPIXELS_GPIO = 41;
 
@@ -156,14 +163,16 @@ e_lemon_status lemonStatus = LC_STARTUP;
 // ################## START MQTT Configuration
 MQTTConfig mqttConfig = {
     private_mqqt_local_host,
-    private_mqqt_local_port,
+    enableMQTTEncryption ? private_mqqt_local_port_tls : private_mqqt_local_port,   // Use port 8883 for TLS, otherwise use configured port
     private_mqqt_remote_host,
-    private_mqqt_remote_port,
+    enableMQTTEncryption ? private_mqqt_remote_port_tls : private_mqqt_remote_port,  // Use port 8883 for TLS, otherwise use configured port
     private_mqqt_client_id,
     private_mqqt_username,
     private_mqqt_password,
     private_local_gateway,
-    private_dev_ssid
+    private_dev_ssid,
+    enableMQTTEncryption,  // enable_tls
+    nullptr         // ca_cert (optional)
 };
 
 MercatorMQTT privateMQTT(mqttConfig);
@@ -756,7 +765,10 @@ void dumpHeapUsage(const char* msg)
 {  
   multi_heap_info_t info;
   heap_caps_get_info(&info, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT); // internal RAM, memory capable to store data or to create new task
+
   USB_SERIAL_PRINTF("\n%s : free heap bytes: %i  largest free heap block: %i min free ever: %i\n",  msg, info.total_free_bytes, info.largest_free_block, info.minimum_free_bytes);
+  USB_SERIAL_PRINTF("Internal heap: %u bytes %u KB free\n", heap_caps_get_free_size(MALLOC_CAP_INTERNAL), heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024);
+  USB_SERIAL_PRINTF("SPIRAM heap  : %u bytes %u KB free\n", heap_caps_get_free_size(MALLOC_CAP_SPIRAM), heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024);
 }
 
 void toggleStatusLED() { statusLED = !statusLED; ProS3.setPixelPower(statusLED); ProS3.writePixel(); }
@@ -820,10 +832,10 @@ void setup()
   u8g2.begin();
 
   privateMQTT.setConnectionCallbacks(
-    [] { USB_SERIAL_PRINTLN("Local MQTT connected"); },
-    [] { USB_SERIAL_PRINTLN("Local MQTT disconnected"); },
-    [] { USB_SERIAL_PRINTLN("Remote MQTT connected"); },
-    [] { USB_SERIAL_PRINTLN("Remote MQTT disconnected"); }
+    [&] { USB_SERIAL_PRINTF("Local MQTT connected (%s)\n", privateMQTT.getEncryptionStatus()); },
+    [&] { USB_SERIAL_PRINTF("Local MQTT disconnected (%s)\n", privateMQTT.getEncryptionStatus()); },
+    [&] { USB_SERIAL_PRINTF("Remote MQTT connected (%s)\n", privateMQTT.getEncryptionStatus()); },
+    [&] { USB_SERIAL_PRINTF("Remote MQTT disconnected (%s)\n", privateMQTT.getEncryptionStatus()); }
   );
 
   mainTaskCoreId = xPortGetCoreID();
@@ -831,8 +843,8 @@ void setup()
 
   Serial.begin(115200);
   Serial.flush();
-  delay(50);
-  Serial.print("ProS3 Lemon initializing...");
+  delay(1000);
+  USB_SERIAL_PRINTLN("Unexpected Maker Pro S3 Initialised...");
 
   if (!SPIFFS.begin(true)) {
     Serial.println("SPIFFS mount failed");
@@ -851,10 +863,19 @@ void setup()
 
   USB_SERIAL_PRINTF("sizeof LemonTelemetry: %lu\n",sizeof(LemonTelemetryForStorage));
 
-  const uint16_t maxPipelineBufferKB = 95;    // if telegram is enabled the pipeline needs to be 60KB or smaller. Without pipeline length can be 95KB.
+  dumpHeapUsage("main: prior to Telemetry Pipeline creation  ");
+
+  // On M5 Stick C Plus - if telegram is enabled the pipeline needs to be 60KB or smaller. Without pipeline length can be 95KB.
+  // On ProS3 make it massive, eg 4MB! On ProS3 even a 60KB pipeline gets allocated to the PSRAM automatically.
+  // 4 MB of buffer equates to 2048 * 4 = 8192 messages.
+  // at one message every 2 seconds this is 4.5 hours of collection before running out of space!
+  // This means that if out of internet coverage then it will buffer for this long before getting back into coverage.
+  const uint16_t maxPipelineBufferKB = 2048;
   const uint16_t maxPipelineBlockPayloadSize = 256; // was 224 - Assuming 120 byte Mako Telemetry Msg and 104 byte Lemon Telemetry Msg
   BlockHeader::s_overrideMaxPayloadSize(maxPipelineBlockPayloadSize);  // 400 messages with 256 byte max payload. 
   telemetryPipeline.init(&millis,maxPipelineBufferKB);
+
+  dumpHeapUsage("main: after Telemetry Pipeline creation  ");
 
   statusLEDOff();
 
@@ -1151,6 +1172,21 @@ const uint32_t telegramBotDutyCycle = 10000;
 const int initNeopixelSerialByteRead = -1;
 int neopixelSerialByteRead = initNeopixelSerialByteRead;
 
+MQTTConnectionResult publishMQTTTestMessageOnDutyCycle(const char* topic="test_mqtt", uint32_t testPublishDutyCycle=1000)
+{
+    MQTTConnectionResult result = MQTTConnectionResult::UNDEFINED_ERROR;
+    static uint32_t lastTestMessagePublishedAt = millis();
+    if (millis() - lastTestMessagePublishedAt > testPublishDutyCycle)
+    {
+      char message[128];
+      snprintf(message,sizeof(message),"This is a test message from Lemon_V2 (%s)", privateMQTT.getEncryptionStatus());
+      result = privateMQTT.publish(topic, message);
+      USB_SERIAL_PRINTF("Publish MQTT Test message on topic %s (%s)  Result = %s\n", topic, privateMQTT.getEncryptionStatus(), MercatorMQTT::resultToText(result));
+      lastTestMessagePublishedAt = millis();
+    }
+    return result;
+}
+
 void loop()
 {
   if (haltAllProcessingDuringOTAUpload)
@@ -1178,6 +1214,9 @@ void loop()
   {
       privateMQTT.loop();
   }
+
+  if (publishMQTTTestMessages)
+    publishMQTTTestMessageOnDutyCycle();
 
   if (!accumulateMissedMessageCount && millis() > delayBeforeCountingMissedMessages)
     accumulateMissedMessageCount = true;
