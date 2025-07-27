@@ -17,20 +17,6 @@ UMS3 ProS3;
 #define OLED_DIN_MOSI_SDA_BLUE      35  // Standard Arduino Hardware SPI MOSI for Pro S3
 U8G2_SSD1322_NHD_256X64_F_4W_HW_SPI u8g2(U8G2_R0, OLED_CS_ORANGE, OLED_DC_PURPLE, OLED_RST_BROWN);
 
-// WiFi status scrolling line variables
-String wifiStatusLine = "";
-String wifiBaseStatusLine = "";  // Base line without progress chars
-int scrollOffset = 0;
-const int statusLineY = 55;
-const int maxLineWidth = 256;  // Full screen width
-bool showingProgress = false;
-int progressCharCount = 0;
-
-// Display scrolling system variables
-const int maxDisplayLines = 4;  // 64 pixels / 16 pixel line height
-String displayLines[maxDisplayLines];
-int currentLineCount = 0;
-
 #include <SPI.h>
 
 #include "FS.h"
@@ -261,21 +247,35 @@ bool diveInProgress = false;
 
 String getStats();
 
+
+// Generic scrolling status line variables
+String scrollingStatusLine = "";
+String baseStatusLine = "";  // Base line without progress chars
+int scrollOffset = 0;
+const int maxLineWidth = 256;  // Full screen width
+bool showingProgress = false;
+int progressCharCount = 0;
+
+// Display scrolling system variables
+const int maxDisplayLines = 4;  // 64 pixels / 16 pixel line height
+String displayLines[maxDisplayLines];
+int currentLineCount = 0;
+
 void refreshDisplay();
-void refreshDisplayPreserveWiFi();
+void updateScrollingStatusLineDisplay(int yPosition);
 
 void startProgressAnimation()
 {
   showingProgress = true;
   progressCharCount = 0;
-  wifiBaseStatusLine = wifiStatusLine;  // Save current line as base
+  baseStatusLine = scrollingStatusLine;  // Save current line as base
 }
 
 void stopProgressAnimation()
 {
   showingProgress = false;
   progressCharCount = 0;
-  wifiStatusLine = wifiBaseStatusLine;  // Restore base line without progress chars
+  scrollingStatusLine = baseStatusLine;  // Restore base line without progress chars
 }
 
 void updateProgressAnimation()
@@ -294,31 +294,11 @@ void updateProgressAnimation()
   }
   
   // Update the status line with progress
-  wifiStatusLine = wifiBaseStatusLine + progressDots;
+  scrollingStatusLine = baseStatusLine + progressDots;
   
-  // Display the updated line (with potential scrolling)
-  u8g2.setFont(u8g2_font_ncenB08_tr);
-  int textWidth = u8g2.getUTF8Width(wifiStatusLine.c_str());
-  
-  // Clear the status line area - make sure to clear entire width to remove old dots
-  u8g2.setDrawColor(0);  // Black (erase)
-  u8g2.drawBox(0, statusLineY-8, maxLineWidth, 10);
-  u8g2.setDrawColor(1);  // White (draw)
-  
-  // If text fits on screen, display normally
-  if (textWidth <= maxLineWidth) {
-    u8g2.drawStr(0, statusLineY, wifiStatusLine.c_str());
-    scrollOffset = 0;
-  } else {
-    // Text is too long, need to scroll to show the end
-    int targetScrollOffset = textWidth - maxLineWidth + 10;  // +10 for small margin
-    if (scrollOffset < targetScrollOffset) {
-      scrollOffset = targetScrollOffset;  // Jump to end position for progress display
-    }
-    u8g2.drawStr(-scrollOffset, statusLineY, wifiStatusLine.c_str());
-  }
-  
-  u8g2.sendBuffer();
+  // Note: Progress animation now needs Y position parameter
+  // For now, keeping the default Y=55 for backwards compatibility
+  updateScrollingStatusLineDisplay(55);
 }
 
 void addDisplayLine(const String& newLine, bool preserveWiFiLine = false, bool skipRefresh = false)
@@ -338,30 +318,8 @@ void addDisplayLine(const String& newLine, bool preserveWiFiLine = false, bool s
   
   // Redraw all lines (unless skipRefresh is true)
   if (!skipRefresh) {
-    if (preserveWiFiLine) {
-      refreshDisplayPreserveWiFi();
-    } else {
-      refreshDisplay();
-    }
+    refreshDisplay();
   }
-}
-
-void refreshDisplayPreserveWiFi()
-{
-  u8g2.setFont(u8g2_font_ncenB08_tr);
-  
-  // Clear only the multi-line display area (not the WiFi status line at y=55)
-  u8g2.setDrawColor(0);  // Black (erase)
-  u8g2.drawBox(0, 0, maxLineWidth, 50);  // Clear only up to y=50, preserve WiFi line
-  u8g2.setDrawColor(1);  // White (draw)
-  
-  // Draw all current lines
-  for (int i = 0; i < currentLineCount; i++) {
-    int yPos = 10 + (i * 15);  // 15 pixels between lines
-    u8g2.drawStr(0, yPos, displayLines[i].c_str());
-  }
-  
-  u8g2.sendBuffer();
 }
 
 void refreshDisplay()
@@ -382,7 +340,33 @@ void refreshDisplay()
   u8g2.sendBuffer();
 }
 
-void updateScrollingStatusLine(const String& newText, bool append = true, bool scrollOffPrevious = false)
+void updateScrollingStatusLineDisplay(int yPosition)
+{
+  u8g2.setFont(u8g2_font_ncenB08_tr);
+  int textWidth = u8g2.getUTF8Width(scrollingStatusLine.c_str());
+  
+  // Clear the status line area - make sure to clear entire width to remove old text
+  u8g2.setDrawColor(0);  // Black (erase)
+  u8g2.drawBox(0, yPosition-8, maxLineWidth, 10);
+  u8g2.setDrawColor(1);  // White (draw)
+  
+  // If text fits on screen, display normally
+  if (textWidth <= maxLineWidth) {
+    u8g2.drawStr(0, yPosition, scrollingStatusLine.c_str());
+    scrollOffset = 0;
+  } else {
+    // Text is too long, need to scroll to show the end
+    int targetScrollOffset = textWidth - maxLineWidth + 10;  // +10 for small margin
+    if (scrollOffset < targetScrollOffset) {
+      scrollOffset = targetScrollOffset;  // Jump to end position for progress display
+    }
+    u8g2.drawStr(-scrollOffset, yPosition, scrollingStatusLine.c_str());
+  }
+  
+  u8g2.sendBuffer();
+}
+
+void updateScrollingStatusLine(const String& newText, bool append = true, bool scrollOffPrevious = false, int yPosition = 55)
 {
   int pixelScrollDelay = 2;
   
@@ -392,19 +376,19 @@ void updateScrollingStatusLine(const String& newText, bool append = true, bool s
   }
   
   if (append) {
-    if (wifiStatusLine.length() > 0) {
-      wifiStatusLine += " -> " + newText;
+    if (scrollingStatusLine.length() > 0) {
+      scrollingStatusLine += " -> " + newText;
     } else {
-      wifiStatusLine = newText;
+      scrollingStatusLine = newText;
     }
   } else {
-    wifiStatusLine = newText;
+    scrollingStatusLine = newText;
     scrollOffset = 0;  // Reset scroll when replacing text
   }
   
   // Calculate text width
   u8g2.setFont(u8g2_font_ncenB08_tr);
-  int textWidth = u8g2.getUTF8Width(wifiStatusLine.c_str());
+  int textWidth = u8g2.getUTF8Width(scrollingStatusLine.c_str());
   
   if (scrollOffPrevious && append) {
     // Special mode: scroll off all previous text, leaving only the new message visible
@@ -416,11 +400,11 @@ void updateScrollingStatusLine(const String& newText, bool append = true, bool s
     while (scrollOffset < targetScrollOffset) {
       // Clear the status line area
       u8g2.setDrawColor(0);  // Black (erase)
-      u8g2.drawBox(0, statusLineY-8, maxLineWidth, 10);
+      u8g2.drawBox(0, yPosition-8, maxLineWidth, 10);
       u8g2.setDrawColor(1);  // White (draw)
       
       // Draw the text with current offset
-      u8g2.drawStr(-scrollOffset, statusLineY, wifiStatusLine.c_str());
+      u8g2.drawStr(-scrollOffset, yPosition, scrollingStatusLine.c_str());
       u8g2.sendBuffer();
       
       scrollOffset += 1;  // Scroll by 1 pixel at a time
@@ -432,10 +416,10 @@ void updateScrollingStatusLine(const String& newText, bool append = true, bool s
     if (textWidth <= maxLineWidth) {
       // Clear the status line area
       u8g2.setDrawColor(0);  // Black (erase)
-      u8g2.drawBox(0, statusLineY-8, maxLineWidth, 10);
+      u8g2.drawBox(0, yPosition-8, maxLineWidth, 10);
       u8g2.setDrawColor(1);  // White (draw)
       
-      u8g2.drawStr(0, statusLineY, wifiStatusLine.c_str());
+      u8g2.drawStr(0, yPosition, scrollingStatusLine.c_str());
       u8g2.sendBuffer();
       scrollOffset = 0;
     } else {
@@ -446,11 +430,11 @@ void updateScrollingStatusLine(const String& newText, bool append = true, bool s
       while (scrollOffset < targetScrollOffset) {
         // Clear the status line area
         u8g2.setDrawColor(0);  // Black (erase)
-        u8g2.drawBox(0, statusLineY-8, maxLineWidth, 10);
+        u8g2.drawBox(0, yPosition-8, maxLineWidth, 10);
         u8g2.setDrawColor(1);  // White (draw)
         
         // Draw the text with current offset
-        u8g2.drawStr(-scrollOffset, statusLineY, wifiStatusLine.c_str());
+        u8g2.drawStr(-scrollOffset, yPosition, scrollingStatusLine.c_str());
         u8g2.sendBuffer();
         
         scrollOffset += 1;  // Scroll by 1 pixel at a time
@@ -2032,14 +2016,14 @@ bool connectToWiFiAndInitOTA(const bool wifiOnly, int repeatScanAttempts)
     ssid_connected = WiFi.SSID();
     updateScrollingStatusLine("SUCCESS! Connected to " + ssid_connected, true, true);
     // Quietly add to display array for later scrolling, without refreshing screen
-    addDisplayLine("SUCCESS! Connected to " + ssid_connected, false, true);
+    addDisplayLine("SUCCESS! Connected to " + ssid_connected, true);
   }
   else
   {
     ssid_connected = ssid_not_connected;
     updateScrollingStatusLine("FAILED! Connection unsuccessful", true, true);
     // Quietly add to display array for later scrolling, without refreshing screen
-    addDisplayLine("FAILED! Connection unsuccessful", false, true);
+    addDisplayLine("FAILED! Connection unsuccessful", true);
   }
   
   return connected;
