@@ -7,6 +7,7 @@
 UMS3 ProS3;
 
 #include <U8g2lib.h>
+#include "OLEDDisplayManager.h"
 
 #define OLED_VCC_3V3_RED            "ABOVE DIN_MOSI_BLUE"
 #define OLED_GND_BLACK              "BELOW BATTERY PIN (TOP RIGHT NEXT TO USB-C)"
@@ -16,6 +17,9 @@ UMS3 ProS3;
 #define OLED_CLK_SCL_YELLOW         36  // Standard Arduino Hardware SPI CLK for Pro S3
 #define OLED_DIN_MOSI_SDA_BLUE      35  // Standard Arduino Hardware SPI MOSI for Pro S3
 U8G2_SSD1322_NHD_256X64_F_4W_HW_SPI u8g2(U8G2_R0, OLED_CS_ORANGE, OLED_DC_PURPLE, OLED_RST_BROWN);
+
+// Create display manager instance (256px wide, 4 lines max)
+OLEDDisplayManager displayManager(u8g2, 256, 4);
 
 #include <SPI.h>
 
@@ -248,201 +252,11 @@ bool diveInProgress = false;
 String getStats();
 
 
-// Generic scrolling status line variables
-String scrollingStatusLine = "";
-String baseStatusLine = "";  // Base line without progress chars
-int scrollOffset = 0;
-const int maxLineWidth = 256;  // Full screen width
-bool showingProgress = false;
-int progressCharCount = 0;
+// Display functionality now handled by OLEDDisplayManager class
 
-// Display scrolling system variables
-const int maxDisplayLines = 4;  // 64 pixels / 16 pixel line height
-String displayLines[maxDisplayLines];
-int currentLineCount = 0;
+// Progress animation methods moved to OLEDDisplayManager class
 
-void refreshDisplay();
-void updateScrollingStatusLineDisplay(int yPosition);
-
-void startProgressAnimation()
-{
-  showingProgress = true;
-  progressCharCount = 0;
-  baseStatusLine = scrollingStatusLine;  // Save current line as base
-}
-
-void stopProgressAnimation()
-{
-  showingProgress = false;
-  progressCharCount = 0;
-  scrollingStatusLine = baseStatusLine;  // Restore base line without progress chars
-}
-
-void updateProgressAnimation()
-{
-  if (!showingProgress) return;
-
-  const int maxDotCount = 5;      // Maximum of 10
-  // Add progress dots (up to maxDotCount, then cycle)
-  progressCharCount = (progressCharCount + 1) % (maxDotCount + 1);
-  
-  // Build progress string - ensure consistent width to overwrite previous dots
-  char progressDots[] = "            ";  // Start with 12 spaces to handle up to 10 dots (2 spaces + 8 dots)
-  for (int i = 0; i < progressCharCount; i++) 
-  {
-    progressDots[2 + i] = '.';  // Place dots starting at position 2
-  }
-  
-  // Update the status line with progress
-  scrollingStatusLine = baseStatusLine + progressDots;
-  
-  // Note: Progress animation now needs Y position parameter
-  // For now, keeping the default Y=55 for backwards compatibility
-  updateScrollingStatusLineDisplay(55);
-}
-
-void addDisplayLine(const String& newLine, bool preserveWiFiLine = false, bool skipRefresh = false)
-{
-  if (currentLineCount < maxDisplayLines) {
-    // Still have room, just add the line
-    displayLines[currentLineCount] = newLine;
-    currentLineCount++;
-  } else {
-    // Scroll up: shift all lines up by one
-    for (int i = 0; i < maxDisplayLines - 1; i++) {
-      displayLines[i] = displayLines[i + 1];
-    }
-    // Add new line at bottom
-    displayLines[maxDisplayLines - 1] = newLine;
-  }
-  
-  // Redraw all lines (unless skipRefresh is true)
-  if (!skipRefresh) {
-    refreshDisplay();
-  }
-}
-
-void refreshDisplay()
-{
-  u8g2.setFont(u8g2_font_ncenB08_tr);
-  
-  // Clear the display
-  u8g2.setDrawColor(0);  // Black (erase)
-  u8g2.drawBox(0, 0, maxLineWidth, 64);  // Clear entire display
-  u8g2.setDrawColor(1);  // White (draw)
-  
-  // Draw all current lines
-  for (int i = 0; i < currentLineCount; i++) {
-    int yPos = 10 + (i * 15);  // 15 pixels between lines
-    u8g2.drawStr(0, yPos, displayLines[i].c_str());
-  }
-  
-  u8g2.sendBuffer();
-}
-
-void updateScrollingStatusLineDisplay(int yPosition)
-{
-  u8g2.setFont(u8g2_font_ncenB08_tr);
-  int textWidth = u8g2.getUTF8Width(scrollingStatusLine.c_str());
-  
-  // Clear the status line area - make sure to clear entire width to remove old text
-  u8g2.setDrawColor(0);  // Black (erase)
-  u8g2.drawBox(0, yPosition-8, maxLineWidth, 10);
-  u8g2.setDrawColor(1);  // White (draw)
-  
-  // If text fits on screen, display normally
-  if (textWidth <= maxLineWidth) {
-    u8g2.drawStr(0, yPosition, scrollingStatusLine.c_str());
-    scrollOffset = 0;
-  } else {
-    // Text is too long, need to scroll to show the end
-    int targetScrollOffset = textWidth - maxLineWidth + 10;  // +10 for small margin
-    if (scrollOffset < targetScrollOffset) {
-      scrollOffset = targetScrollOffset;  // Jump to end position for progress display
-    }
-    u8g2.drawStr(-scrollOffset, yPosition, scrollingStatusLine.c_str());
-  }
-  
-  u8g2.sendBuffer();
-}
-
-void updateScrollingStatusLine(const String& newText, bool append = true, bool scrollOffPrevious = false, int yPosition = 55)
-{
-  int pixelScrollDelay = 2;
-  
-  // Stop any progress animation when updating text
-  if (showingProgress) {
-    stopProgressAnimation();
-  }
-  
-  if (append) {
-    if (scrollingStatusLine.length() > 0) {
-      scrollingStatusLine += " -> " + newText;
-    } else {
-      scrollingStatusLine = newText;
-    }
-  } else {
-    scrollingStatusLine = newText;
-    scrollOffset = 0;  // Reset scroll when replacing text
-  }
-  
-  // Calculate text width
-  u8g2.setFont(u8g2_font_ncenB08_tr);
-  int textWidth = u8g2.getUTF8Width(scrollingStatusLine.c_str());
-  
-  if (scrollOffPrevious && append) {
-    // Special mode: scroll off all previous text, leaving only the new message visible
-    // Calculate where the new message starts in the full string
-    int newMessageWidth = u8g2.getUTF8Width(newText.c_str());
-    int targetScrollOffset = textWidth - newMessageWidth;
-    
-    // Smooth scroll to push previous text off screen
-    while (scrollOffset < targetScrollOffset) {
-      // Clear the status line area
-      u8g2.setDrawColor(0);  // Black (erase)
-      u8g2.drawBox(0, yPosition-8, maxLineWidth, 10);
-      u8g2.setDrawColor(1);  // White (draw)
-      
-      // Draw the text with current offset
-      u8g2.drawStr(-scrollOffset, yPosition, scrollingStatusLine.c_str());
-      u8g2.sendBuffer();
-      
-      scrollOffset += 1;  // Scroll by 1 pixel at a time
-      delay(pixelScrollDelay);
-    }
-  } else {
-    // Normal behavior - scroll to show end of text
-    // If text fits on screen, display normally
-    if (textWidth <= maxLineWidth) {
-      // Clear the status line area
-      u8g2.setDrawColor(0);  // Black (erase)
-      u8g2.drawBox(0, yPosition-8, maxLineWidth, 10);
-      u8g2.setDrawColor(1);  // White (draw)
-      
-      u8g2.drawStr(0, yPosition, scrollingStatusLine.c_str());
-      u8g2.sendBuffer();
-      scrollOffset = 0;
-    } else {
-      // Text is too long, need to scroll to show the end
-      int targetScrollOffset = textWidth - maxLineWidth + 10;  // +10 for small margin
-      
-      // Smooth scroll to target position
-      while (scrollOffset < targetScrollOffset) {
-        // Clear the status line area
-        u8g2.setDrawColor(0);  // Black (erase)
-        u8g2.drawBox(0, yPosition-8, maxLineWidth, 10);
-        u8g2.setDrawColor(1);  // White (draw)
-        
-        // Draw the text with current offset
-        u8g2.drawStr(-scrollOffset, yPosition, scrollingStatusLine.c_str());
-        u8g2.sendBuffer();
-        
-        scrollOffset += 1;  // Scroll by 1 pixel at a time
-        delay(pixelScrollDelay);
-      }
-    }
-  }
-}
+// All display functions moved to OLEDDisplayManager class
 
 void sendLemonStatus(const e_lemon_status status)
 {
@@ -932,7 +746,7 @@ void setup()
   
   // Display startup status
   u8g2.setFont(u8g2_font_ncenB08_tr);
-  addDisplayLine("Lemon-IO Starting...");
+  displayManager.addDisplayLine("Lemon-IO Starting...");
 
   privateMQTT.setConnectionCallbacks(
     [&] { USB_SERIAL_PRINTF("Local MQTT connected (%s)\n", privateMQTT.getEncryptionStatus()); },
@@ -951,10 +765,10 @@ void setup()
 
   if (!SPIFFS.begin(true)) {
     Serial.println("SPIFFS mount failed");
-    addDisplayLine("SPIFFS Mount Failed");
+    displayManager.addDisplayLine("SPIFFS Mount Failed");
   } else {
     Serial.println("SPIFFS mounted OK");
-    addDisplayLine("SPIFFS OK");
+    displayManager.addDisplayLine("SPIFFS OK");
   }
 
   WiFi.onEvent(WiFiStationConnected, WiFiEvent_t::ARDUINO_EVENT_WIFI_STA_CONNECTED);
@@ -983,7 +797,7 @@ void setup()
   dumpHeapUsage("main: after Telemetry Pipeline creation  ");
   
   // Update status display
-  addDisplayLine("Telemetry Pipeline OK");
+  displayManager.addDisplayLine("Telemetry Pipeline OK");
 
   statusLEDOff();
 
@@ -1023,7 +837,7 @@ void setup()
   MAKO_GOPRO_SERIAL.setRxBufferSize(1024); // was 256 - must set before begin
   MAKO_GOPRO_SERIAL.begin(UPLINK_BAUD_RATE, SERIAL_8N2, MAKO_GOPRO_RX_GPIO, MAKO_GOPRO_TX_GPIO);
 
-  addDisplayLine("GPS Ready");
+  displayManager.addDisplayLine("GPS Ready");
   delay(500);
 
   // cannot use Pin 0 for receive of GPS (resets on startup), can use Pin 36, can use 26
@@ -1032,12 +846,12 @@ void setup()
   if (enableUploadToPrivateMQTT)
   {
     privateMQTT.begin();
-    addDisplayLine("MQTT Ready");
+    displayManager.addDisplayLine("MQTT Ready");
     delay(500);
   }
   
   // Final setup completion status - add to scrolling display
-  addDisplayLine("Lemon-IO Online @ " + WiFi.localIP().toString());
+  displayManager.addDisplayLine("Lemon-IO Online @ " + WiFi.localIP().toString());
   delay(2000);  // Show final status for 2 seconds
 
   mqttCheck.resetCheckTrigger(1500);
@@ -1319,11 +1133,11 @@ void loop()
           if (result == MQTTConnectionResult::SUCCESS)
           {
             USB_SERIAL_PRINTF("[%lu] Publish MQTT Connect Validation message on topic %s (%s)  Result = %s\n", millis(), topic, privateMQTT.getEncryptionStatus(), MercatorMQTT::resultToText(result));
-            addDisplayLine(String("MQTT Broker Connected @ ") + privateMQTT.getCurrentHostname());
+            displayManager.addDisplayLine(String("MQTT Broker Connected @ ") + privateMQTT.getCurrentHostname());
           }
           else
           {
-            addDisplayLine("MQTT Connected & Publish Failed");
+            displayManager.addDisplayLine("MQTT Connected & Publish Failed");
             USB_SERIAL_PRINTF("[%lu] Publish MQTT Connect Validation message on topic %s (%s)  Result = %s\n", millis(), topic, privateMQTT.getEncryptionStatus(), MercatorMQTT::resultToText(result));
           }
           mqttCheck.initialTestPublishDone = true;
@@ -1332,14 +1146,14 @@ void loop()
         {
           char tmp[64];
           snprintf(tmp,sizeof(tmp),"MQTT: Trying to Connect %i of %i",mqttCheck.connectMQTTChecksDone,mqttCheck.maxMQTTConnectChecks);
-          addDisplayLine(tmp);
+          displayManager.addDisplayLine(tmp);
           USB_SERIAL_PRINTLN(tmp);
         }
       }
     }
     else
     {
-      addDisplayLine("MQTT: Cannot connect to broker");
+      displayManager.addDisplayLine("MQTT: Cannot connect to broker");
       USB_SERIAL_PRINTLN("[MQTT: Cannot connect to broker");
       mqttCheck.initialTestPublishDone = true;
     }
@@ -1797,10 +1611,10 @@ const char* scanForKnownNetworkAsync() // async version with progress animation
   const char* network = nullptr;
 
   // Append scanning status to scrolling line
-  updateScrollingStatusLine("Scanning");
+  displayManager.updateScrollingStatusLine("Scanning");
   
   // Start progress animation for scanning
-  startProgressAnimation();
+  displayManager.startProgressAnimation();
 
   // Ensure WiFi is in station mode and ready for scanning
   USB_SERIAL_PRINTF("WiFi status before scan: %d\n", WiFi.status());
@@ -1821,8 +1635,8 @@ const char* scanForKnownNetworkAsync() // async version with progress animation
   USB_SERIAL_PRINTF("Initial scan status check: %d\n", initialCheck);
   
   if (initialCheck == -2) {
-    stopProgressAnimation();
-    updateScrollingStatusLine("Scan failed to start");
+    displayManager.stopProgressAnimation();
+    displayManager.updateScrollingStatusLine("Scan failed to start");
     USB_SERIAL_PRINTLN("WiFi scan failed to initiate - WiFi may not be ready");
     return nullptr;
   }
@@ -1839,13 +1653,13 @@ const char* scanForKnownNetworkAsync() // async version with progress animation
     if (scanResults == -1) {
       // Scan still running
       USB_SERIAL_PRINTF("Scan running, showing progress (timeout count: %d)\n", timeoutCount);
-      updateProgressAnimation();  // Show scanning progress
+      displayManager.updateProgressAnimation();  // Show scanning progress
       delay(100);  // Check every 100ms
       timeoutCount++;
     } else if (scanResults == -2) {
       // No scan was started
-      stopProgressAnimation();
-      updateScrollingStatusLine("No scan started");
+      displayManager.stopProgressAnimation();
+      displayManager.updateScrollingStatusLine("No scan started");
       USB_SERIAL_PRINTF("ERROR: scanComplete() returned -2 at loop %d (no scan was started)\n", timeoutCount);
       return nullptr;
     } else {
@@ -1856,11 +1670,11 @@ const char* scanForKnownNetworkAsync() // async version with progress animation
   }
   
   // Stop progress animation
-  stopProgressAnimation();
+  displayManager.stopProgressAnimation();
   
   // Handle timeout
   if (timeoutCount >= maxTimeout) {
-    updateScrollingStatusLine("Scan timeout");
+    displayManager.updateScrollingStatusLine("Scan timeout");
     USB_SERIAL_PRINTLN("Async WiFi scan timeout");
     WiFi.scanDelete();
     return nullptr;
@@ -1891,13 +1705,13 @@ const char* scanForKnownNetworkAsync() // async version with progress animation
   if (network)
   {
     // Append found network to scrolling line
-    updateScrollingStatusLine("Found " + String(network));
+    displayManager.updateScrollingStatusLine("Found " + String(network));
     USB_SERIAL_PRINTF("Async scan found: %s\n", network);
   }
   else
   {
     // Append not found to scrolling line
-    updateScrollingStatusLine("No known networks found");
+    displayManager.updateScrollingStatusLine("No known networks found");
     USB_SERIAL_PRINTLN("Async scan: No known networks found");
   }
 
@@ -1911,7 +1725,7 @@ const char* scanForKnownNetwork() // return first known network found
   const char* network = nullptr;
 
   // Append scanning status to scrolling line
-  updateScrollingStatusLine("Scanning");
+  displayManager.updateScrollingStatusLine("Scanning");
 
   // Perform sync WiFi scan (fallback method)
   int8_t scanResults = WiFi.scanNetworks();
@@ -1939,14 +1753,14 @@ const char* scanForKnownNetwork() // return first known network found
   if (network)
   {
     // Append found network to scrolling line
-    updateScrollingStatusLine("Found " + String(network));
+    displayManager.updateScrollingStatusLine("Found " + String(network));
 
     USB_SERIAL_PRINTF("Found:\n%s\n",network);
   }
   else
   {
     // Append not found to scrolling line
-    updateScrollingStatusLine("No known networks found");
+    displayManager.updateScrollingStatusLine("No known networks found");
     
     USB_SERIAL_PRINTLN("No networks Found\n");
   }
@@ -1963,7 +1777,7 @@ bool connectToWiFiAndInitOTA(const bool wifiOnly, int repeatScanAttempts)
     return true;
 
   // Initialize scrolling status line
-  updateScrollingStatusLine("WiFi: Searching", false);
+  displayManager.updateScrollingStatusLine("WiFi: Searching", false);
 
   while (repeatScanAttempts-- &&
          (WiFi.status() != WL_CONNECTED ||
@@ -1974,7 +1788,7 @@ bool connectToWiFiAndInitOTA(const bool wifiOnly, int repeatScanAttempts)
     if (!network)
     {
       // Append retry status to scrolling line
-      updateScrollingStatusLine("No networks found, retrying");
+      displayManager.updateScrollingStatusLine("No networks found, retrying");
       
       delay(1000);
       continue;
@@ -1984,10 +1798,10 @@ bool connectToWiFiAndInitOTA(const bool wifiOnly, int repeatScanAttempts)
     const int repeatDelay = 1000;
     
     // Append connecting status to scrolling line
-    updateScrollingStatusLine("Connecting to " + String(network),true, true);
+    displayManager.updateScrollingStatusLine("Connecting to " + String(network),true, true);
     
     // Start progress animation
-    startProgressAnimation();
+    displayManager.startProgressAnimation();
   
     if (strcmp(network,ssid_1) == 0)
     {
@@ -2006,7 +1820,7 @@ bool connectToWiFiAndInitOTA(const bool wifiOnly, int repeatScanAttempts)
     }
     
     // Stop progress animation after connection attempts
-    stopProgressAnimation();
+    displayManager.stopProgressAnimation();
   }
 
   bool connected=WiFi.status() == WL_CONNECTED;
@@ -2014,16 +1828,16 @@ bool connectToWiFiAndInitOTA(const bool wifiOnly, int repeatScanAttempts)
   if (connected)
   {
     ssid_connected = WiFi.SSID();
-    updateScrollingStatusLine("SUCCESS! Connected to " + ssid_connected, true, true);
+    displayManager.updateScrollingStatusLine("SUCCESS! Connected to " + ssid_connected, true, true);
     // Quietly add to display array for later scrolling, without refreshing screen
-    addDisplayLine("SUCCESS! Connected to " + ssid_connected, true);
+    displayManager.addDisplayLine("SUCCESS! Connected to " + ssid_connected, false, true);
   }
   else
   {
     ssid_connected = ssid_not_connected;
-    updateScrollingStatusLine("FAILED! Connection unsuccessful", true, true);
+    displayManager.updateScrollingStatusLine("FAILED! Connection unsuccessful", true, true);
     // Quietly add to display array for later scrolling, without refreshing screen
-    addDisplayLine("FAILED! Connection unsuccessful", true);
+    displayManager.addDisplayLine("FAILED! Connection unsuccessful", false, true);
   }
   
   return connected;
@@ -2094,7 +1908,7 @@ bool setupOTAWebServer(const char* _ssid, const char* _password, const char* lab
     }
 
     // Update progress animation
-    updateProgressAnimation();
+    displayManager.updateProgressAnimation();
 
     delay(progressStep);
   }
