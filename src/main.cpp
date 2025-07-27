@@ -7,12 +7,29 @@
 UMS3 ProS3;
 
 #include <U8g2lib.h>
-#define OLED_RST_BROWN     12
-#define OLED_DC_PURPLE     13
-#define OLED_CS_ORANGE     14
-#define OLED_CLK_YELLOW    15
-#define OLED_DIN_MOSI_BLUE 16
-U8G2_SSD1309_128X64_NONAME0_F_4W_HW_SPI u8g2(U8G2_R0, OLED_CS_ORANGE, OLED_DC_PURPLE, OLED_RST_BROWN);
+
+#define OLED_VCC_3V3_RED            "ABOVE DIN_MOSI_BLUE"
+#define OLED_GND_BLACK              "BELOW BATTERY PIN (TOP RIGHT NEXT TO USB-C)"
+#define OLED_RST_BROWN              2
+#define OLED_DC_PURPLE              1
+#define OLED_CS_ORANGE              34  // Standard Arduino Hardware SPI Chip-Select Pro S3
+#define OLED_CLK_SCL_YELLOW         36  // Standard Arduino Hardware SPI CLK for Pro S3
+#define OLED_DIN_MOSI_SDA_BLUE      35  // Standard Arduino Hardware SPI MOSI for Pro S3
+U8G2_SSD1322_NHD_256X64_F_4W_HW_SPI u8g2(U8G2_R0, OLED_CS_ORANGE, OLED_DC_PURPLE, OLED_RST_BROWN);
+
+// WiFi status scrolling line variables
+String wifiStatusLine = "";
+String wifiBaseStatusLine = "";  // Base line without progress chars
+int scrollOffset = 0;
+const int statusLineY = 55;
+const int maxLineWidth = 256;  // Full screen width
+bool showingProgress = false;
+int progressCharCount = 0;
+
+// Display scrolling system variables
+const int maxDisplayLines = 4;  // 64 pixels / 16 pixel line height
+String displayLines[maxDisplayLines];
+int currentLineCount = 0;
 
 #include <SPI.h>
 
@@ -242,6 +259,207 @@ HardwareSerial& neopixels_serial = Serial0;
 
 bool diveInProgress = false;
 
+String getStats();
+
+void refreshDisplay();
+void refreshDisplayPreserveWiFi();
+
+void startProgressAnimation()
+{
+  showingProgress = true;
+  progressCharCount = 0;
+  wifiBaseStatusLine = wifiStatusLine;  // Save current line as base
+}
+
+void stopProgressAnimation()
+{
+  showingProgress = false;
+  progressCharCount = 0;
+  wifiStatusLine = wifiBaseStatusLine;  // Restore base line without progress chars
+}
+
+void updateProgressAnimation()
+{
+  if (!showingProgress) return;
+
+  const int maxDotCount = 5;      // Maximum of 10
+  // Add progress dots (up to maxDotCount, then cycle)
+  progressCharCount = (progressCharCount + 1) % (maxDotCount + 1);
+  
+  // Build progress string - ensure consistent width to overwrite previous dots
+  char progressDots[] = "            ";  // Start with 12 spaces to handle up to 10 dots (2 spaces + 8 dots)
+  for (int i = 0; i < progressCharCount; i++) 
+  {
+    progressDots[2 + i] = '.';  // Place dots starting at position 2
+  }
+  
+  // Update the status line with progress
+  wifiStatusLine = wifiBaseStatusLine + progressDots;
+  
+  // Display the updated line (with potential scrolling)
+  u8g2.setFont(u8g2_font_ncenB08_tr);
+  int textWidth = u8g2.getUTF8Width(wifiStatusLine.c_str());
+  
+  // Clear the status line area - make sure to clear entire width to remove old dots
+  u8g2.setDrawColor(0);  // Black (erase)
+  u8g2.drawBox(0, statusLineY-8, maxLineWidth, 10);
+  u8g2.setDrawColor(1);  // White (draw)
+  
+  // If text fits on screen, display normally
+  if (textWidth <= maxLineWidth) {
+    u8g2.drawStr(0, statusLineY, wifiStatusLine.c_str());
+    scrollOffset = 0;
+  } else {
+    // Text is too long, need to scroll to show the end
+    int targetScrollOffset = textWidth - maxLineWidth + 10;  // +10 for small margin
+    if (scrollOffset < targetScrollOffset) {
+      scrollOffset = targetScrollOffset;  // Jump to end position for progress display
+    }
+    u8g2.drawStr(-scrollOffset, statusLineY, wifiStatusLine.c_str());
+  }
+  
+  u8g2.sendBuffer();
+}
+
+void addDisplayLine(const String& newLine, bool preserveWiFiLine = false, bool skipRefresh = false)
+{
+  if (currentLineCount < maxDisplayLines) {
+    // Still have room, just add the line
+    displayLines[currentLineCount] = newLine;
+    currentLineCount++;
+  } else {
+    // Scroll up: shift all lines up by one
+    for (int i = 0; i < maxDisplayLines - 1; i++) {
+      displayLines[i] = displayLines[i + 1];
+    }
+    // Add new line at bottom
+    displayLines[maxDisplayLines - 1] = newLine;
+  }
+  
+  // Redraw all lines (unless skipRefresh is true)
+  if (!skipRefresh) {
+    if (preserveWiFiLine) {
+      refreshDisplayPreserveWiFi();
+    } else {
+      refreshDisplay();
+    }
+  }
+}
+
+void refreshDisplayPreserveWiFi()
+{
+  u8g2.setFont(u8g2_font_ncenB08_tr);
+  
+  // Clear only the multi-line display area (not the WiFi status line at y=55)
+  u8g2.setDrawColor(0);  // Black (erase)
+  u8g2.drawBox(0, 0, maxLineWidth, 50);  // Clear only up to y=50, preserve WiFi line
+  u8g2.setDrawColor(1);  // White (draw)
+  
+  // Draw all current lines
+  for (int i = 0; i < currentLineCount; i++) {
+    int yPos = 10 + (i * 15);  // 15 pixels between lines
+    u8g2.drawStr(0, yPos, displayLines[i].c_str());
+  }
+  
+  u8g2.sendBuffer();
+}
+
+void refreshDisplay()
+{
+  u8g2.setFont(u8g2_font_ncenB08_tr);
+  
+  // Clear the display
+  u8g2.setDrawColor(0);  // Black (erase)
+  u8g2.drawBox(0, 0, maxLineWidth, 64);  // Clear entire display
+  u8g2.setDrawColor(1);  // White (draw)
+  
+  // Draw all current lines
+  for (int i = 0; i < currentLineCount; i++) {
+    int yPos = 10 + (i * 15);  // 15 pixels between lines
+    u8g2.drawStr(0, yPos, displayLines[i].c_str());
+  }
+  
+  u8g2.sendBuffer();
+}
+
+void updateScrollingStatusLine(const String& newText, bool append = true, bool scrollOffPrevious = false)
+{
+  int pixelScrollDelay = 2;
+  
+  // Stop any progress animation when updating text
+  if (showingProgress) {
+    stopProgressAnimation();
+  }
+  
+  if (append) {
+    if (wifiStatusLine.length() > 0) {
+      wifiStatusLine += " -> " + newText;
+    } else {
+      wifiStatusLine = newText;
+    }
+  } else {
+    wifiStatusLine = newText;
+    scrollOffset = 0;  // Reset scroll when replacing text
+  }
+  
+  // Calculate text width
+  u8g2.setFont(u8g2_font_ncenB08_tr);
+  int textWidth = u8g2.getUTF8Width(wifiStatusLine.c_str());
+  
+  if (scrollOffPrevious && append) {
+    // Special mode: scroll off all previous text, leaving only the new message visible
+    // Calculate where the new message starts in the full string
+    int newMessageWidth = u8g2.getUTF8Width(newText.c_str());
+    int targetScrollOffset = textWidth - newMessageWidth;
+    
+    // Smooth scroll to push previous text off screen
+    while (scrollOffset < targetScrollOffset) {
+      // Clear the status line area
+      u8g2.setDrawColor(0);  // Black (erase)
+      u8g2.drawBox(0, statusLineY-8, maxLineWidth, 10);
+      u8g2.setDrawColor(1);  // White (draw)
+      
+      // Draw the text with current offset
+      u8g2.drawStr(-scrollOffset, statusLineY, wifiStatusLine.c_str());
+      u8g2.sendBuffer();
+      
+      scrollOffset += 1;  // Scroll by 1 pixel at a time
+      delay(pixelScrollDelay);
+    }
+  } else {
+    // Normal behavior - scroll to show end of text
+    // If text fits on screen, display normally
+    if (textWidth <= maxLineWidth) {
+      // Clear the status line area
+      u8g2.setDrawColor(0);  // Black (erase)
+      u8g2.drawBox(0, statusLineY-8, maxLineWidth, 10);
+      u8g2.setDrawColor(1);  // White (draw)
+      
+      u8g2.drawStr(0, statusLineY, wifiStatusLine.c_str());
+      u8g2.sendBuffer();
+      scrollOffset = 0;
+    } else {
+      // Text is too long, need to scroll to show the end
+      int targetScrollOffset = textWidth - maxLineWidth + 10;  // +10 for small margin
+      
+      // Smooth scroll to target position
+      while (scrollOffset < targetScrollOffset) {
+        // Clear the status line area
+        u8g2.setDrawColor(0);  // Black (erase)
+        u8g2.drawBox(0, statusLineY-8, maxLineWidth, 10);
+        u8g2.setDrawColor(1);  // White (draw)
+        
+        // Draw the text with current offset
+        u8g2.drawStr(-scrollOffset, statusLineY, wifiStatusLine.c_str());
+        u8g2.sendBuffer();
+        
+        scrollOffset += 1;  // Scroll by 1 pixel at a time
+        delay(pixelScrollDelay);
+      }
+    }
+  }
+}
+
 void sendLemonStatus(const e_lemon_status status)
 {
   if (!writeLogToSerial)
@@ -351,106 +569,9 @@ MakoStats latestMakoStats;
 
 const uint16_t makoHardcodedUplinkMessageLength = 114;
 
-struct MakoUplinkTelemetryForJson
-{
-  float depth;
-  float water_pressure;
-  float water_temperature;
-  float enclosure_temperature;
-  float enclosure_humidity;
-  float enclosure_air_pressure;
-  float magnetic_heading_compensated;
-  float heading_to_target;
-  float distance_to_target;
-  float journey_course;
-  float journey_distance;
-  char  screen_display[3];
-  uint16_t seconds_on;
-  uint16_t user_action;
-  uint16_t bad_checksum_msgs;
-  float usb_voltage;
-  float usb_current;
-  char target_code[5];
-    
-  uint16_t minimum_sensor_read_time;
-  uint16_t quietTimeMsBeforeUplink;
-  uint16_t sensor_aquisition_time;
-  uint16_t max_sensor_acquisition_time;
-  uint16_t actual_sensor_acquisition_time;
-  uint16_t max_actual_sensor_acquisition_time;
-  
-  float lsm_acc_x;
-  float lsm_acc_y;
-  float lsm_acc_z;
-  float imu_gyro_x;
-  float imu_gyro_y;
-  float imu_gyro_z;
-  float imu_lin_acc_x;
-  float imu_lin_acc_y;
-  float imu_lin_acc_z;
-  float imu_rot_acc_x;
-  float imu_rot_acc_y;
-  float imu_rot_acc_z;
-  uint16_t good_checksum_msgs;
-  uint16_t way_marker_enum;
-  char way_marker_label[3];
-  char direction_metric[3];  
-  bool console_requests_send_tweet;
-  bool console_requests_emergency_tweet;
-  uint16_t console_flags;
-  uint32_t goodUplinkMessageCount;
-  uint32_t badUplinkMessageCount;
-  uint32_t lastGoodUplinkMessage;
-  float KBFromMako;
-};
+struct MakoUplinkTelemetryForJson;
 
-// sizeof is 108 rounded to 112 without badLengthUplinkMsgCount and badChkSumUplinkMsgCount
-// add these in and sizeof is 116 rounded to 120 to keep on 8 byte boundary
-struct LemonTelemetryForStorage 
-// 108 bytes defined, but sizeof is rounded to 112 to keep on 8 byte boundary as there is a double present
-// The sizeof struct is rounded up to the largest sizeof primitive that is present.
-{
-  double    gps_lat;              // must be on 8 byte boundary
-  double    gps_lng;              // 
-  uint32_t  goodUplinkMessageCount;
-  uint32_t  badUplinkMessageCount;
-//  uint32_t  badLengthUplinkMsgCount;
-//  uint32_t  badChkSumUplinkMsgCount;
-  uint32_t  consoleDownlinkMsgCount;
-  uint32_t  telemetry_timestamp;       
-  uint32_t  fixCount;                   // 36
-  uint16_t  vBusVoltage;
-  uint16_t  vBusCurrent;
-  uint16_t  vBatVoltage;
-  uint16_t  uplinkMessageMissingCount;          // 44   
-  uint16_t  uplinkMessageLength;
-  uint16_t  gps_hdop;
-  uint16_t  gps_course_deg;
-  uint16_t  gps_knots;            // 52
-  
-  uint32_t  downlink_send_duration;   // must be on 4 byte boundary
-  uint32_t  uplink_preamble_latency;
-  uint32_t  uplink_rx_latency;
-  float     imu_lin_acc_x;
-  float     imu_lin_acc_y;
-  float     imu_lin_acc_z;
-  float     imu_rot_acc_x;
-  float     imu_rot_acc_y;
-  float     imu_rot_acc_z;
-  float     uplinkBadMessagePercentage;      // 92
-
-  float     KBFromMako;               
-  uint8_t   gps_hour;
-  uint8_t   gps_minute;
-  uint8_t   gps_second;
-  uint8_t   gps_day;            // 100
-
-  uint8_t   gps_month;
-  uint8_t   gps_satellites;
-  uint16_t  gps_year;           // 104
-
-  uint32_t  four_byte_zero_padding;     // 108
-};
+struct LemonTelemetryForStorage;
 
 struct LemonTelemetryForJson
 {
@@ -541,6 +662,7 @@ void toggleOTAActive();
 void toggleWiFiActive();
 
 const char* scanForKnownNetwork();
+const char* scanForKnownNetworkAsync();
 bool connectToWiFiAndInitOTA(const bool wifiOnly, int repeatScanAttempts);
 bool setupOTAWebServer(const char* _ssid, const char* _password, const char* label, uint32_t timeout, bool wifiOnly);
 void buildUplinkTelemetryMessageV6a(char* payload, const struct MakoUplinkTelemetryForJson& m, const struct LemonTelemetryForJson& l);
@@ -549,44 +671,6 @@ enum e_q_upload_status uploadTelemetryToPrivateMQTT(MakoUplinkTelemetryForJson* 
 
 void notifyWebSocketClients(String sensorReadings) {
   ws.textAll(sensorReadings);
-}
-
-String getStats()
-{
-  readings["fixCount"] = fixCount;
-  readings["goodUplinkMessageCount"] = goodUplinkMessageCount;
-  readings["privateMQTTUploadCount"] = privateMQTTUploadCount;
-  readings["uplinkBadMessagePercentage"] = (int)uplinkBadMessagePercentage;
-  readings["badLengthUplinkMsgCount"] = badLengthUplinkMsgCount;
-  readings["badUplinkMessageCount"] = badUplinkMessageCount;
-  readings["badChkSumUplinkMsgCount"] = badChkSumUplinkMsgCount;
-  readings["uplinkMessageMissingCount"] = uplinkMessageMissingCount;
-  readings["lemonUptime"] = (int)(millis() / 1000);
-  readings["pipelineDraining"] = (telemetryPipeline.isPipelineDraining() ? "Yes" : "No");
-  readings["pipelineLength"] = telemetryPipeline.getPipelineLength();
-  readings["offlineThrottleApplied"] = (g_offlineStorageThrottleApplied ? "Yes" : "No");  
-  readings["last_private_mqtt_upload_at"] = (float)((int)((float)(privateMQTT.getLastUploadTime())/100.0))/10.0;
-  readings["last_head_committed_at"] = (float)((int)((float)(last_head_committed_at)/100.0))/10.0;
-  readings["lastCheckForInternetConnectivityAt"] = (float)((int)((float)(lastCheckForInternetConnectivityAt)/100.0))/10.0;
-
-  readings["min_sens_read"] = latestMakoStats.minimum_sensor_read_time;
-  readings["sens_read"] = latestMakoStats.sensor_aquisition_time;
-  readings["max_sens_read"] = latestMakoStats.max_sensor_acquisition_time;
-  readings["act_sens_read"] = latestMakoStats.actual_sensor_acquisition_time;
-  readings["max_act_sens_read"] = latestMakoStats.max_actual_sensor_acquisition_time;
-  readings["quiet_b4_uplink"] = latestMakoStats.quietTimeMsBeforeUplink;
-
-  multi_heap_info_t info;
-  heap_caps_get_info(&info, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT); // internal RAM, memory capable to store data or to create new task
-
-  readings["free_heap_bytes"] = info.total_free_bytes;
-  readings["largest_free_block"] = info.largest_free_block;
-  readings["minimum_free_ever"] = info.minimum_free_bytes;
-
-  String jsonString;
-  serializeJson(readings, jsonString);
-
-  return jsonString;
 }
 
 void handleWebSocketMessage(void *arg, uint8_t *data, size_t len) {
@@ -829,14 +913,42 @@ void uploadOTASucceededCallback(AsyncElegantOtaClass* originator)
   restartForGoodOTAScheduled = true;
 }
 
+uint32_t getSizeOfLemonTelemetryForStorage();
+class mqttConnectionTest
+{
+  public:
+    static const uint32_t periodMQTTConnectCheck = 1000;
+    static const int maxMQTTConnectChecks = 10;
+ 
+  public:
+    bool initialTestPublishDone;
+    uint32_t nextMQTTConnectCheck;
+    int connectMQTTChecksDone;
+
+    mqttConnectionTest() : nextMQTTConnectCheck(0), connectMQTTChecksDone(0), initialTestPublishDone(false)
+    {
+
+    }
+    
+    void resetCheckTrigger(const uint32_t period=periodMQTTConnectCheck)
+    {
+      nextMQTTConnectCheck = millis() + period;
+    }
+};
+
+mqttConnectionTest mqttCheck;
+
 void setup()
 {
   ProS3.begin();
   statusLEDColour();
   statusLEDOn();
 
-  SPI.begin(OLED_CLK_YELLOW, /*MISO=*/-1, OLED_DIN_MOSI_BLUE, OLED_CS_ORANGE);
   u8g2.begin();
+  
+  // Display startup status
+  u8g2.setFont(u8g2_font_ncenB08_tr);
+  addDisplayLine("Lemon-IO Starting...");
 
   privateMQTT.setConnectionCallbacks(
     [&] { USB_SERIAL_PRINTF("Local MQTT connected (%s)\n", privateMQTT.getEncryptionStatus()); },
@@ -855,8 +967,10 @@ void setup()
 
   if (!SPIFFS.begin(true)) {
     Serial.println("SPIFFS mount failed");
+    addDisplayLine("SPIFFS Mount Failed");
   } else {
     Serial.println("SPIFFS mounted OK");
+    addDisplayLine("SPIFFS OK");
   }
 
   WiFi.onEvent(WiFiStationConnected, WiFiEvent_t::ARDUINO_EVENT_WIFI_STA_CONNECTED);
@@ -868,7 +982,7 @@ void setup()
 
   ssid_connected = ssid_not_connected;
 
-  USB_SERIAL_PRINTF("sizeof LemonTelemetry: %lu\n",sizeof(LemonTelemetryForStorage));
+  USB_SERIAL_PRINTF("sizeof LemonTelemetry: %lu\n",getSizeOfLemonTelemetryForStorage());
 
   dumpHeapUsage("main: prior to Telemetry Pipeline creation  ");
 
@@ -883,6 +997,9 @@ void setup()
   telemetryPipeline.init(&millis,maxPipelineBufferKB);
 
   dumpHeapUsage("main: after Telemetry Pipeline creation  ");
+  
+  // Update status display
+  addDisplayLine("Telemetry Pipeline OK");
 
   statusLEDOff();
 
@@ -906,6 +1023,7 @@ void setup()
     bool connected = connectToWiFiAndInitOTA(wifiOnly, repeatScanAttempts);
     sendLemonStatus(connected ? LC_FOUND_WIFI : LC_NO_WIFI);
 
+    // WiFi connection result already added by connectToWiFiAndInitOTA
     if (!connected)
       delay(5000);    // wait 5 seconds before proceeding - lantern will show no wifi state for 5 seconds
     else
@@ -921,13 +1039,24 @@ void setup()
   MAKO_GOPRO_SERIAL.setRxBufferSize(1024); // was 256 - must set before begin
   MAKO_GOPRO_SERIAL.begin(UPLINK_BAUD_RATE, SERIAL_8N2, MAKO_GOPRO_RX_GPIO, MAKO_GOPRO_TX_GPIO);
 
+  addDisplayLine("GPS Ready");
+  delay(500);
+
   // cannot use Pin 0 for receive of GPS (resets on startup), can use Pin 36, can use 26
   // cannot use Pin 0 for transmit of GPS (resets on startup), only Pin 26 can be used for transmit.
 
   if (enableUploadToPrivateMQTT)
   {
     privateMQTT.begin();
+    addDisplayLine("MQTT Ready");
+    delay(500);
   }
+  
+  // Final setup completion status - add to scrolling display
+  addDisplayLine("Lemon-IO Online @ " + WiFi.localIP().toString());
+  delay(2000);  // Show final status for 2 seconds
+
+  mqttCheck.resetCheckTrigger(1500);
 }
 
 char* customiseNMEASentence(char* sentence, int showOnMapIndex)
@@ -1189,6 +1318,49 @@ MQTTConnectionResult publishMQTTTestMessageOnDutyCycle(const char* topic="test_m
 
 void loop()
 {
+  if (enableUploadToPrivateMQTT && !mqttCheck.initialTestPublishDone)
+  {
+    if (mqttCheck.connectMQTTChecksDone < mqttCheck.maxMQTTConnectChecks)
+    {
+      if (millis() > mqttCheck.nextMQTTConnectCheck)
+      {
+        mqttCheck.connectMQTTChecksDone++;
+        mqttCheck.nextMQTTConnectCheck = millis() + mqttCheck.periodMQTTConnectCheck;
+        
+        if (privateMQTT.isConnected()) 
+        {
+          const char* topic="test-connection";
+          const char* message="First message to test the connection";
+          MQTTConnectionResult result = privateMQTT.publish(topic, message);
+          if (result == MQTTConnectionResult::SUCCESS)
+          {
+            USB_SERIAL_PRINTF("[%lu] Publish MQTT Connect Validation message on topic %s (%s)  Result = %s\n", millis(), topic, privateMQTT.getEncryptionStatus(), MercatorMQTT::resultToText(result));
+            addDisplayLine(String("MQTT Broker Connected @ ") + privateMQTT.getCurrentHostname());
+          }
+          else
+          {
+            addDisplayLine("MQTT Connected & Publish Failed");
+            USB_SERIAL_PRINTF("[%lu] Publish MQTT Connect Validation message on topic %s (%s)  Result = %s\n", millis(), topic, privateMQTT.getEncryptionStatus(), MercatorMQTT::resultToText(result));
+          }
+          mqttCheck.initialTestPublishDone = true;
+        }
+        else
+        {
+          char tmp[64];
+          snprintf(tmp,sizeof(tmp),"MQTT: Trying to Connect %i of %i",mqttCheck.connectMQTTChecksDone,mqttCheck.maxMQTTConnectChecks);
+          addDisplayLine(tmp);
+          USB_SERIAL_PRINTLN(tmp);
+        }
+      }
+    }
+    else
+    {
+      addDisplayLine("MQTT: Cannot connect to broker");
+      USB_SERIAL_PRINTLN("[MQTT: Cannot connect to broker");
+      mqttCheck.initialTestPublishDone = true;
+    }
+  }
+
   if (restartForGoodOTAScheduled && millis() >= restartAfterGoodOTAUpdateAt) 
   {
         USB_SERIAL_PRINTLN("Restarting now...");
@@ -1555,27 +1727,6 @@ void loop()
 #endif
 }
 
-// This is only a test function for the Arduino neopixel UART
-void checkForFloatBoxReedSwitches()
-{
-  while (!writeLogToSerial && neopixels_serial.available())
-  {
-    neopixelSerialByteRead = neopixels_serial.read();
-    // have an indication on the screen of a byte read and which byte
-    // these map to the reed switches that are in the float box
-    if (neopixelSerialByteRead == 100)
-    {
-      mainBackColour = TFT_BLUE;
-//      M5.Lcd.fillScreen(TFT_BLUE);
-    }
-    else if (neopixelSerialByteRead == 200)
-    {
-      mainBackColour = TFT_MAGENTA;
-//      M5.Lcd.fillScreen(TFT_MAGENTA);
-    }
-  }
-}
-
 void sendStatsWebSocketNotification()
 {
     notifyWebSocketClients(getStats());
@@ -1657,51 +1808,137 @@ void toggleWiFiActive()
   // M5.Lcd.fillScreen(TFT_BLACK);
 }
 
-void checkForLeak(const char* msg)
-{
-  bool leakStatus = false;
-
-  leakStatus = !(digitalRead(LEAK_DETECTOR_GPIO));
-
-  if (leakStatus)
-  {
-    // M5.Lcd.fillScreen(TFT_RED);
-    // M5.Lcd.setTextSize(3);
-    // M5.Lcd.setCursor(5, 10);
-    // M5.Lcd.setTextColor(TFT_WHITE, TFT_RED);
-    // M5.Lcd.print(msg);
-    delay(100);
-    updateButtonsAndBuzzer();
-
-    // M5.Lcd.fillScreen(TFT_ORANGE);
-    // M5.Lcd.setCursor(5, 10);
-    // M5.Lcd.setTextColor(TFT_YELLOW, TFT_ORANGE);
-    // M5.Lcd.print(msg);
-    delay(100);
-
-    updateButtonsAndBuzzer();
-    // M5.Lcd.setTextSize(2);
-    // M5.Lcd.setTextColor(TFT_WHITE, TFT_BLACK);
-    // M5.Lcd.fillScreen(TFT_BLACK);
-  }
-}
-
-const char* scanForKnownNetwork() // return first known network found
+const char* scanForKnownNetworkAsync() // async version with progress animation
 {
   const char* network = nullptr;
 
-//  M5.Lcd.println("Scan WiFi\nSSIDs...");
-  int8_t scanResults = WiFi.scanNetworks();
+  // Append scanning status to scrolling line
+  updateScrollingStatusLine("Scanning");
+  
+  // Start progress animation for scanning
+  startProgressAnimation();
 
-  if (scanResults != 0)
+  // Ensure WiFi is in station mode and ready for scanning
+  USB_SERIAL_PRINTF("WiFi status before scan: %d\n", WiFi.status());
+  WiFi.mode(WIFI_STA);
+  delay(10);
+  USB_SERIAL_PRINTF("WiFi status after mode set: %d\n", WiFi.status());
+  
+  // Start async WiFi scan
+  int16_t startResult = WiFi.scanNetworks(true, false);  // async=true, show_hidden=false
+  
+  USB_SERIAL_PRINTF("Async WiFi scan start result: %d\n", startResult);
+  
+  // Give a moment for scan to actually start
+  delay(50);
+  
+  // Check if scan actually started
+  int16_t initialCheck = WiFi.scanComplete();
+  USB_SERIAL_PRINTF("Initial scan status check: %d\n", initialCheck);
+  
+  if (initialCheck == -2) {
+    stopProgressAnimation();
+    updateScrollingStatusLine("Scan failed to start");
+    USB_SERIAL_PRINTLN("WiFi scan failed to initiate - WiFi may not be ready");
+    return nullptr;
+  }
+  
+  // Poll for scan completion while showing progress
+  int16_t scanResults = -1;  // -1 means scan is running
+  int timeoutCount = 0;
+  const int maxTimeout = 100; // 10 seconds max (100 * 100ms)
+  
+  while (timeoutCount < maxTimeout) {
+    scanResults = WiFi.scanComplete();
+    USB_SERIAL_PRINTF("Loop %d: scanComplete() returned %d\n", timeoutCount, scanResults);
+    
+    if (scanResults == -1) {
+      // Scan still running
+      USB_SERIAL_PRINTF("Scan running, showing progress (timeout count: %d)\n", timeoutCount);
+      updateProgressAnimation();  // Show scanning progress
+      delay(100);  // Check every 100ms
+      timeoutCount++;
+    } else if (scanResults == -2) {
+      // No scan was started
+      stopProgressAnimation();
+      updateScrollingStatusLine("No scan started");
+      USB_SERIAL_PRINTF("ERROR: scanComplete() returned -2 at loop %d (no scan was started)\n", timeoutCount);
+      return nullptr;
+    } else {
+      // Scan completed (scanResults >= 0)
+      USB_SERIAL_PRINTF("Scan completed! Found %d networks after %d loops\n", scanResults, timeoutCount);
+      break;
+    }
+  }
+  
+  // Stop progress animation
+  stopProgressAnimation();
+  
+  // Handle timeout
+  if (timeoutCount >= maxTimeout) {
+    updateScrollingStatusLine("Scan timeout");
+    USB_SERIAL_PRINTLN("Async WiFi scan timeout");
+    WiFi.scanDelete();
+    return nullptr;
+  }
+  
+  USB_SERIAL_PRINTF("Async WiFi scan completed: found %d networks\n", scanResults);
+  
+  if (scanResults > 0)
   {
     for (int i = 0; i < scanResults; ++i) 
     {
       // Print SSID and RSSI for each device found
       String SSID = WiFi.SSID(i);
 
-//      delay(10);
-      
+      // Check if the current device matches known networks
+      if (strcmp(SSID.c_str(), ssid_1) == 0)
+        network=ssid_1;
+      else if (strcmp(SSID.c_str(), ssid_2) == 0)
+        network=ssid_2;
+      else if (strcmp(SSID.c_str(), ssid_3) == 0)
+        network=ssid_3;
+
+      if (network)
+        break;
+    }    
+  }
+
+  if (network)
+  {
+    // Append found network to scrolling line
+    updateScrollingStatusLine("Found " + String(network));
+    USB_SERIAL_PRINTF("Async scan found: %s\n", network);
+  }
+  else
+  {
+    // Append not found to scrolling line
+    updateScrollingStatusLine("No known networks found");
+    USB_SERIAL_PRINTLN("Async scan: No known networks found");
+  }
+
+  // Clean up scan results
+  WiFi.scanDelete();
+  return network;
+}
+
+const char* scanForKnownNetwork() // return first known network found
+{
+  const char* network = nullptr;
+
+  // Append scanning status to scrolling line
+  updateScrollingStatusLine("Scanning");
+
+  // Perform sync WiFi scan (fallback method)
+  int8_t scanResults = WiFi.scanNetworks();
+  
+  if (scanResults > 0)
+  {
+    for (int i = 0; i < scanResults; ++i) 
+    {
+      // Print SSID and RSSI for each device found
+      String SSID = WiFi.SSID(i);
+
       // Check if the current device starts with the peerSSIDPrefix
       if (strcmp(SSID.c_str(), ssid_1) == 0)
         network=ssid_1;
@@ -1717,13 +1954,16 @@ const char* scanForKnownNetwork() // return first known network found
 
   if (network)
   {
-      // M5.Lcd.printf("Found:\n%s",network);
+    // Append found network to scrolling line
+    updateScrollingStatusLine("Found " + String(network));
 
     USB_SERIAL_PRINTF("Found:\n%s\n",network);
   }
   else
   {
-    // M5.Lcd.println("None\nFound");
+    // Append not found to scrolling line
+    updateScrollingStatusLine("No known networks found");
+    
     USB_SERIAL_PRINTLN("No networks Found\n");
   }
 
@@ -1738,24 +1978,32 @@ bool connectToWiFiAndInitOTA(const bool wifiOnly, int repeatScanAttempts)
   if (wifiOnly && WiFi.status() == WL_CONNECTED)
     return true;
 
-  // M5.Lcd.setCursor(0, 0);
-  // M5.Lcd.fillScreen(TFT_BLACK);
-  // M5.Lcd.setTextSize(2);
+  // Initialize scrolling status line
+  updateScrollingStatusLine("WiFi: Searching", false);
 
   while (repeatScanAttempts-- &&
          (WiFi.status() != WL_CONNECTED ||
           WiFi.status() == WL_CONNECTED && wifiOnly == false && otaActive == false ) )
   {
-    const char* network = scanForKnownNetwork();
+    const char* network = scanForKnownNetworkAsync();
   
     if (!network)
     {
+      // Append retry status to scrolling line
+      updateScrollingStatusLine("No networks found, retrying");
+      
       delay(1000);
       continue;
     }
     
     int connectToFoundNetworkAttempts = 3;
     const int repeatDelay = 1000;
+    
+    // Append connecting status to scrolling line
+    updateScrollingStatusLine("Connecting to " + String(network),true, true);
+    
+    // Start progress animation
+    startProgressAnimation();
   
     if (strcmp(network,ssid_1) == 0)
     {
@@ -1773,7 +2021,8 @@ bool connectToWiFiAndInitOTA(const bool wifiOnly, int repeatScanAttempts)
         delay(repeatDelay);
     }
     
-    delay(1000);
+    // Stop progress animation after connection attempts
+    stopProgressAnimation();
   }
 
   bool connected=WiFi.status() == WL_CONNECTED;
@@ -1781,10 +2030,16 @@ bool connectToWiFiAndInitOTA(const bool wifiOnly, int repeatScanAttempts)
   if (connected)
   {
     ssid_connected = WiFi.SSID();
+    updateScrollingStatusLine("SUCCESS! Connected to " + ssid_connected, true, true);
+    // Quietly add to display array for later scrolling, without refreshing screen
+    addDisplayLine("SUCCESS! Connected to " + ssid_connected, false, true);
   }
   else
   {
     ssid_connected = ssid_not_connected;
+    updateScrollingStatusLine("FAILED! Connection unsuccessful", true, true);
+    // Quietly add to display array for later scrolling, without refreshing screen
+    addDisplayLine("FAILED! Connection unsuccessful", false, true);
   }
   
   return connected;
@@ -1822,7 +2077,6 @@ bool setupOTAWebServer(const char* _ssid, const char* _password, const char* lab
   if (wifiOnly && WiFi.status() == WL_CONNECTED)
   {
     USB_SERIAL_PRINTF("setupOTAWebServer: attempt to connect wifiOnly, already connected - otaActive=%i\n",otaActive);
-
     return true;
   }
 
@@ -1830,9 +2084,6 @@ bool setupOTAWebServer(const char* _ssid, const char* _password, const char* lab
 
   bool forcedCancellation = false;
 
-  // M5.Lcd.setCursor(0, 0);
-  // M5.Lcd.fillScreen(TFT_BLACK);
-  // M5.Lcd.setTextSize(2);
   bool connected = false;
   WiFi.mode(WIFI_STA);
   WiFi.config(INADDR_NONE, INADDR_NONE, INADDR_NONE, INADDR_NONE);
@@ -1845,8 +2096,8 @@ bool setupOTAWebServer(const char* _ssid, const char* _password, const char* lab
 #endif
 
   // Wait for connection for max of timeout/1000 seconds
-  // M5.Lcd.printf("%s Wifi", label);
-  int count = timeout / 500;
+  const int progressStep = 100;
+  int count = timeout / progressStep;
   while (WiFi.status() != WL_CONNECTED && --count > 0)
   {
     // check for cancellation button - top button.
@@ -1858,10 +2109,11 @@ bool setupOTAWebServer(const char* _ssid, const char* _password, const char* lab
       break;
     }
 
-    // M5.Lcd.print(".");
-    delay(500);
+    // Update progress animation
+    updateProgressAnimation();
+
+    delay(progressStep);
   }
-  // M5.Lcd.print("\n\n");
 
   if (WiFi.status() == WL_CONNECTED )
   {
@@ -2027,33 +2279,6 @@ bool setupOTAWebServer(const char* _ssid, const char* _password, const char* lab
   // M5.Lcd.fillScreen(TFT_BLACK);
 
   return connected;
-}
-
-bool doesHeadCommitRequireForce(BlockHeader& block)
-{
-  bool forceHeadCommit = false;
-
-  uint16_t maxPayloadSize = 0;
-  uint8_t* makoPayloadBuffer = block.getBuffer(maxPayloadSize);
-
-  // 1. parse the mako payload into the mako json payload struct
-  const bool preventGlobalUpdate = true; // refactoring needed to remove this
-  MakoUplinkTelemetryForJson makoJSON;
-  decodeMakoUplinkMessageV5a(makoPayloadBuffer, makoJSON, preventGlobalUpdate);
-
-enum e_user_action{NO_USER_ACTION=0x0000, HIGHLIGHT_USER_ACTION=0x0001,RECORD_BREADCRUMB_TRAIL_USER_ACTION=0x0002,LEAK_DETECTED_USER_ACTION=0x0004};
-
-  if (makoJSON.user_action & HIGHLIGHT_USER_ACTION ||                 // PIN Record Activated
-      makoJSON.user_action & RECORD_BREADCRUMB_TRAIL_USER_ACTION ||   // Track Record Activated
-      makoJSON.user_action & LEAK_DETECTED_USER_ACTION)               // Leak Detected in Mako
-  {
-    // highlight action - requires forced head commit to upload every message.
-    forceHeadCommit = true;
-  }
-  
-  diveInProgress = (makoJSON.depth > 0.5);
-
-  return forceHeadCommit;
 }
 
 

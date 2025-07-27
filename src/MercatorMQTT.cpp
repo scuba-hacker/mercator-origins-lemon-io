@@ -2,7 +2,8 @@
 #include <cstring>
 
 MercatorMQTT::MercatorMQTT(const MQTTConfig& config, uint32_t minDutyMs, int16_t bufferSize)
-    : localClient(config.local_host, config.local_port, config.client_id, config.username, config.password)
+    : config(config)
+    , localClient(config.local_host, config.local_port, config.client_id, config.username, config.password)
     , remoteClient(config.remote_host, config.remote_port, config.client_id, config.username, config.password)
     , uploadMinDutyMs(minDutyMs)
     , lastUploadAt(0)

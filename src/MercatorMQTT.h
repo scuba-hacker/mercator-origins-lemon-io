@@ -27,6 +27,9 @@ struct MQTTConfig {
 
 class MercatorMQTT {
 private:
+    // Configuration
+    MQTTConfig config;
+    
     // PicoMQTT clients (for non-TLS)
     PicoMQTT::Client localClient;
     PicoMQTT::Client remoteClient;
@@ -83,6 +86,7 @@ public:
     int16_t getPayloadSize() const { return payloadSize; }
     bool isTLSEnabled() const { return useTLS; }
     const char* getEncryptionStatus() const { return isTLSEnabled() ? "TLS" : "Not Encrypted"; }
+    const char* getCurrentHostname() const { return usingDevNetwork ? config.local_host : config.remote_host; }
 
     static const char* resultToText(MQTTConnectionResult result)
     {

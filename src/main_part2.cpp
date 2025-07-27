@@ -18,6 +18,231 @@ extern bool writeTelemetryLogToSerial;
 #define USB_SERIAL_PRINTLN(...) do { if (writeLogToSerial) USB_SERIAL_BASE.println(__VA_ARGS__); } while(0)
 #define USB_SERIAL_PRINT(...) do { if (writeLogToSerial) USB_SERIAL_BASE.print(__VA_ARGS__); } while(0)
 
+
+// sizeof is 108 rounded to 112 without badLengthUplinkMsgCount and badChkSumUplinkMsgCount
+// add these in and sizeof is 116 rounded to 120 to keep on 8 byte boundary
+struct LemonTelemetryForStorage 
+// 108 bytes defined, but sizeof is rounded to 112 to keep on 8 byte boundary as there is a double present
+// The sizeof struct is rounded up to the largest sizeof primitive that is present.
+{
+  double    gps_lat;              // must be on 8 byte boundary
+  double    gps_lng;              // 
+  uint32_t  goodUplinkMessageCount;
+  uint32_t  badUplinkMessageCount;
+//  uint32_t  badLengthUplinkMsgCount;
+//  uint32_t  badChkSumUplinkMsgCount;
+  uint32_t  consoleDownlinkMsgCount;
+  uint32_t  telemetry_timestamp;       
+  uint32_t  fixCount;                   // 36
+  uint16_t  vBusVoltage;
+  uint16_t  vBusCurrent;
+  uint16_t  vBatVoltage;
+  uint16_t  uplinkMessageMissingCount;          // 44   
+  uint16_t  uplinkMessageLength;
+  uint16_t  gps_hdop;
+  uint16_t  gps_course_deg;
+  uint16_t  gps_knots;            // 52
+  
+  uint32_t  downlink_send_duration;   // must be on 4 byte boundary
+  uint32_t  uplink_preamble_latency;
+  uint32_t  uplink_rx_latency;
+  float     imu_lin_acc_x;
+  float     imu_lin_acc_y;
+  float     imu_lin_acc_z;
+  float     imu_rot_acc_x;
+  float     imu_rot_acc_y;
+  float     imu_rot_acc_z;
+  float     uplinkBadMessagePercentage;      // 92
+
+  float     KBFromMako;               
+  uint8_t   gps_hour;
+  uint8_t   gps_minute;
+  uint8_t   gps_second;
+  uint8_t   gps_day;            // 100
+
+  uint8_t   gps_month;
+  uint8_t   gps_satellites;
+  uint16_t  gps_year;           // 104
+
+  uint32_t  four_byte_zero_padding;     // 108
+};
+
+
+uint32_t getSizeOfLemonTelemetryForStorage()
+{
+  return sizeof(LemonTelemetryForStorage);
+}
+
+struct MakoUplinkTelemetryForJson
+{
+  float depth;
+  float water_pressure;
+  float water_temperature;
+  float enclosure_temperature;
+  float enclosure_humidity;
+  float enclosure_air_pressure;
+  float magnetic_heading_compensated;
+  float heading_to_target;
+  float distance_to_target;
+  float journey_course;
+  float journey_distance;
+  char  screen_display[3];
+  uint16_t seconds_on;
+  uint16_t user_action;
+  uint16_t bad_checksum_msgs;
+  float usb_voltage;
+  float usb_current;
+  char target_code[5];
+    
+  uint16_t minimum_sensor_read_time;
+  uint16_t quietTimeMsBeforeUplink;
+  uint16_t sensor_aquisition_time;
+  uint16_t max_sensor_acquisition_time;
+  uint16_t actual_sensor_acquisition_time;
+  uint16_t max_actual_sensor_acquisition_time;
+  
+  float lsm_acc_x;
+  float lsm_acc_y;
+  float lsm_acc_z;
+  float imu_gyro_x;
+  float imu_gyro_y;
+  float imu_gyro_z;
+  float imu_lin_acc_x;
+  float imu_lin_acc_y;
+  float imu_lin_acc_z;
+  float imu_rot_acc_x;
+  float imu_rot_acc_y;
+  float imu_rot_acc_z;
+  uint16_t good_checksum_msgs;
+  uint16_t way_marker_enum;
+  char way_marker_label[3];
+  char direction_metric[3];  
+  bool console_requests_send_tweet;
+  bool console_requests_emergency_tweet;
+  uint16_t console_flags;
+  uint32_t goodUplinkMessageCount;
+  uint32_t badUplinkMessageCount;
+  uint32_t lastGoodUplinkMessage;
+  float KBFromMako;
+};
+
+
+String getStats()
+{
+  readings["fixCount"] = fixCount;
+  readings["goodUplinkMessageCount"] = goodUplinkMessageCount;
+  readings["privateMQTTUploadCount"] = privateMQTTUploadCount;
+  readings["uplinkBadMessagePercentage"] = (int)uplinkBadMessagePercentage;
+  readings["badLengthUplinkMsgCount"] = badLengthUplinkMsgCount;
+  readings["badUplinkMessageCount"] = badUplinkMessageCount;
+  readings["badChkSumUplinkMsgCount"] = badChkSumUplinkMsgCount;
+  readings["uplinkMessageMissingCount"] = uplinkMessageMissingCount;
+  readings["lemonUptime"] = (int)(millis() / 1000);
+  readings["pipelineDraining"] = (telemetryPipeline.isPipelineDraining() ? "Yes" : "No");
+  readings["pipelineLength"] = telemetryPipeline.getPipelineLength();
+  readings["offlineThrottleApplied"] = (g_offlineStorageThrottleApplied ? "Yes" : "No");  
+  readings["last_private_mqtt_upload_at"] = (float)((int)((float)(privateMQTT.getLastUploadTime())/100.0))/10.0;
+  readings["last_head_committed_at"] = (float)((int)((float)(last_head_committed_at)/100.0))/10.0;
+  readings["lastCheckForInternetConnectivityAt"] = (float)((int)((float)(lastCheckForInternetConnectivityAt)/100.0))/10.0;
+
+  readings["min_sens_read"] = latestMakoStats.minimum_sensor_read_time;
+  readings["sens_read"] = latestMakoStats.sensor_aquisition_time;
+  readings["max_sens_read"] = latestMakoStats.max_sensor_acquisition_time;
+  readings["act_sens_read"] = latestMakoStats.actual_sensor_acquisition_time;
+  readings["max_act_sens_read"] = latestMakoStats.max_actual_sensor_acquisition_time;
+  readings["quiet_b4_uplink"] = latestMakoStats.quietTimeMsBeforeUplink;
+
+  multi_heap_info_t info;
+  heap_caps_get_info(&info, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT); // internal RAM, memory capable to store data or to create new task
+
+  readings["free_heap_bytes"] = info.total_free_bytes;
+  readings["largest_free_block"] = info.largest_free_block;
+  readings["minimum_free_ever"] = info.minimum_free_bytes;
+
+  String jsonString;
+  serializeJson(readings, jsonString);
+
+  return jsonString;
+}
+
+
+// This is only a test function for the Arduino neopixel UART
+void checkForFloatBoxReedSwitches()
+{
+  while (!writeLogToSerial && neopixels_serial.available())
+  {
+    neopixelSerialByteRead = neopixels_serial.read();
+    // have an indication on the screen of a byte read and which byte
+    // these map to the reed switches that are in the float box
+    if (neopixelSerialByteRead == 100)
+    {
+      mainBackColour = TFT_BLUE;
+//      M5.Lcd.fillScreen(TFT_BLUE);
+    }
+    else if (neopixelSerialByteRead == 200)
+    {
+      mainBackColour = TFT_MAGENTA;
+//      M5.Lcd.fillScreen(TFT_MAGENTA);
+    }
+  }
+}
+
+void checkForLeak(const char* msg)
+{
+  bool leakStatus = false;
+
+  leakStatus = !(digitalRead(LEAK_DETECTOR_GPIO));
+
+  if (leakStatus)
+  {
+    // M5.Lcd.fillScreen(TFT_RED);
+    // M5.Lcd.setTextSize(3);
+    // M5.Lcd.setCursor(5, 10);
+    // M5.Lcd.setTextColor(TFT_WHITE, TFT_RED);
+    // M5.Lcd.print(msg);
+    delay(100);
+    updateButtonsAndBuzzer();
+
+    // M5.Lcd.fillScreen(TFT_ORANGE);
+    // M5.Lcd.setCursor(5, 10);
+    // M5.Lcd.setTextColor(TFT_YELLOW, TFT_ORANGE);
+    // M5.Lcd.print(msg);
+    delay(100);
+
+    updateButtonsAndBuzzer();
+    // M5.Lcd.setTextSize(2);
+    // M5.Lcd.setTextColor(TFT_WHITE, TFT_BLACK);
+    // M5.Lcd.fillScreen(TFT_BLACK);
+  }
+}
+
+bool doesHeadCommitRequireForce(BlockHeader& block)
+{
+  bool forceHeadCommit = false;
+
+  uint16_t maxPayloadSize = 0;
+  uint8_t* makoPayloadBuffer = block.getBuffer(maxPayloadSize);
+
+  // 1. parse the mako payload into the mako json payload struct
+  const bool preventGlobalUpdate = true; // refactoring needed to remove this
+  MakoUplinkTelemetryForJson makoJSON;
+  decodeMakoUplinkMessageV5a(makoPayloadBuffer, makoJSON, preventGlobalUpdate);
+
+enum e_user_action{NO_USER_ACTION=0x0000, HIGHLIGHT_USER_ACTION=0x0001,RECORD_BREADCRUMB_TRAIL_USER_ACTION=0x0002,LEAK_DETECTED_USER_ACTION=0x0004};
+
+  if (makoJSON.user_action & HIGHLIGHT_USER_ACTION ||                 // PIN Record Activated
+      makoJSON.user_action & RECORD_BREADCRUMB_TRAIL_USER_ACTION ||   // Track Record Activated
+      makoJSON.user_action & LEAK_DETECTED_USER_ACTION)               // Leak Detected in Mako
+  {
+    // highlight action - requires forced head commit to upload every message.
+    forceHeadCommit = true;
+  }
+  
+  diveInProgress = (makoJSON.depth > 0.5);
+
+  return forceHeadCommit;
+}
+
 bool checkForValidPreambleOnUplink()
 {
   bool validPreambleFound = false;
