@@ -4,27 +4,10 @@
 #include <U8g2lib.h>
 
 class OLEDDisplayManager {
-private:
+public:
     // Reference to the U8G2 display object
     U8G2& display;
     
-    // Generic scrolling status line variables
-    String scrollingStatusLine;
-    String baseStatusLine;  // Base line without progress chars
-    int scrollOffset;
-    const int maxLineWidth;  // Full screen width
-    bool showingProgress;
-    int progressCharCount;
-    
-    // Display scrolling system variables
-    const int maxDisplayLines;  // Max number of lines in multi-line display
-    String* displayLines;
-    int currentLineCount;
-    
-    // Private helper methods
-    void updateScrollingStatusLineDisplay(int yPosition);
-
-public:
     // Constructor
     OLEDDisplayManager(U8G2& u8g2Display, int screenWidth = 256, int maxLines = 4);
     
@@ -45,7 +28,29 @@ public:
     
     // Utility methods
     void clearDisplay();
+    void setOTAMode(bool enabled);
+    bool isInOTAMode() const { return otaModeActive; }
     bool isShowingProgress() const { return showingProgress; }
     int getCurrentLineCount() const { return currentLineCount; }
     String getCurrentScrollingStatusLine() const { return scrollingStatusLine; }
+
+private:
+    // Generic scrolling status line variables
+    String scrollingStatusLine;
+    String baseStatusLine;  // Base line without progress chars
+    int scrollOffset;
+    const int maxLineWidth;  // Full screen width
+    bool showingProgress;
+    int progressCharCount;
+    
+    // Display scrolling system variables
+    const int maxDisplayLines;  // Max number of lines in multi-line display
+    String* displayLines;
+    int currentLineCount;
+    
+    // OTA mode flag
+    bool otaModeActive;
+    
+    // Private helper methods
+    void updateScrollingStatusLineDisplay(int yPosition);
 };

@@ -10,6 +10,7 @@ OLEDDisplayManager::OLEDDisplayManager(U8G2& u8g2Display, int screenWidth, int m
     , progressCharCount(0)
     , maxDisplayLines(maxLines)
     , currentLineCount(0)
+    , otaModeActive(false)
 {
     displayLines = new String[maxDisplayLines];
 }
@@ -52,6 +53,11 @@ void OLEDDisplayManager::updateProgressAnimation(int yPosition) {
 }
 
 void OLEDDisplayManager::addDisplayLine(const String& newLine, bool preserveWiFiLine, bool skipRefresh) {
+    // Block all display updates during OTA mode
+    if (otaModeActive) {
+        return;
+    }
+    
     if (currentLineCount < maxDisplayLines) {
         // Still have room, just add the line
         displayLines[currentLineCount] = newLine;
@@ -114,6 +120,11 @@ void OLEDDisplayManager::updateScrollingStatusLineDisplay(int yPosition) {
 }
 
 void OLEDDisplayManager::updateScrollingStatusLine(const String& newText, bool append, bool scrollOffPrevious, int yPosition) {
+    // Block all scrolling status updates during OTA mode
+    if (otaModeActive) {
+        return;
+    }
+    
     int pixelScrollDelay = 2;
     
     // Stop any progress animation when updating text
@@ -203,4 +214,8 @@ void OLEDDisplayManager::clearDisplay() {
     scrollOffset = 0;
     showingProgress = false;
     progressCharCount = 0;
+}
+
+void OLEDDisplayManager::setOTAMode(bool enabled) {
+    otaModeActive = enabled;
 }

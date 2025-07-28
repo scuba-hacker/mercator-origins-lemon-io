@@ -1,22 +1,9 @@
 #ifdef BUILD_INCLUDE_MAIN_PART2
 
 #include "MercatorMQTT.h"
+#include "SerialConfig.h"
 
-// NOTE THESE EXTERNS and macros can be deleted once this split main is consolidated later
-
-// Import the macros from main.cpp
-extern bool writeLogToSerial;
-extern bool writeTelemetryLogToSerial;
-
-#ifdef USE_WEBSERIAL
-  #define USB_SERIAL_BASE WebSerial
-#else
-  #define USB_SERIAL_BASE Serial0
-#endif
-
-#define USB_SERIAL_PRINTF(...) do { if (writeLogToSerial) USB_SERIAL_BASE.printf(__VA_ARGS__); } while(0)
-#define USB_SERIAL_PRINTLN(...) do { if (writeLogToSerial) USB_SERIAL_BASE.println(__VA_ARGS__); } while(0)
-#define USB_SERIAL_PRINT(...) do { if (writeLogToSerial) USB_SERIAL_BASE.print(__VA_ARGS__); } while(0)
+// NOTE: SerialConfig.h now provides all serial macros and extern declarations
 
 
 // sizeof is 108 rounded to 112 without badLengthUplinkMsgCount and badChkSumUplinkMsgCount

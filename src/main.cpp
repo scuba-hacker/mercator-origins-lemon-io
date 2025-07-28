@@ -8,6 +8,14 @@ UMS3 ProS3;
 
 #include <U8g2lib.h>
 #include "OLEDDisplayManager.h"
+#include "SerialConfig.h"
+#include "NetworkManager.h"
+
+// External HTML content declarations
+extern const uint8_t STATS_HTML[];
+extern const uint32_t STATS_HTML_SIZE;
+extern const uint8_t MAP_HTML[];
+extern const uint32_t MAP_HTML_SIZE;
 
 #define OLED_VCC_3V3_RED            "ABOVE DIN_MOSI_BLUE"
 #define OLED_GND_BLACK              "BELOW BATTERY PIN (TOP RIGHT NEXT TO USB-C)"
@@ -60,45 +68,14 @@ Button redButton = Button(RED_BUTTON_GPIO, true, DEBOUNCE_MS);
   UniversalTelegramBot telegramBot(TELEGRAM_BOT_TOKEN, secured_client);
 #endif
 
-// ****** Start Webserver ****** 
-// Async Webserver and websocket for streaming statistics
-AsyncElegantOtaClass AsyncElegantOTA;
-AsyncWebSocket ws("/ws");
+// ****** Webserver functionality moved to NetworkManager class ****** 
 
 // Override ElegantOTA web page to have the Lemon banner graphic and Lemon-IO device label
 #define MERCATOR_ELEGANTOTA_LEMON_BANNER
-#define MERCATOR_OTA_DEVICE_LABEL "LEMON-IO"
-
-// Duty cycle for sending statistics updates to stats web page
-const int32_t timeBetweenSendingStatsUpdates = 990;
-int32_t timeOfNextStatUpdate = 0;
-
-// Store overriden lat/long and target (testing/diagnostics) set from lemon stats web page
-String showOnMapRequest;
-int showOnMapRequestIndex = -1;
-
-String setTargetRequest;
-int setTargetRequestIndex = -1;
-
-// Json document for sending statistics to the lemon stats web page
-JsonDocument readings;
-// ****** End Webserver ****** 
+#define MERCATOR_OTA_DEVICE_LABEL "LEMON-IO" 
 
 // make sure this is disabled if writeLogToSerial is false
 //#define USE_WEBSERIAL
-
-#ifdef USE_WEBSERIAL
-  #define USB_SERIAL_BASE WebSerial
-#else
-  #define USB_SERIAL_BASE Serial
-#endif
-
-#define USB_SERIAL_PRINTF(...) do { if (writeLogToSerial) USB_SERIAL_BASE.printf(__VA_ARGS__); } while(0)
-#define USB_SERIAL_PRINTLN(...) do { if (writeLogToSerial) USB_SERIAL_BASE.println(__VA_ARGS__); } while(0)
-#define USB_SERIAL_PRINT(...) do { if (writeLogToSerial) USB_SERIAL_BASE.print(__VA_ARGS__); } while(0)
-
-// Keep USB_SERIAL for non-conditional usage (like WebSerial setup)
-#define USB_SERIAL USB_SERIAL_BASE
 
 // START FEATURE ENABLE FLAGS
 bool writeLogToSerial = true;
@@ -185,6 +162,36 @@ uint32_t currentPrivateMQTTUploadAt = 0, lastPrivateMQTTUploadAt = 0;
 uint32_t privateMQTTUploadDutyCycle = 0;
 // ################## END MQTT Configuration
 
+// ################## START NETWORK MANAGER Configuration
+NetworkConfig networkConfig = {
+    ssid_1, password_1, label_1, timeout_1,
+    ssid_2, password_2, label_2, timeout_2, 
+    ssid_3, password_3, label_3, timeout_3,
+    ping_target,
+    "lemon",  // device hostname
+    enableOTAServer,
+#ifdef USE_WEBSERIAL
+    true,     // enableWebSerial - controlled by USE_WEBSERIAL define
+#else
+    false,    // enableWebSerial - disabled when USE_WEBSERIAL not defined
+#endif
+    publishMQTTTestMessages,
+    STATS_HTML, STATS_HTML_SIZE,
+    MAP_HTML, MAP_HTML_SIZE,
+    MERCATOR_OTA_DEVICE_LABEL
+};
+
+
+NetworkManager networkManager(networkConfig, displayManager, privateMQTT);
+// ################## END NETWORK MANAGER Configuration
+
+// Json document for sending statistics to web page (used by getStats() in main_part2.cpp)
+JsonDocument readings;
+
+// Variables needed by getStats() function in main_part2.cpp
+int32_t lastCheckForInternetConnectivityAt = 0;
+uint32_t privateMQTTUploadCount = 0;
+
 
 // #### START IN-MEMORY TELEMETRY-PIPELINE / MESSAGE BUFFER CONFIG
 TelemetryPipeline telemetryPipeline;
@@ -196,21 +203,7 @@ bool g_offlineStorageThrottleApplied = false;
 // #### END IN-MEMORY TELEMETRY-PIPELINE / MESSAGE BUFFER CONFIG
 
 
-// #### START WIFI CONFIG AND LABELS
-WiFiClient wifiClient;
-const String ssid_not_connected = "-";
-String ssid_connected = ssid_not_connected;
-
-char IPBuffer[16];
-char IPLocalGateway[16];
-char WiFiSSID[36];
-const char* no_wifi_label="No WiFi";
-const char* wait_ip_label="Wait IP";
-const char* lost_ip_label="Lost IP";
-// #### END WIFI CONFIG AND LABELS
-
-bool restartForGoodOTAScheduled = false;
-uint32_t restartAfterGoodOTAUpdateAt = 0;
+// Network configuration now handled by NetworkManager class
 
 
 const uint32_t maxTimeBeforeAlertNoFix = 3000;
@@ -226,8 +219,7 @@ enum e_q_upload_status {Q_SUCCESS=1, Q_SUCCESS_SEND=3, Q_SUCCESS_NO_SEND=5, Q_SU
                         Q_MQTT_CLIENT_CONNECT_ERROR=12, Q_MQTT_CLIENT_SEND_ERROR=14, 
                         Q_UNDEFINED_ERROR=254};
 
-bool otaActive = false; // OTA updates toggle
-AsyncWebServer asyncWebServer(80);
+// OTA and web server now handled by NetworkManager class
 
 const char* leakAlarmMsg = "    Float\n\n    Leak!";
 
@@ -290,7 +282,6 @@ float uplinkBadMessagePercentage = 0.0;
 
 uint32_t lastGoodUplinkMessage = 0;
 uint16_t uplinkMessageLength = 0;
-uint32_t privateMQTTUploadCount = 0;
 uint16_t privateMQTTMessageLength = 0;
 float KBToPrivateMQTT = 0.0;
 float KBFromMako = 0.0;
@@ -306,7 +297,6 @@ uint32_t uplinkRxMicroSeconds = 0;                      // Latency between end o
 uint32_t uplinkMessageListenTimer = 0;                  // Latency processing GPS message, send to mako and valid msg received from Mako.
 
 const int8_t maxPingAttempts = 1;
-int32_t lastCheckForInternetConnectivityAt = 0;
 int32_t checkInternetConnectivityDutyCycle = 10000; // 30 seconds between each check
 
 const uint16_t pipelineBackedUpLength = 10;
@@ -316,11 +306,7 @@ const uint8_t LEAK_DETECTOR_GPIO = 7;
 Button* p_primaryButton = nullptr;
 void updateButtonsAndBuzzer();
 
-extern const uint8_t STATS_HTML[];
-extern const uint32_t STATS_HTML_SIZE;
-
-extern const uint8_t MAP_HTML[];
-extern const uint32_t MAP_HTML_SIZE;
+// HTML content moved to after NetworkManager include
 
 void toggleOTAActive();
 void toggleWiFiActive();
@@ -459,51 +445,12 @@ void sendFakeGPSData_No_GPS();
 void toggleOTAActive();
 void toggleWiFiActive();
 
-const char* scanForKnownNetwork();
-const char* scanForKnownNetworkAsync();
-bool connectToWiFiAndInitOTA(const bool wifiOnly, int repeatScanAttempts);
 bool setupOTAWebServer(const char* _ssid, const char* _password, const char* label, uint32_t timeout, bool wifiOnly);
 void buildUplinkTelemetryMessageV6a(char* payload, const struct MakoUplinkTelemetryForJson& m, const struct LemonTelemetryForJson& l);
 void buildBasicTelemetryMessage(char* payload);
 enum e_q_upload_status uploadTelemetryToPrivateMQTT(MakoUplinkTelemetryForJson* makoTelemetry, struct LemonTelemetryForJson* lemonTelemetry);
 
-void notifyWebSocketClients(String sensorReadings) {
-  ws.textAll(sensorReadings);
-}
-
-void handleWebSocketMessage(void *arg, uint8_t *data, size_t len) {
-  AwsFrameInfo *info = (AwsFrameInfo*)arg;
-  if (info->final && info->index == 0 && info->len == len && info->opcode == WS_TEXT) 
-  {
-    data[len] = 0;
-//    if (strcmp((char*)data, "getReadings") == 0)
-      notifyWebSocketClients(getStats());
-  }
-}
-
-void onEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type, void *arg, uint8_t *data, size_t len) {
-  switch (type) 
-  {
-    case WS_EVT_CONNECT:
-      Serial.printf("WebSocket client #%u connected from %s\n", client->id(), client->remoteIP().toString().c_str());
-      notifyWebSocketClients(getStats()); // re-established
-      break;
-    case WS_EVT_DISCONNECT:
-      Serial.printf("WebSocket client #%u disconnected\n", client->id());
-      break;
-    case WS_EVT_DATA:
-      handleWebSocketMessage(arg, data, len);
-      break;
-    case WS_EVT_PONG:
-    case WS_EVT_ERROR:
-      break;
-  }
-}
-
-void initWebSocket() {
-  ws.onEvent(onEvent);
-  asyncWebServer.addHandler(&ws);
-}
+// WebSocket functionality moved to NetworkManager class
 
 void getM5ImuSensorData(struct LemonTelemetryForJson& t)
 {
@@ -512,137 +459,18 @@ void getM5ImuSensorData(struct LemonTelemetryForJson& t)
   t.imu_rot_acc_x = t.imu_rot_acc_y = t.imu_rot_acc_z = uninitialisedIMU;
 }
 
-void WiFiStationConnected(WiFiEvent_t event, WiFiEventInfo_t info)
-{
-  strcpy(IPBuffer,wait_ip_label);
-  
-  USB_SERIAL_PRINTF("***** Connected to %s successfully! *****\n",info.wifi_sta_connected.ssid);
-}
-
-void WiFiGotIP(WiFiEvent_t event, WiFiEventInfo_t info)
-{
-  strcpy(IPBuffer,WiFi.localIP().toString().c_str());
-  strcpy(IPLocalGateway, WiFi.gatewayIP().toString().c_str());
-  strcpy(WiFiSSID, WiFi.SSID().c_str());
-
-  bool isDevNet = (!strcmp(IPLocalGateway,private_local_gateway) && !strcmp(WiFiSSID, private_dev_ssid));
-  privateMQTT.setUsingDevNetwork(isDevNet);
-
-  USB_SERIAL_PRINTF("***** WiFi CONNECTED IP: %s ******\n",IPBuffer);
-}
+// WiFi event handlers moved to NetworkManager class
 
 bool devNetworkInUse()
 { 
   extern const char* private_local_gateway;
   extern const char* private_dev_ssid;
-  return (!strcmp(IPLocalGateway,private_local_gateway) && !strcmp(WiFiSSID, private_dev_ssid));
+  String currentGateway = WiFi.gatewayIP().toString();
+  String currentSSID = WiFi.SSID();
+  return (currentGateway == String(private_local_gateway) && currentSSID == String(private_dev_ssid));
 }
 
-void WiFiLostIP(WiFiEvent_t event, WiFiEventInfo_t info)
-{
-  strcpy(IPBuffer,lost_ip_label);
-  strcpy(IPBuffer,"");
-  strcpy(IPLocalGateway, "");
-  strcpy(WiFiSSID, WiFi.SSID().c_str());
-
-  privateMQTT.setUsingDevNetwork(false);
-
-  USB_SERIAL_PRINTF("***** WiFi LOST IP ******\n");
-}
-
-void WiFiStationDisconnected(WiFiEvent_t event, WiFiEventInfo_t info)
-{
-  strcpy(IPBuffer,no_wifi_label);
-  strcpy(IPLocalGateway, "");
-  strcpy(WiFiSSID, "");
-
-  privateMQTT.setUsingDevNetwork(false);
-
-  USB_SERIAL_PRINTF("***** WiFi DISCONNECTED: Reason: %d ******\n",info.wifi_sta_disconnected.reason);
-  // Reason 2 
-  // Reason 201
-}
-
-void checkConnectivity()
-{
-//  return;    // MBJ REFACTOR
-
-
-  if (enableConnectToPrivateMQTT)
-  {
-    // Maximum of one connectivity check per duty cycle
-    // If WiFi drops it will take two iterations to get back online, the first to reconnect to wifi
-    // and the second to create a new Qubitro connection.
-    if (millis() < lastCheckForInternetConnectivityAt + checkInternetConnectivityDutyCycle)
-      return;
-
-    // primary detection of no connectivity is messages backed up and not draining
-    if (telemetryPipeline.getPipelineLength() > pipelineBackedUpLength && 
-        telemetryPipeline.isPipelineDraining() == false)
-    {
-      // messages are backing up and not draining, either a WiFi or 4G or broker server connection issue
-      lastCheckForInternetConnectivityAt = millis();
-
-      USB_SERIAL_PRINTLN("0. checkConnectivity: Pipeline not draining");
-
-      if (WiFi.status() == WL_CONNECTED)
-      {
-        USB_SERIAL_PRINTLN("1.1 checkConnectivity: WIFI is connected, ping 8.8.8.8");
-        
-        // either a 4G or broker server connection issue
-        if (isInternetAccessible())   // ping google DNS
-        {
-          USB_SERIAL_PRINTLN("1.2.1 checkConnectivity: WiFi ok, internet ping success");
-        }
-        else
-        {
-          USB_SERIAL_PRINTLN("1.2.2 checkConnectivity: WiFi ok, ping fail, out of coverage");
-          
-          g_offlineStorageThrottleApplied = true;
-        }
-
-        if (isScubaMosquittoBrokerAvailable())
-        {
-          USB_SERIAL_PRINTLN("1.2.3 checkConnectivity: Scuba MQTT Broker ping success");
-        }
-        else
-        {
-          USB_SERIAL_PRINTLN("1.2.4 checkConnectivity: WiFi ok, ping google ok, MQTT Broker fail");
-          
-          g_offlineStorageThrottleApplied = true;
-        }
-
-      }
-      else
-      {
-        g_offlineStorageThrottleApplied = true;
-        
-        USB_SERIAL_PRINTLN("checkConnectivity: WIFI not connected, attempt reconnect");
-
-        // Do a manual wifi reconnect attempt - synchronous
-        if (WiFi.reconnect())
-        {
-          USB_SERIAL_PRINTLN("checkConnectivity: WIFI reconnect success");          
-        }
-        else
-        {
-          USB_SERIAL_PRINTLN("checkConnectivity: WIFI reconnect fail");          
-        }
-      }
-    }
-  }
-}
-
-bool isInternetAccessible()
-{
-  lastCheckForInternetConnectivityAt = millis();
-  return Ping.ping(ping_target,maxPingAttempts);
-}
-
-bool isScubaMosquittoBrokerAvailable()
-{
-    return privateMQTT.isConnected();
-}
+// Connectivity checking functions moved to NetworkManager class
 
 void dumpHeapUsage(const char* msg)
 {  
@@ -700,16 +528,7 @@ void disableFeaturesForOTA()
 TaskHandle_t mainTaskHandle = nullptr;
 BaseType_t mainTaskCoreId = 0;
 
-void uploadOTABeginCallback(AsyncElegantOtaClass* originator)
-{
-  disableFeaturesForOTA();
-}
-
-void uploadOTASucceededCallback(AsyncElegantOtaClass* originator)
-{
-  restartAfterGoodOTAUpdateAt = millis() + 3000;
-  restartForGoodOTAScheduled = true;
-}
+// OTA callback functions moved to NetworkManager class
 
 uint32_t getSizeOfLemonTelemetryForStorage();
 class mqttConnectionTest
@@ -771,14 +590,16 @@ void setup()
     displayManager.addDisplayLine("SPIFFS OK");
   }
 
-  WiFi.onEvent(WiFiStationConnected, WiFiEvent_t::ARDUINO_EVENT_WIFI_STA_CONNECTED);
-  WiFi.onEvent(WiFiGotIP, WiFiEvent_t::ARDUINO_EVENT_WIFI_STA_GOT_IP);
-  WiFi.onEvent(WiFiLostIP, WiFiEvent_t::ARDUINO_EVENT_WIFI_STA_LOST_IP);
-  WiFi.onEvent(WiFiStationDisconnected, WiFiEvent_t::ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
-  
-  strcpy(IPBuffer,no_wifi_label);
-
-  ssid_connected = ssid_not_connected;
+  // Initialize NetworkManager
+  networkManager.setTelemetryPipeline(&telemetryPipeline);
+  networkManager.setGetStatsCallback([]() { return getStats(); });
+  networkManager.setSendLemonStatusCallback([](const char* status) { 
+    // Note: This would need proper enum conversion
+    // sendLemonStatus(status); 
+  });
+  networkManager.setUpdateButtonsAndBuzzerCallback([]() { updateButtonsAndBuzzer(); });
+  networkManager.setIsDevNetworkCallback([]() { return devNetworkInUse(); });
+  networkManager.begin();
 
   USB_SERIAL_PRINTF("sizeof LemonTelemetry: %lu\n",getSizeOfLemonTelemetryForStorage());
 
@@ -818,7 +639,7 @@ void setup()
 
     bool wifiOnly = false;
     int repeatScanAttempts = 4;
-    bool connected = connectToWiFiAndInitOTA(wifiOnly, repeatScanAttempts);
+    bool connected = networkManager.connectToWiFiAndInitOTA(wifiOnly, repeatScanAttempts);
     sendLemonStatus(connected ? LC_FOUND_WIFI : LC_NO_WIFI);
 
     // WiFi connection result already added by connectToWiFiAndInitOTA
@@ -851,10 +672,10 @@ void setup()
   }
   
   // Final setup completion status - add to scrolling display
-  displayManager.addDisplayLine("Lemon-IO Online @ " + WiFi.localIP().toString());
+  displayManager.addDisplayLine("Lemon-IO Online @ " + networkManager.getLocalIP());
   delay(2000);  // Show final status for 2 seconds
 
-  mqttCheck.resetCheckTrigger(1500);
+  networkManager.getMQTTConnectionTest().resetCheckTrigger(1500);
 }
 
 char* customiseNMEASentence(char* sentence, int showOnMapIndex)
@@ -1019,7 +840,7 @@ char* customiseNMEASentence(char* sentence, int showOnMapIndex)
 
   bool overrideForTarget = false;
 
-  if (setTargetRequestIndex >= 0 && isGNGGA)
+  if (networkManager.getSetTargetRequestIndex() >= 0 && isGNGGA)
   {
     overrideForTarget = true;
     // Infiltrate internet upload status into
@@ -1050,7 +871,7 @@ char* customiseNMEASentence(char* sentence, int showOnMapIndex)
           if (commas == 10)
           {
             // overwrite the character in the sentence which is normally 'M' for Unit of geoid separation
-            *next = setTargetRequestIndex+33; // make sure visible char
+            *next = networkManager.getSetTargetRequestIndex()+33; // make sure visible char
 
             if (*next == 'M')     // exception for target mapping to M as M means no set target
               *next = -2;
@@ -1099,73 +920,15 @@ const uint32_t telegramBotDutyCycle = 10000;
 const int initNeopixelSerialByteRead = -1;
 int neopixelSerialByteRead = initNeopixelSerialByteRead;
 
-MQTTConnectionResult publishMQTTTestMessageOnDutyCycle(const char* topic="test_mqtt", uint32_t testPublishDutyCycle=1000)
-{
-    MQTTConnectionResult result = MQTTConnectionResult::UNDEFINED_ERROR;
-    static uint32_t lastTestMessagePublishedAt = millis();
-    if (millis() - lastTestMessagePublishedAt > testPublishDutyCycle)
-    {
-      char message[128];
-      snprintf(message,sizeof(message),"[%lu] This is a test message from Lemon_V2 (%s)", millis(), privateMQTT.getEncryptionStatus());
-      result = privateMQTT.publish(topic, message);
-      USB_SERIAL_PRINTF("[%lu] Publish MQTT Test message on topic %s (%s)  Result = %s\n", millis(), topic, privateMQTT.getEncryptionStatus(), MercatorMQTT::resultToText(result));
-      lastTestMessagePublishedAt = millis();
-    }
-    return result;
-}
+// MQTT test message function moved to NetworkManager class
 
 void loop()
 {
-  if (enableUploadToPrivateMQTT && !mqttCheck.initialTestPublishDone)
-  {
-    if (mqttCheck.connectMQTTChecksDone < mqttCheck.maxMQTTConnectChecks)
-    {
-      if (millis() > mqttCheck.nextMQTTConnectCheck)
-      {
-        mqttCheck.connectMQTTChecksDone++;
-        mqttCheck.nextMQTTConnectCheck = millis() + mqttCheck.periodMQTTConnectCheck;
-        
-        if (privateMQTT.isConnected()) 
-        {
-          const char* topic="test-connection";
-          const char* message="First message to test the connection";
-          MQTTConnectionResult result = privateMQTT.publish(topic, message);
-          if (result == MQTTConnectionResult::SUCCESS)
-          {
-            USB_SERIAL_PRINTF("[%lu] Publish MQTT Connect Validation message on topic %s (%s)  Result = %s\n", millis(), topic, privateMQTT.getEncryptionStatus(), MercatorMQTT::resultToText(result));
-            displayManager.addDisplayLine(String("MQTT Broker Connected @ ") + privateMQTT.getCurrentHostname());
-          }
-          else
-          {
-            displayManager.addDisplayLine("MQTT Connected & Publish Failed");
-            USB_SERIAL_PRINTF("[%lu] Publish MQTT Connect Validation message on topic %s (%s)  Result = %s\n", millis(), topic, privateMQTT.getEncryptionStatus(), MercatorMQTT::resultToText(result));
-          }
-          mqttCheck.initialTestPublishDone = true;
-        }
-        else
-        {
-          char tmp[64];
-          snprintf(tmp,sizeof(tmp),"MQTT: Trying to Connect %i of %i",mqttCheck.connectMQTTChecksDone,mqttCheck.maxMQTTConnectChecks);
-          displayManager.addDisplayLine(tmp);
-          USB_SERIAL_PRINTLN(tmp);
-        }
-      }
-    }
-    else
-    {
-      displayManager.addDisplayLine("MQTT: Cannot connect to broker");
-      USB_SERIAL_PRINTLN("[MQTT: Cannot connect to broker");
-      mqttCheck.initialTestPublishDone = true;
-    }
-  }
-
-  if (restartForGoodOTAScheduled && millis() >= restartAfterGoodOTAUpdateAt) 
-  {
-        USB_SERIAL_PRINTLN("Restarting now...");
-        ESP.restart();
-  }
-
-  if (haltAllProcessingDuringOTAUpload)
+  // Handle NetworkManager processing (includes MQTT testing, OTA restart, etc.)
+  networkManager.loop();
+  
+  // Check if we should halt processing during OTA upload
+  if (networkManager.isHaltingForOTA())
   {  
     delay(100);
     toggleStatusLED();
@@ -1191,19 +954,14 @@ void loop()
       privateMQTT.loop();
   }
 
-  if (publishMQTTTestMessages)
-    publishMQTTTestMessageOnDutyCycle();
-
   if (!accumulateMissedMessageCount && millis() > delayBeforeCountingMissedMessages)
     accumulateMissedMessageCount = true;
-
-  checkConnectivity();
   
   if (p_primaryButton->wasReleasefor(100)) // disable message upload
   {
     updateButtonsAndBuzzer();
 
-    disableFeaturesForOTA();
+    // Note: disableFeaturesForOTA is now handled by NetworkManager
     return;
   }
 
@@ -1211,12 +969,11 @@ void loop()
   {
     checkForLeak(leakAlarmMsg);
 
-    if (ws.count() && millis() > timeOfNextStatUpdate)
+    if (networkManager.getWebSocketClientCount() && millis() > networkManager.getTimeOfNextStatUpdate())
     {
-      notifyWebSocketClients(getStats());
-      ws.cleanupClients();  // ensure no more than 8 connections
+      networkManager.sendStatsWebSocketNotification();
 
-      timeOfNextStatUpdate = millis() + timeBetweenSendingStatsUpdates;
+      networkManager.setTimeOfNextStatUpdate(millis() + 990); // timeBetweenSendingStatsUpdates
 
       dumpHeapUsage("Sent stats: ");
     }
@@ -1246,7 +1003,7 @@ void loop()
 
         //////////////////////////////////////////////////////////
         // send message to outgoing serial connection to mako gopro
-        MAKO_GOPRO_SERIAL.write(customiseNMEASentence(gps.getSentence(), showOnMapRequestIndex));
+        MAKO_GOPRO_SERIAL.write(customiseNMEASentence(gps.getSentence(), networkManager.getShowOnMapRequestIndex()));
         consoleDownlinkMsgCount++;
 
         if (gps.isSentenceGGA())
@@ -1441,12 +1198,11 @@ void loop()
       // M5.Lcd.setTextColor(TFT_WHITE, mainBackColour);
       uplinkMessageListenTimer = 0;
 
-      if (ws.count() && millis() > timeOfNextStatUpdate)
+      if (networkManager.getWebSocketClientCount() && millis() > networkManager.getTimeOfNextStatUpdate())
       {
-        notifyWebSocketClients(getStats());
-        ws.cleanupClients();  // ensure no more than 8 connections
+        networkManager.sendStatsWebSocketNotification();
 
-        timeOfNextStatUpdate = millis() + timeBetweenSendingStatsUpdates;
+        networkManager.setTimeOfNextStatUpdate(millis() + 990); // timeBetweenSendingStatsUpdates
       }
       
       if (!messageValidatedOk)    // validation fails if mako telemetry not invalid size
@@ -1524,7 +1280,7 @@ void loop()
   }
 #endif
 }
-
+/*
 void sendStatsWebSocketNotification()
 {
     notifyWebSocketClients(getStats());
@@ -1606,242 +1362,8 @@ void toggleWiFiActive()
   // M5.Lcd.fillScreen(TFT_BLACK);
 }
 
-const char* scanForKnownNetworkAsync() // async version with progress animation
-{
-  const char* network = nullptr;
 
-  // Append scanning status to scrolling line
-  displayManager.updateScrollingStatusLine("Scanning");
-  
-  // Start progress animation for scanning
-  displayManager.startProgressAnimation();
 
-  // Ensure WiFi is in station mode and ready for scanning
-  USB_SERIAL_PRINTF("WiFi status before scan: %d\n", WiFi.status());
-  WiFi.mode(WIFI_STA);
-  delay(10);
-  USB_SERIAL_PRINTF("WiFi status after mode set: %d\n", WiFi.status());
-  
-  // Start async WiFi scan
-  int16_t startResult = WiFi.scanNetworks(true, false);  // async=true, show_hidden=false
-  
-  USB_SERIAL_PRINTF("Async WiFi scan start result: %d\n", startResult);
-  
-  // Give a moment for scan to actually start
-  delay(50);
-  
-  // Check if scan actually started
-  int16_t initialCheck = WiFi.scanComplete();
-  USB_SERIAL_PRINTF("Initial scan status check: %d\n", initialCheck);
-  
-  if (initialCheck == -2) {
-    displayManager.stopProgressAnimation();
-    displayManager.updateScrollingStatusLine("Scan failed to start");
-    USB_SERIAL_PRINTLN("WiFi scan failed to initiate - WiFi may not be ready");
-    return nullptr;
-  }
-  
-  // Poll for scan completion while showing progress
-  int16_t scanResults = -1;  // -1 means scan is running
-  int timeoutCount = 0;
-  const int maxTimeout = 100; // 10 seconds max (100 * 100ms)
-  
-  while (timeoutCount < maxTimeout) {
-    scanResults = WiFi.scanComplete();
-    USB_SERIAL_PRINTF("Loop %d: scanComplete() returned %d\n", timeoutCount, scanResults);
-    
-    if (scanResults == -1) {
-      // Scan still running
-      USB_SERIAL_PRINTF("Scan running, showing progress (timeout count: %d)\n", timeoutCount);
-      displayManager.updateProgressAnimation();  // Show scanning progress
-      delay(100);  // Check every 100ms
-      timeoutCount++;
-    } else if (scanResults == -2) {
-      // No scan was started
-      displayManager.stopProgressAnimation();
-      displayManager.updateScrollingStatusLine("No scan started");
-      USB_SERIAL_PRINTF("ERROR: scanComplete() returned -2 at loop %d (no scan was started)\n", timeoutCount);
-      return nullptr;
-    } else {
-      // Scan completed (scanResults >= 0)
-      USB_SERIAL_PRINTF("Scan completed! Found %d networks after %d loops\n", scanResults, timeoutCount);
-      break;
-    }
-  }
-  
-  // Stop progress animation
-  displayManager.stopProgressAnimation();
-  
-  // Handle timeout
-  if (timeoutCount >= maxTimeout) {
-    displayManager.updateScrollingStatusLine("Scan timeout");
-    USB_SERIAL_PRINTLN("Async WiFi scan timeout");
-    WiFi.scanDelete();
-    return nullptr;
-  }
-  
-  USB_SERIAL_PRINTF("Async WiFi scan completed: found %d networks\n", scanResults);
-  
-  if (scanResults > 0)
-  {
-    for (int i = 0; i < scanResults; ++i) 
-    {
-      // Print SSID and RSSI for each device found
-      String SSID = WiFi.SSID(i);
-
-      // Check if the current device matches known networks
-      if (strcmp(SSID.c_str(), ssid_1) == 0)
-        network=ssid_1;
-      else if (strcmp(SSID.c_str(), ssid_2) == 0)
-        network=ssid_2;
-      else if (strcmp(SSID.c_str(), ssid_3) == 0)
-        network=ssid_3;
-
-      if (network)
-        break;
-    }    
-  }
-
-  if (network)
-  {
-    // Append found network to scrolling line
-    displayManager.updateScrollingStatusLine("Found " + String(network));
-    USB_SERIAL_PRINTF("Async scan found: %s\n", network);
-  }
-  else
-  {
-    // Append not found to scrolling line
-    displayManager.updateScrollingStatusLine("No known networks found");
-    USB_SERIAL_PRINTLN("Async scan: No known networks found");
-  }
-
-  // Clean up scan results
-  WiFi.scanDelete();
-  return network;
-}
-
-const char* scanForKnownNetwork() // return first known network found
-{
-  const char* network = nullptr;
-
-  // Append scanning status to scrolling line
-  displayManager.updateScrollingStatusLine("Scanning");
-
-  // Perform sync WiFi scan (fallback method)
-  int8_t scanResults = WiFi.scanNetworks();
-  
-  if (scanResults > 0)
-  {
-    for (int i = 0; i < scanResults; ++i) 
-    {
-      // Print SSID and RSSI for each device found
-      String SSID = WiFi.SSID(i);
-
-      // Check if the current device starts with the peerSSIDPrefix
-      if (strcmp(SSID.c_str(), ssid_1) == 0)
-        network=ssid_1;
-      else if (strcmp(SSID.c_str(), ssid_2) == 0)
-        network=ssid_2;
-      else if (strcmp(SSID.c_str(), ssid_3) == 0)
-        network=ssid_3;
-
-      if (network)
-        break;
-    }    
-  }
-
-  if (network)
-  {
-    // Append found network to scrolling line
-    displayManager.updateScrollingStatusLine("Found " + String(network));
-
-    USB_SERIAL_PRINTF("Found:\n%s\n",network);
-  }
-  else
-  {
-    // Append not found to scrolling line
-    displayManager.updateScrollingStatusLine("No known networks found");
-    
-    USB_SERIAL_PRINTLN("No networks Found\n");
-  }
-
-  // clean up ram
-  WiFi.scanDelete();
-
-  return network;
-}
-
-bool connectToWiFiAndInitOTA(const bool wifiOnly, int repeatScanAttempts)
-{
-  if (wifiOnly && WiFi.status() == WL_CONNECTED)
-    return true;
-
-  // Initialize scrolling status line
-  displayManager.updateScrollingStatusLine("WiFi: Searching", false);
-
-  while (repeatScanAttempts-- &&
-         (WiFi.status() != WL_CONNECTED ||
-          WiFi.status() == WL_CONNECTED && wifiOnly == false && otaActive == false ) )
-  {
-    const char* network = scanForKnownNetworkAsync();
-  
-    if (!network)
-    {
-      // Append retry status to scrolling line
-      displayManager.updateScrollingStatusLine("No networks found, retrying");
-      
-      delay(1000);
-      continue;
-    }
-    
-    int connectToFoundNetworkAttempts = 3;
-    const int repeatDelay = 1000;
-    
-    // Append connecting status to scrolling line
-    displayManager.updateScrollingStatusLine("Connecting to " + String(network),true, true);
-    
-    // Start progress animation
-    displayManager.startProgressAnimation();
-  
-    if (strcmp(network,ssid_1) == 0)
-    {
-      while (connectToFoundNetworkAttempts-- && !setupOTAWebServer(ssid_1, password_1, label_1, timeout_1, wifiOnly))
-        delay(repeatDelay);
-    }
-    else if (strcmp(network,ssid_2) == 0)
-    {
-      while (connectToFoundNetworkAttempts-- && !setupOTAWebServer(ssid_2, password_2, label_2, timeout_2, wifiOnly))
-        delay(repeatDelay);
-    }
-    else if (strcmp(network,ssid_3) == 0)
-    {
-      while (connectToFoundNetworkAttempts-- && !setupOTAWebServer(ssid_3, password_3, label_3, timeout_3, wifiOnly))
-        delay(repeatDelay);
-    }
-    
-    // Stop progress animation after connection attempts
-    displayManager.stopProgressAnimation();
-  }
-
-  bool connected=WiFi.status() == WL_CONNECTED;
-  
-  if (connected)
-  {
-    ssid_connected = WiFi.SSID();
-    displayManager.updateScrollingStatusLine("SUCCESS! Connected to " + ssid_connected, true, true);
-    // Quietly add to display array for later scrolling, without refreshing screen
-    displayManager.addDisplayLine("SUCCESS! Connected to " + ssid_connected, false, true);
-  }
-  else
-  {
-    ssid_connected = ssid_not_connected;
-    displayManager.updateScrollingStatusLine("FAILED! Connection unsuccessful", true, true);
-    // Quietly add to display array for later scrolling, without refreshing screen
-    displayManager.addDisplayLine("FAILED! Connection unsuccessful", false, true);
-  }
-  
-  return connected;
-}
 
 char* getMQTTPayloadBuffer()
 {
@@ -2078,7 +1600,7 @@ bool setupOTAWebServer(const char* _ssid, const char* _password, const char* lab
 
   return connected;
 }
-
+*/
 
 #define BUILD_INCLUDE_MAIN_PART2
 
