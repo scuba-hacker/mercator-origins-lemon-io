@@ -557,7 +557,12 @@ mqttConnectionTest mqttCheck;
 
 void setup()
 {
+  Serial.begin(115200);
+  Serial.flush();
+  delay(500);
+
   ProS3.begin();
+  USB_SERIAL_PRINTF("=== MAIN SETUP START ===\n");
   statusLEDColour();
   statusLEDOn();
 
@@ -577,9 +582,6 @@ void setup()
   mainTaskCoreId = xPortGetCoreID();
   mainTaskHandle = xTaskGetCurrentTaskHandle();
 
-  Serial.begin(115200);
-  Serial.flush();
-  delay(1000);
   USB_SERIAL_PRINTLN("Unexpected Maker Pro S3 Initialised...");
 
   if (!SPIFFS.begin(true)) {
@@ -635,10 +637,12 @@ void setup()
 
   if (enableOTAServer)
   {
+    USB_SERIAL_PRINTF("=== MAIN: Starting WiFi/OTA initialization (enableOTAServer=%i) ===\n", enableOTAServer);
     sendLemonStatus(LC_SEARCH_WIFI);
 
     bool wifiOnly = false;
     int repeatScanAttempts = 4;
+    USB_SERIAL_PRINTF("=== MAIN: Calling connectToWiFiAndInitOTA with wifiOnly=%i, repeatScanAttempts=%i ===\n", wifiOnly, repeatScanAttempts);
     bool connected = networkManager.connectToWiFiAndInitOTA(wifiOnly, repeatScanAttempts);
     sendLemonStatus(connected ? LC_FOUND_WIFI : LC_NO_WIFI);
 
@@ -965,18 +969,17 @@ void loop()
     return;
   }
 
+  // WebSocket stats updates - independent of GPS processing
+  if (networkManager.getWebSocketClientCount() && millis() > networkManager.getTimeOfNextStatUpdate())
+  {
+    networkManager.sendStatsWebSocketNotification();
+    networkManager.setTimeOfNextStatUpdate(millis() + 990); // timeBetweenSendingStatsUpdates
+    dumpHeapUsage("Sent stats: ");
+  }
+
   while (enableGPSRead && gps_serial.available() > 0)
   {
     checkForLeak(leakAlarmMsg);
-
-    if (networkManager.getWebSocketClientCount() && millis() > networkManager.getTimeOfNextStatUpdate())
-    {
-      networkManager.sendStatsWebSocketNotification();
-
-      networkManager.setTimeOfNextStatUpdate(millis() + 990); // timeBetweenSendingStatsUpdates
-
-      dumpHeapUsage("Sent stats: ");
-    }
 
     char nextByte = gps_serial.read();
 
@@ -1197,13 +1200,6 @@ void loop()
 
       // M5.Lcd.setTextColor(TFT_WHITE, mainBackColour);
       uplinkMessageListenTimer = 0;
-
-      if (networkManager.getWebSocketClientCount() && millis() > networkManager.getTimeOfNextStatUpdate())
-      {
-        networkManager.sendStatsWebSocketNotification();
-
-        networkManager.setTimeOfNextStatUpdate(millis() + 990); // timeBetweenSendingStatsUpdates
-      }
       
       if (!messageValidatedOk)    // validation fails if mako telemetry not invalid size
       {

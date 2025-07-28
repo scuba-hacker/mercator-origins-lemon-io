@@ -326,6 +326,8 @@ const char* NetworkManager::scanForKnownNetwork() {
 }
 
 bool NetworkManager::connectToWiFiAndInitOTA(const bool wifiOnly, int repeatScanAttempts) {
+    USB_SERIAL_PRINTF("=== connectToWiFiAndInitOTA ENTRY: wifiOnly=%i repeatScanAttempts=%i WiFiStatus=%i otaActive=%i ===\n", wifiOnly, repeatScanAttempts, WiFi.status(), otaActive);
+    
     if (wifiOnly && WiFi.status() == WL_CONNECTED)
         return true;
 
@@ -387,6 +389,8 @@ bool NetworkManager::connectToWiFiAndInitOTA(const bool wifiOnly, int repeatScan
 }
 
 bool NetworkManager::setupOTAWebServer(const char* _ssid, const char* _password, const char* label, uint32_t timeout, bool wifiOnly) {
+    USB_SERIAL_PRINTF("=== setupOTAWebServer ENTRY: ssid=%s wifiOnly=%i otaActive=%i WiFiStatus=%i ===\n", _ssid, wifiOnly, otaActive, WiFi.status());
+    
     if (wifiOnly && WiFi.status() == WL_CONNECTED) {
         USB_SERIAL_PRINTF("setupOTAWebServer: attempt to connect wifiOnly, already connected - otaActive=%i\n",otaActive);
         return true;
@@ -477,6 +481,63 @@ void NetworkManager::setupWebServerRoutes() {
         delay(500);
         USB_SERIAL_PRINTLN("Restarting now...");
         esp_restart();
+    });
+
+    // Debug endpoint to test WebSocket
+    asyncWebServer->on("/test-ws", HTTP_GET, [this](AsyncWebServerRequest * request) {
+        USB_SERIAL_PRINTF("WebSocket test endpoint called - connected clients: %d\n", ws ? ws->count() : 0);
+        if (getStatsCallback) {
+            String testData = getStatsCallback();
+            USB_SERIAL_PRINTF("WebSocket test: sending data length %d\n", testData.length());
+            notifyWebSocketClients(testData);
+            request->send(200, "text/plain", "WebSocket test sent to " + String(ws ? ws->count() : 0) + " clients");
+        } else {
+            request->send(500, "text/plain", "getStatsCallback not set");
+        }
+    });
+
+    // Simple WebSocket test page
+    asyncWebServer->on("/ws-test", HTTP_GET, [](AsyncWebServerRequest * request) {
+        String html = "<!DOCTYPE html>"
+                     "<html>"
+                     "<head><title>WebSocket Test</title></head>"
+                     "<body>"
+                     "<h1>WebSocket Test</h1>"
+                     "<div id=\"status\">Disconnected</div>"
+                     "<div id=\"messages\"></div>"
+                     "<button onclick=\"sendTest()\">Send Test</button>"
+                     "<script>"
+                     "var ws = new WebSocket('ws://' + window.location.hostname + '/ws');"
+                     "var messages = document.getElementById('messages');"
+                     "var status = document.getElementById('status');"
+                     "ws.onopen = function() {"
+                         "status.innerHTML = 'Connected';"
+                         "status.style.color = 'green';"
+                         "console.log('WebSocket connected');"
+                     "};"
+                     "ws.onmessage = function(event) {"
+                         "console.log('Received:', event.data);"
+                         "messages.innerHTML += '<p>Received: ' + event.data.substring(0, 200) + '...</p>';"
+                     "};"
+                     "ws.onclose = function() {"
+                         "status.innerHTML = 'Disconnected';"
+                         "status.style.color = 'red';"
+                         "console.log('WebSocket disconnected');"
+                     "};"
+                     "ws.onerror = function(error) {"
+                         "status.innerHTML = 'Error';"
+                         "status.style.color = 'red';"
+                         "console.log('WebSocket error:', error);"
+                     "};"
+                     "function sendTest() {"
+                         "if (ws.readyState === WebSocket.OPEN) {"
+                             "ws.send('test message');"
+                         "}"
+                     "}"
+                     "</script>"
+                     "</body>"
+                     "</html>";
+        request->send(200, "text/html", html);
     });
 
     asyncWebServer->on("/stats", HTTP_GET, [this](AsyncWebServerRequest * request) {
@@ -576,25 +637,37 @@ void NetworkManager::toggleWiFiActive() {
 }
 
 void NetworkManager::initWebSocket() {
+    USB_SERIAL_PRINTF("NetworkManager: Initializing WebSocket at /ws\n");
     ws->onEvent([this](AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type, void *arg, uint8_t *data, size_t len) {
         this->onWebSocketEvent(server, client, type, arg, data, len);
     });
     asyncWebServer->addHandler(ws);
+    USB_SERIAL_PRINTF("NetworkManager: WebSocket handler added to server\n");
 }
 
 void NetworkManager::onWebSocketEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type, void *arg, uint8_t *data, size_t len) {
     switch (type) {
         case WS_EVT_CONNECT:
-            if (getStatsCallback)
+            USB_SERIAL_PRINTF("WebSocket: Client connected from IP %s\n", client->remoteIP().toString().c_str());
+            if (getStatsCallback) {
+                USB_SERIAL_PRINTF("WebSocket: Sending initial stats to new client\n");
                 notifyWebSocketClients(getStatsCallback()); // re-established
+            } else {
+                USB_SERIAL_PRINTF("WebSocket: WARNING - getStatsCallback is not set!\n");
+            }
             break;
         case WS_EVT_DISCONNECT:
+            USB_SERIAL_PRINTF("WebSocket: Client disconnected\n");
             break;
         case WS_EVT_DATA:
+            USB_SERIAL_PRINTF("WebSocket: Received data from client\n");
             handleWebSocketMessage(arg, data, len);
             break;
         case WS_EVT_PONG:
+            USB_SERIAL_PRINTF("WebSocket: Received PONG\n");
+            break;
         case WS_EVT_ERROR:
+            USB_SERIAL_PRINTF("WebSocket: Error occurred\n");
             break;
     }
 }
@@ -609,13 +682,26 @@ void NetworkManager::handleWebSocketMessage(void *arg, uint8_t *data, size_t len
 }
 
 void NetworkManager::notifyWebSocketClients(const String& sensorReadings) {
-    if (ws)
+    if (ws) {
+        USB_SERIAL_PRINTF("WebSocket: Sending data to %d clients (length: %d)\n", ws->count(), sensorReadings.length());
         ws->textAll(sensorReadings);
+    } else {
+        USB_SERIAL_PRINTF("WebSocket: ERROR - ws is null!\n");
+    }
+}
+
+void NetworkManager::setGetStatsCallback(std::function<String()> callback) {
+    getStatsCallback = callback; 
+    USB_SERIAL_PRINTF("NetworkManager: getStatsCallback has been set\n");
 }
 
 void NetworkManager::sendStatsWebSocketNotification() {
-    if (getStatsCallback)
+    if (getStatsCallback) {
+        USB_SERIAL_PRINTF("WebSocket: sendStatsWebSocketNotification() called\n");
         notifyWebSocketClients(getStatsCallback());
+    } else {
+        USB_SERIAL_PRINTF("WebSocket: sendStatsWebSocketNotification() called but getStatsCallback is not set!\n");
+    }
 }
 
 void NetworkManager::webSerialReceiveMessage(uint8_t *data, size_t len) {
