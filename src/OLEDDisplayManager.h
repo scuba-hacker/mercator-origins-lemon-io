@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include <U8g2lib.h>
+#include <Adafruit_SSD1327.h>
 
 class OLEDDisplayManager {
 public:
@@ -25,6 +26,19 @@ public:
     void startProgressAnimation();
     void stopProgressAnimation();
     void updateProgressAnimation(int yPosition = 55);
+    
+    // Status display methods
+    void displayStatusScreen(
+        // GPS statistics
+        uint32_t gpsMessagesReceived, uint32_t gpsFixes, uint32_t gpsNoFix,
+        uint32_t gpsBadChecksum, uint32_t gpsBadLength, bool hasGPSDevice,
+        bool hasGPSFix, double gpsHdop, uint8_t gpsSatellites,
+        // Network statistics  
+        const String& ipAddress, uint32_t mqttUploads, bool wifiConnected,
+        const String& wifiSSID, bool dnsConnected, bool ipConnected, bool mqttConnected
+    );
+    void setStatusDisplayMode(bool enabled);
+    bool isInStatusDisplayMode() const { return statusDisplayModeActive; }
     
     // Utility methods
     void clearDisplay();
@@ -51,6 +65,10 @@ private:
     // OTA mode flag
     bool otaModeActive;
     
+    // Status display mode flag
+    bool statusDisplayModeActive;
+    
     // Private helper methods
     void updateScrollingStatusLineDisplay(int yPosition);
+    void drawStatusIndicator(int x, int y, const String& label, bool status, const String& value = "");
 };

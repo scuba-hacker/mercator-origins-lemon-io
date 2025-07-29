@@ -46,6 +46,10 @@ NetworkManager::NetworkManager(const NetworkConfig& networkConfig,
     , KBToPrivateMQTT(0.0)
     , maxPingAttempts(1)
     , checkInternetConnectivityDutyCycle(10000)
+    , lastInternetConnectivityStatus(false)
+    , lastDNSConnectivityStatus(false)
+    , lastIPConnectivityStatus(false)
+    , forceConnectivityCheckForDisplay(true)  // Start with testing enabled
 #ifdef ENABLE_TELEGRAM_BOT_AT_COMPILE_TIME
     , secured_client(nullptr)
     , telegramBot(nullptr)
@@ -771,16 +775,20 @@ void NetworkManager::checkConnectivity() {
     if (millis() < lastCheckForInternetConnectivityAt + checkInternetConnectivityDutyCycle)
         return;
 
-    // Primary detection of no connectivity is messages backed up and not draining
+    // Check connectivity if pipeline is backed up OR if forced for display testing
     const uint16_t pipelineBackedUpLength = 10;
-    if (telemetryPipeline->getPipelineLength() > pipelineBackedUpLength && 
-        telemetryPipeline->isPipelineDraining() == false) {
-        
+    bool shouldCheckConnectivity = forceConnectivityCheckForDisplay || 
+        (telemetryPipeline->getPipelineLength() > pipelineBackedUpLength && 
+         telemetryPipeline->isPipelineDraining() == false);
+    
+    if (shouldCheckConnectivity) {
         lastCheckForInternetConnectivityAt = millis();
 
         if (WiFi.status() == WL_CONNECTED) {
-            // Either a 4G or broker server connection issue
-            if (isInternetAccessible()) {
+            // Store internet connectivity status for display
+            lastInternetConnectivityStatus = isInternetAccessible();
+            
+            if (lastInternetConnectivityStatus) {
                 // WiFi ok, internet ping success
             } else {
                 // WiFi ok, ping fail, out of coverage
@@ -792,6 +800,10 @@ void NetworkManager::checkConnectivity() {
                 // WiFi ok, ping google ok, MQTT Broker fail
             }
         } else {
+            // No WiFi - internet, DNS, and IP are all not accessible
+            lastInternetConnectivityStatus = false;
+            lastDNSConnectivityStatus = false;
+            lastIPConnectivityStatus = false;
             // Do a manual wifi reconnect attempt - synchronous
             WiFi.reconnect();
         }
@@ -800,7 +812,19 @@ void NetworkManager::checkConnectivity() {
 
 bool NetworkManager::isInternetAccessible() {
     lastCheckForInternetConnectivityAt = millis();
-    return Ping.ping(config.ping_target, maxPingAttempts);
+    
+    // First try DNS resolution - ping google.com 
+    lastDNSConnectivityStatus = Ping.ping("google.com", maxPingAttempts);
+    
+    if (lastDNSConnectivityStatus) {
+        lastIPConnectivityStatus = true;  // If DNS works, IP connectivity is also working
+        return true;  // DNS and internet both working
+    }
+    
+    // DNS failed, try direct IP ping as fallback
+    // This helps distinguish DNS issues from full internet outage
+    lastIPConnectivityStatus = Ping.ping(config.ping_target, maxPingAttempts);
+    return lastIPConnectivityStatus;
 }
 
 bool NetworkManager::isScubaMosquittoBrokerAvailable() {

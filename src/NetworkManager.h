@@ -124,6 +124,12 @@ private:
     int8_t maxPingAttempts;
     int32_t checkInternetConnectivityDutyCycle;
     
+    // Connectivity status tracking for display
+    bool lastInternetConnectivityStatus;
+    bool lastDNSConnectivityStatus;
+    bool lastIPConnectivityStatus;
+    bool forceConnectivityCheckForDisplay;  // Control variable for testing
+    
     // Telegram (optional)
 #ifdef ENABLE_TELEGRAM_BOT_AT_COMPILE_TIME
     WiFiClientSecure* secured_client;
@@ -199,6 +205,10 @@ public:
     void checkConnectivity();
     bool isInternetAccessible();
     bool isScubaMosquittoBrokerAvailable();
+    bool getLastInternetConnectivityStatus() const { return lastInternetConnectivityStatus; }
+    bool getLastDNSConnectivityStatus() const { return lastDNSConnectivityStatus; }
+    bool getLastIPConnectivityStatus() const { return lastIPConnectivityStatus; }
+    void setForceConnectivityCheckForDisplay(bool enabled) { forceConnectivityCheckForDisplay = enabled; }
     
     // WebSocket functionality
     void notifyWebSocketClients(const String& sensorReadings);

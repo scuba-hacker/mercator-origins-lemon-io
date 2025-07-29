@@ -8,6 +8,8 @@ UMS3 ProS3;
 
 #include <U8g2lib.h>
 #include "OLEDDisplayManager.h"
+#include "OLEDGSDisplayManager.h"
+
 #include "SerialConfig.h"
 #include "NetworkManager.h"
 
@@ -24,10 +26,21 @@ extern const uint32_t MAP_HTML_SIZE;
 #define OLED_CS_ORANGE              34  // Standard Arduino Hardware SPI Chip-Select Pro S3
 #define OLED_CLK_SCL_YELLOW         36  // Standard Arduino Hardware SPI CLK for Pro S3
 #define OLED_DIN_MOSI_SDA_BLUE      35  // Standard Arduino Hardware SPI MOSI for Pro S3
-U8G2_SSD1322_NHD_256X64_F_4W_HW_SPI u8g2(U8G2_R0, OLED_CS_ORANGE, OLED_DC_PURPLE, OLED_RST_BROWN);
+
+#define OLED_CS_ADA_WHITE          "XX" // undefined currently
+#define OLED_RST_ADA_GREEN          0   // Strapping Pin - but we know nothing will pull low at boot so ok.
+U8G2_SSD1322_NHD_256X64_F_4W_HW_SPI wideOLEDDisplay(U8G2_R0, OLED_CS_ORANGE, OLED_DC_PURPLE, OLED_RST_BROWN);
+
+// hardware SPI
+//Adafruit_SSD1327 display(128, 128, &SPI, OLED_DC_PURPLE, OLED_RST_ADA_GREEN, OLED_CS_ADA_WHITE);
+
+// I2C - check default pins for ProS3 are matching the I2C connector on top of board
+// SDA = 8, SCL = 9
+Adafruit_SSD1327 adafruitDisplay(128, 128, &Wire, OLED_RST_ADA_GREEN, 1000000);
 
 // Create display manager instance (256px wide, 4 lines max)
-OLEDDisplayManager displayManager(u8g2, 256, 4);
+OLEDDisplayManager   displayManager(wideOLEDDisplay, 256, 4);
+OLEDGSDisplayManager GSdisplayManager(adafruitDisplay);
 
 #include <SPI.h>
 
@@ -216,6 +229,13 @@ enum e_q_upload_status {Q_SUCCESS=1, Q_SUCCESS_SEND=3, Q_SUCCESS_NO_SEND=5, Q_SU
 uint32_t fixCount = 0;
 uint32_t passedChecksumCount = 0;
 bool processUplinkMessage = true;
+
+// GPS status tracking for comprehensive display
+uint32_t gpsMessagesReceived = 0;
+uint32_t gpsFailedChecksumCount = 0;
+uint32_t gpsBadLengthCount = 0;
+uint32_t lastGPSByteTime = 0;
+bool hasGPSDevice = true;  // Assume GPS device present until proven otherwise
 
 TinyGPSPlus gps;
 int uart_number_gps = 2;
@@ -522,6 +542,9 @@ class mqttConnectionTest
 
 mqttConnectionTest mqttCheck;
 
+const bool fullTestAdafruitDisplay = false;
+const bool singleScreenTestAdafruitDisplay = true;
+
 void setup()
 {
   Serial.begin(115200);
@@ -532,11 +555,33 @@ void setup()
   USB_SERIAL_PRINTF("=== MAIN SETUP START ===\n");
   statusLEDColour();
   statusLEDOn();
-
-  u8g2.begin();
   
+  if (fullTestAdafruitDisplay || singleScreenTestAdafruitDisplay)
+  {
+    if (adafruitDisplay.begin(0x3D)) 
+    {
+      USB_SERIAL_PRINTLN("=== ADAFRUIT GREYSCALE OLED STARTED ===");
+      if (singleScreenTestAdafruitDisplay)
+        GSdisplayManager.drawAFewSnowflakes();
+      else        
+      {
+        // infinite loop with this test - not intended to run the remainder of the code in setup() or beyond
+        GSdisplayManager.fullDisplayTest();     // blocking 
+      }
+    }
+    else
+    {
+      USB_SERIAL_PRINTLN("Unable to initialize Adafruit Greyscale OLED");
+    }
+  }
+  else
+  {
+    USB_SERIAL_PRINTLN("Initialisation disabled for Adafruit Greyscale OLED");
+  } 
+
   // Display startup status
-  u8g2.setFont(u8g2_font_ncenB08_tr);
+  wideOLEDDisplay.begin();
+  wideOLEDDisplay.setFont(u8g2_font_ncenB08_tr);
   displayManager.addDisplayLine("Lemon-IO Starting...");
 
   privateMQTT.setConnectionCallbacks(
@@ -636,6 +681,8 @@ void setup()
   delay(2000);  // Show final status for 2 seconds
 
   networkManager.getMQTTConnectionTest().resetCheckTrigger(1500);
+
+  GSdisplayManager.clearDisplay();
 }
 
 char* customiseNMEASentence(char* sentence, int showOnMapIndex)
@@ -912,6 +959,39 @@ void loop()
     lastWebSocketUpdate = millis();
   }
   
+  // GPS device timeout detection (10 seconds)
+  if (millis() - lastGPSByteTime > 10000) {
+    hasGPSDevice = false;
+  }
+  
+  // Update status display every 2 seconds
+  static uint32_t lastStatusUpdate = 0;
+  if (millis() > lastStatusUpdate + 2000) {
+    // Calculate GPS statistics
+    uint32_t gpsNoFixCount = gpsMessagesReceived - fixCount;
+    bool hasGPSFix = gps.location.isValid();
+    double gpsHdop = gps.hdop.hdop();
+    uint8_t gpsSatellites = gps.satellites.value();
+    
+    // Get network status
+    String ipAddress = networkManager.getLocalIP();
+    bool wifiConnected = networkManager.isWiFiConnected();
+    String wifiSSID = networkManager.getConnectedSSID();
+    bool dnsConnected = networkManager.getLastDNSConnectivityStatus();
+    bool ipConnected = networkManager.getLastIPConnectivityStatus();
+    bool mqttConnected = privateMQTT.isConnected();
+    
+    displayManager.displayStatusScreen(
+      gpsMessagesReceived, fixCount, gpsNoFixCount,
+      gpsFailedChecksumCount, gpsBadLengthCount, hasGPSDevice,
+      hasGPSFix, gpsHdop, gpsSatellites,
+      ipAddress, privateMQTTUploadCount, wifiConnected,
+      wifiSSID, dnsConnected, ipConnected, mqttConnected
+    );
+    
+    lastStatusUpdate = millis();
+  }
+  
   // *************  START CODE FOR RECEIVING GPS MESSAGE
   // Process GPS data - limit bytes per loop iteration to avoid blocking WebSocket updates
   const int maxGPSBytesPerLoop = 1000; // Process max 50 bytes per loop iteration
@@ -921,6 +1001,10 @@ void loop()
   {
     char nextByte = gps_serial.read();
     gpsDataBytesProcessed++; // Count processed bytes to limit loop iterations
+    
+    // Update GPS device detection
+    lastGPSByteTime = millis();
+    hasGPSDevice = true;
 
     if (gps.encode(nextByte))
     {
@@ -957,6 +1041,12 @@ void loop()
         
         uint32_t newFixCount = gps.sentencesWithFix();
         uint32_t newPassedChecksum = gps.passedChecksum();
+        uint32_t newFailedChecksum = gps.failedChecksum();
+        
+        // Update comprehensive GPS statistics
+        gpsMessagesReceived = newPassedChecksum + newFailedChecksum;
+        gpsFailedChecksumCount = newFailedChecksum;
+        
         if (newFixCount > fixCount)
         {
           fixCount = newFixCount;

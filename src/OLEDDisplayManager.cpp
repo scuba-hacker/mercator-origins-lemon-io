@@ -11,6 +11,7 @@ OLEDDisplayManager::OLEDDisplayManager(U8G2& u8g2Display, int screenWidth, int m
     , maxDisplayLines(maxLines)
     , currentLineCount(0)
     , otaModeActive(false)
+    , statusDisplayModeActive(false)
 {
     displayLines = new String[maxDisplayLines];
 }
@@ -218,4 +219,135 @@ void OLEDDisplayManager::clearDisplay() {
 
 void OLEDDisplayManager::setOTAMode(bool enabled) {
     otaModeActive = enabled;
+}
+
+void OLEDDisplayManager::setStatusDisplayMode(bool enabled) {
+    statusDisplayModeActive = enabled;
+}
+
+void OLEDDisplayManager::drawStatusIndicator(int x, int y, const String& label, bool status, const String& value) {
+    display.setFont(u8g2_font_4x6_tr);
+    
+    // Draw label
+    display.drawStr(x, y, label.c_str());
+    
+    // Draw status indicator (✓ or ✗)
+    int labelWidth = display.getUTF8Width(label.c_str());
+    const char* statusChar = status ? "+" : "-";
+    display.drawStr(x + labelWidth + 2, y, statusChar);
+    
+    // Draw value if provided
+    if (value.length() > 0) {
+        int statusWidth = display.getUTF8Width(statusChar);
+        display.drawStr(x + labelWidth + statusWidth + 4, y, value.c_str());
+    }
+}
+/*
+Tests to do mid-way through system operation: (ie not at boot)
+- check for recovery of system
+- check for good display updates
+
+1. WORKS: Pull the GPS pin out of the board - shows NO GPS DEVICE correctly. Layer 0 - GPS Hardware
+        GPS processing starts/stops and continues with upload to MQTT Broker.
+        Display updates are correct.
+
+2. WORKS: Stop MQTT broker. works (+/- updates) - App Layer
+        Bathroom-DietPi# systemctl stop mosquitto
+        Bathroom-DietPi# systemctl start mosquitto
+
+3. TO DO: Use Asus-Router to block 192.168.0.58 Lemon - simulate no WiFi router, eg WiFi hotspot powered down.
+        - then revert and check ok
+
+4. TO DO: Use a rule on asus-router to block an IP address - simulate no WiFi network connectivity - ie SIM/LTE out of range.
+        - then revert and check ok
+
+5. TO DO: DNS Resolution failure - ??
+
+6. TO DO: Change wifi password to break authentication.
+
+7. TO DO: Change known wifi networks not in range.
+
+8. TO DO: check that bounce of WiFi Hub there is automatic reconnection of WiFi.
+
+*/
+void OLEDDisplayManager::displayStatusScreen(
+    uint32_t gpsMessagesReceived, uint32_t gpsFixes, uint32_t gpsNoFix,
+    uint32_t gpsBadChecksum, uint32_t gpsBadLength, bool hasGPSDevice,
+    bool hasGPSFix, double gpsHdop, uint8_t gpsSatellites,
+    const String& ipAddress, uint32_t mqttUploads, bool wifiConnected,
+    const String& wifiSSID, bool dnsConnected, bool ipConnected, bool mqttConnected) {
+    
+    // Block status display updates during OTA mode
+    if (otaModeActive) {
+        return;
+    }
+    
+    // Clear display
+    display.setDrawColor(0);
+    display.drawBox(0, 0, maxLineWidth, 64);
+    display.setDrawColor(1);
+    
+    // Left column (GPS info)
+    int leftX = 0;
+    int rightX = 130;
+    int y = 8;
+    int lineHeight = 8;
+    
+    display.setFont(u8g2_font_4x6_tr);
+    
+    // GPS Device Status
+    if (!hasGPSDevice) {
+        display.drawStr(leftX, y, "NO GPS DEVICE");
+        y += lineHeight;
+    } else {
+        String gpsStatus = hasGPSFix ? "GPS FIX" : "NO FIX";
+        drawStatusIndicator(leftX, y, "GPS", hasGPSFix, gpsStatus);
+        y += lineHeight;
+        
+        // GPS message statistics
+        display.drawStr(leftX, y, ("MSG:" + String(gpsMessagesReceived)).c_str());
+        y += lineHeight;
+        
+        display.drawStr(leftX, y, ("FIX:" + String(gpsFixes)).c_str());
+        y += lineHeight;
+        
+        if (gpsBadChecksum > 0 || gpsBadLength > 0) {
+            display.drawStr(leftX, y, ("ERR:" + String(gpsBadChecksum + gpsBadLength)).c_str());
+            y += lineHeight;
+        }
+        
+        // GPS quality
+        if (hasGPSFix) {
+            display.drawStr(leftX, y, ("SAT:" + String(gpsSatellites)).c_str());
+            y += lineHeight;
+            
+            display.drawStr(leftX, y, ("HDOP:" + String(gpsHdop, 1)).c_str());
+        }
+    }
+    
+    // Right column (Network info)
+    y = 8;
+    
+    // WiFi Status
+    drawStatusIndicator(rightX, y, "WiFi", wifiConnected, wifiConnected ? wifiSSID : "");
+    y += lineHeight;
+    
+    // DNS connectivity
+    drawStatusIndicator(rightX, y, "DNS", dnsConnected);
+    y += lineHeight;
+    
+    // IP connectivity
+    drawStatusIndicator(rightX, y, "IP", ipConnected);
+    y += lineHeight;
+    
+    // MQTT Status
+    drawStatusIndicator(rightX, y, "MQTT", mqttConnected, String(mqttUploads));
+    y += lineHeight;
+    
+    // IP Address (if connected)
+    if (wifiConnected && ipAddress.length() > 0) {
+        display.drawStr(rightX, y, ipAddress.c_str());
+    }
+    
+    display.sendBuffer();
 }
