@@ -181,7 +181,6 @@ NetworkConfig networkConfig = {
     MERCATOR_OTA_DEVICE_LABEL
 };
 
-
 NetworkManager networkManager(networkConfig, displayManager, privateMQTT);
 // ################## END NETWORK MANAGER Configuration
 
@@ -192,7 +191,6 @@ JsonDocument readings;
 int32_t lastCheckForInternetConnectivityAt = 0;
 uint32_t privateMQTTUploadCount = 0;
 
-
 // #### START IN-MEMORY TELEMETRY-PIPELINE / MESSAGE BUFFER CONFIG
 TelemetryPipeline telemetryPipeline;
 
@@ -201,10 +199,6 @@ const uint32_t telemetry_offline_head_commit_duty_ms = 10000;
 uint32_t last_head_committed_at = 0;
 bool g_offlineStorageThrottleApplied = false;
 // #### END IN-MEMORY TELEMETRY-PIPELINE / MESSAGE BUFFER CONFIG
-
-
-// Network configuration now handled by NetworkManager class
-
 
 const uint32_t maxTimeBeforeAlertNoFix = 3000;
 const uint32_t maxTimeBeforeAlertNoGPSByte = 2000;
@@ -219,16 +213,9 @@ enum e_q_upload_status {Q_SUCCESS=1, Q_SUCCESS_SEND=3, Q_SUCCESS_NO_SEND=5, Q_SU
                         Q_MQTT_CLIENT_CONNECT_ERROR=12, Q_MQTT_CLIENT_SEND_ERROR=14, 
                         Q_UNDEFINED_ERROR=254};
 
-// OTA and web server now handled by NetworkManager class
-
-const char* leakAlarmMsg = "    Float\n\n    Leak!";
-
 uint32_t fixCount = 0;
 uint32_t passedChecksumCount = 0;
 bool processUplinkMessage = true;
-
-uint8_t journey_activity_count = 0;
-const char* journey_activity_indicator = "\\|/-";
 
 TinyGPSPlus gps;
 int uart_number_gps = 2;
@@ -243,13 +230,6 @@ bool diveInProgress = false;
 
 String getStats();
 
-
-// Display functionality now handled by OLEDDisplayManager class
-
-// Progress animation methods moved to OLEDDisplayManager class
-
-// All display functions moved to OLEDDisplayManager class
-
 void sendLemonStatus(const e_lemon_status status)
 {
   if (!writeLogToSerial)
@@ -262,7 +242,6 @@ void sendLemonStatus(const e_lemon_status status)
 }
 
 int nofix_byte_loop_count = 0;
-
 template <typename T> struct vector
 {
   T x, y, z;
@@ -305,8 +284,6 @@ const uint8_t LEAK_DETECTOR_GPIO = 7;
 
 Button* p_primaryButton = nullptr;
 void updateButtonsAndBuzzer();
-
-// HTML content moved to after NetworkManager include
 
 void toggleOTAActive();
 void toggleWiFiActive();
@@ -448,16 +425,12 @@ void buildUplinkTelemetryMessageV6a(char* payload, const struct MakoUplinkTeleme
 void buildBasicTelemetryMessage(char* payload);
 enum e_q_upload_status uploadTelemetryToPrivateMQTT(MakoUplinkTelemetryForJson* makoTelemetry, struct LemonTelemetryForJson* lemonTelemetry);
 
-// WebSocket functionality moved to NetworkManager class
-
 void getM5ImuSensorData(struct LemonTelemetryForJson& t)
 {
   const float uninitialisedIMU = 0.0;  
   t.imu_lin_acc_x = t.imu_lin_acc_y = t.imu_lin_acc_z = uninitialisedIMU;
   t.imu_rot_acc_x = t.imu_rot_acc_y = t.imu_rot_acc_z = uninitialisedIMU;
 }
-
-// WiFi event handlers moved to NetworkManager class
 
 bool devNetworkInUse()
 { 
@@ -467,8 +440,6 @@ bool devNetworkInUse()
   String currentSSID = WiFi.SSID();
   return (currentGateway == String(private_local_gateway) && currentSSID == String(private_dev_ssid));
 }
-
-// Connectivity checking functions moved to NetworkManager class
 
 void dumpHeapUsage(const char* msg)
 {  
@@ -525,8 +496,6 @@ void disableFeaturesForOTA()
 
 TaskHandle_t mainTaskHandle = nullptr;
 BaseType_t mainTaskCoreId = 0;
-
-// OTA callback functions moved to NetworkManager class
 
 uint32_t getSizeOfLemonTelemetryForStorage();
 class mqttConnectionTest
@@ -593,11 +562,6 @@ void setup()
   // Initialize NetworkManager
   networkManager.setTelemetryPipeline(&telemetryPipeline);
   networkManager.setGetStatsCallback([]() { return getStats(); });
-  networkManager.setSendLemonStatusCallback([](const char* status) { 
-    // Note: This would need proper enum conversion
-    // sendLemonStatus(status); 
-  });
-  networkManager.setUpdateButtonsAndBuzzerCallback([]() { updateButtonsAndBuzzer(); });
   networkManager.setIsDevNetworkCallback([]() { return devNetworkInUse(); });
   networkManager.begin();
 
@@ -605,11 +569,6 @@ void setup()
 
   dumpHeapUsage("main: prior to Telemetry Pipeline creation  ");
 
-  // On M5 Stick C Plus - if telegram is enabled the pipeline needs to be 60KB or smaller. Without pipeline length can be 95KB.
-  // On ProS3 make it massive, eg 4MB! On ProS3 even a 60KB pipeline gets allocated to the PSRAM automatically.
-  // 4 MB of buffer equates to 2048 * 4 = 8192 messages.
-  // at one message every 2 seconds this is 4.5 hours of collection before running out of space!
-  // This means that if out of internet coverage then it will buffer for this long before getting back into coverage.
   const uint16_t maxPipelineBufferKB = 2048;
   const uint16_t maxPipelineBlockPayloadSize = 256; // was 224 - Assuming 120 byte Mako Telemetry Msg and 104 byte Lemon Telemetry Msg
   BlockHeader::s_overrideMaxPayloadSize(maxPipelineBlockPayloadSize);  // 400 messages with 256 byte max payload. 
@@ -617,7 +576,6 @@ void setup()
 
   dumpHeapUsage("main: after Telemetry Pipeline creation  ");
   
-  // Update status display
   displayManager.addDisplayLine("Telemetry Pipeline OK");
 
   statusLEDOff();
@@ -710,7 +668,6 @@ char* customiseNMEASentence(char* sentence, int showOnMapIndex)
   USB_SERIAL_PRINTF("0.0 showOnMapIndex=%i isGNGAA=%i isGNRMC=%i strlen(startSentence)=%zu\n",showOnMapIndex, (isGNGGA ? 1 : 0),(isGNRMC ? 1 : 0), strnlen(startSentence,minimumSentenceLength));
   USB_SERIAL_PRINTF("0.1 %s\n",startSentence);
 
-  // 
   if (  showOnMapIndex >= 0 && 
         (isGNGGA || isGNRMC) && 
         strnlen(startSentence,minimumSentenceLength) >= minimumSentenceLength)
@@ -922,8 +879,6 @@ const uint32_t telegramBotDutyCycle = 10000;
 const int initNeopixelSerialByteRead = -1;
 int neopixelSerialByteRead = initNeopixelSerialByteRead;
 
-// MQTT test message function moved to NetworkManager class
-
 void loop()
 {
   // Handle NetworkManager processing (includes MQTT testing, OTA restart, etc.)
@@ -937,62 +892,24 @@ void loop()
     return;
   }
 
-  if (makoReportsLeak)
-  {
-    if (mainBackColour == TFT_BLACK)
-    {
-      mainBackColour = TFT_ORANGE;
-      // Do what for e-paper leak?
-//      M5.Lcd.fillScreen(TFT_ORANGE);
-    }
-  }
-
-//  M5.Lcd.setTextColor(TFT_WHITE,mainBackColour);
-
   updateButtonsAndBuzzer();
 
   if (enableUploadToPrivateMQTT)
-  {
       privateMQTT.loop();
-  }
+
   if (publishMQTTTestMessages)
     networkManager.publishMQTTTestMessageOnDutyCycle();
 
   if (!accumulateMissedMessageCount && millis() > delayBeforeCountingMissedMessages)
     accumulateMissedMessageCount = true;
   
-  if (p_primaryButton->wasReleasefor(100)) // disable message upload
+  static uint32_t lastWebSocketUpdate = 0;  
+
+  const int webSocketTick = 1000;
+  if (networkManager.getWebSocketClientCount() > 0 && millis() > lastWebSocketUpdate + webSocketTick)
   {
-    updateButtonsAndBuzzer();
-
-    // Note: disableFeaturesForOTA is now handled by NetworkManager
-    return;
-  }
-
-  // WebSocket stats updates - independent of GPS processing
-  static uint32_t lastWebSocketDebugAt = 0;
-  static uint32_t lastPeriodicUpdate = 0;
-  uint32_t wsClientCount = networkManager.getWebSocketClientCount();
-  uint32_t currentTime = millis();
-  uint32_t nextStatUpdate = networkManager.getTimeOfNextStatUpdate();
-  
-  // Debug WebSocket stats every 5 seconds (more frequent for debugging)
-  if (currentTime > lastWebSocketDebugAt + 5000) {
-    USB_SERIAL_PRINTF("WebSocket Debug: clients=%d, time=%lu, nextUpdate=%lu, lastPeriodicUpdate=%lu, shouldSend=%d\n", 
-                      wsClientCount, currentTime, nextStatUpdate, lastPeriodicUpdate, 
-                      ((wsClientCount && currentTime > nextStatUpdate) || (wsClientCount > 0 && currentTime > lastPeriodicUpdate + 990)));
-    lastWebSocketDebugAt = currentTime;
-  }
-
-  // Send periodic updates if we have WebSocket clients - simplified logic
-  if (wsClientCount > 0 && currentTime > lastPeriodicUpdate + 990)
-  {
-    USB_SERIAL_PRINTF("Sending periodic WebSocket update - clients=%d, time=%lu, last=%lu\n", 
-                      wsClientCount, currentTime, lastPeriodicUpdate);
     networkManager.sendStatsWebSocketNotification();
-    networkManager.setTimeOfNextStatUpdate(millis() + 990); // timeBetweenSendingStatsUpdates
-    lastPeriodicUpdate = millis();
-    dumpHeapUsage("Sent stats: ");
+    lastWebSocketUpdate = millis();
   }
   
   // Process GPS data - limit bytes per loop iteration to avoid blocking WebSocket updates
@@ -1001,10 +918,6 @@ void loop()
   
   while (enableGPSRead && gps_serial.available() > 0 && gpsDataBytesProcessed < maxGPSBytesPerLoop)
   {
-    // WARNING DO NOT ENABLE THIS UNLESS LEAK DETECTOR ACTUALLY FITTED
-    // OTHERWISE IT WILL BLOCK
-    // checkForLeak(leakAlarmMsg);
-
     char nextByte = gps_serial.read();
     gpsDataBytesProcessed++; // Count processed bytes to limit loop iterations
 
@@ -1040,7 +953,7 @@ void loop()
           uplinkMessageListenTimer = millis();
           downlinkSendMessageDurationMicroSeconds = micros();
         }
-
+        
         uint32_t newFixCount = gps.sentencesWithFix();
         uint32_t newPassedChecksum = gps.passedChecksum();
         if (newFixCount > fixCount)
@@ -1054,7 +967,6 @@ void loop()
         {
           // clear the onscreen counter that increments whilst attempting to get first valid location
           nofix_byte_loop_count = -1;
-//          M5.Lcd.fillScreen(TFT_BLACK);
         }
 
         updateButtonsAndBuzzer();
@@ -1079,9 +991,7 @@ void loop()
         {
           // Bytes are being received but no valid location fix has been seen since startup
           // Increment byte count shown until first fix received.
-
-//          M5.Lcd.setCursor(50, 100);
-//          M5.Lcd.printf("%d", nofix_byte_loop_count++);
+          nofix_byte_loop_count++;
           USB_SERIAL_PRINTLN("NO GPS FIX - BYTES BEING RECEIVED");
         }
       }
@@ -1094,44 +1004,16 @@ void loop()
 
   if (nofix_byte_loop_count > 0)
   {
-    // No fix only shown on first acquisition.
-//    M5.Lcd.setCursor(55, 5);
-//    M5.Lcd.setTextSize(4);
-//    M5.Lcd.print("No Fix\n\n   Lemon\n");
-//    M5.Lcd.setCursor(110, 45);
-//    M5.Lcd.printf("%c", journey_activity_indicator[(++journey_activity_count) % 4]);
     sendLemonStatus(LC_NO_FIX);
 
-    // tells mako gopro M5 that gps is alive but no fix yet.
-    // mako gopro M5 can choose to show this data for test purposes, otherwise in
-    // swimming pool like new malden or putney there may be no gps signal so
-    // won't be able to test the rest, eg compass, temperature, humidity, buttons, reed switches
-    // note the leak sensor is active at all times in the mako gopro M5.
     sendFakeGPSData_No_Fix();
-
-    USB_SERIAL_PRINTLN("NO GPS FIX - BYTES BEING RECEIVED");
 
     delay(250); // no fix wait
   }
   else if (nofix_byte_loop_count != -1)
   {
-    // No GPS is reported when no bytes have ever been received on the UART.
-    // Once messages start being received, this is blocked as it is normal
-    // to have gaps in the stream. There is no indication if GPS stream hangs
-    // after first byte received, eg no bytes within 10 seconds.
-
- //   M5.Lcd.setCursor(55, 5);
- //   M5.Lcd.setTextSize(4);
- //   M5.Lcd.print("No GPS\n\n   Lemon\n");
- //   M5.Lcd.setCursor(110, 45);
- //   M5.Lcd.printf("%c", journey_activity_indicator[(++journey_activity_count) % 4]);
     sendLemonStatus(LC_NO_GPS);
 
-    // tells mako gopro M5 that gps is alive but no fix yet.
-    // mako gopro M5 can choose to show this data for test purposes, otherwise in
-    // swimming pool like new malden or putney there may be no gps signal so
-    // won't be able to test the rest, eg compass, temperature, humidity, buttons, reed switches
-    // note the leak sensor is active at all times in the mako gopro M5.
     sendFakeGPSData_No_GPS();
 
     USB_SERIAL_PRINTLN("NO GPS - NO BYTES RECEIVED FROM GPS FROM STARTUP");
@@ -1162,71 +1044,20 @@ void loop()
       if (tempDenominator > 0)
         uplinkBadMessagePercentage = 100.0*float(badUplinkMessageCount+uplinkMessageMissingCount)/tempDenominator;
       
-      // OLED-UPDATE-HERE
-      // M5.Lcd.setCursor(5, 5);
-      // M5.Lcd.setTextColor(TFT_WHITE, mainBackColour);          
-      // M5.Lcd.setTextSize(3);
-
-      const bool showBadChecksumInsteadofAllBad=true;
-
-      // if (showBadChecksumInsteadofAllBad)
-      //   M5.Lcd.printf("Fix %lu\nR^ %lu !%lu\n",fixCount, goodUplinkMessageCount, badChkSumUplinkMsgCount);
-      // else
-      //   M5.Lcd.printf("Fix %lu\nR^ %lu !%lu\n",fixCount, goodUplinkMessageCount, badUplinkMessageCount);
- 
-      // if (g_offlineStorageThrottleApplied && telemetryPipeline.isPipelineDraining() == false)
-      //   M5.Lcd.setTextColor(TFT_WHITE, TFT_RED);
-      // else if (g_offlineStorageThrottleApplied && telemetryPipeline.isPipelineDraining())
-      //   M5.Lcd.setTextColor(TFT_BLACK, TFT_ORANGE);
-      // else if (telemetryPipeline.getPipelineLength() > 4)
-      //   M5.Lcd.setTextColor(TFT_BLACK, TFT_YELLOW);
-      // else
-      //   M5.Lcd.setTextColor(TFT_WHITE, mainBackColour);
-
-      // this is a feature flag for testing
-      // const bool showPipeLength=false;
-      // if (showPipeLength)
-      //   M5.Lcd.printf("P %-3hu Mis %hu\n",telemetryPipeline.getPipelineLength(),uplinkMessageMissingCount);
-      // else
-      //   M5.Lcd.printf("L%-3hu Mis %hu\n",badLengthUplinkMsgCount,uplinkMessageMissingCount);
-
-      // if (WiFi.status() != WL_CONNECTED)
-      //   M5.Lcd.setTextColor(TFT_WHITE, TFT_RED);
-      // else
-      //   M5.Lcd.setTextColor(TFT_WHITE, mainBackColour);
-
-      // this is a feature flag for testing
-      // const bool showListenTimer = false;
-      // if (showListenTimer)       
-      //   M5.Lcd.printf("Q %lu UT %lu  \n",privateMQTTUploadCount,uplinkMessageListenTimer);
-      // else
-      //   M5.Lcd.printf("Q %lu !%.1f%%\n",privateMQTTUploadCount,uplinkBadMessagePercentage);
+      // vars to consider for Front End
+      //   g_offlineStorageThrottleApplied
+      //   telemetryPipeline.isPipelineDraining()
+      //   telemetryPipeline.getPipelineLength(), uplinkMessageMissingCount, badLengthUplinkMsgCount, badChkSumUplinkMsgCount (needs implementing), uplinkMessageMissingCount
+      //   WiFi.status() != WL_CONNECTED
+      //   privateMQTTUploadCount, uplinkMessageListenTimer, uplinkBadMessagePercentage
+      //   WiFi.localIP().toString() or "No WiFi"
+      //   messageValidatedOk, showOnMapRequestIndex, setTargetRequestIndex, setTargetRequest.c_str(), showOnMapRequest.c_str()
+      //   newFixCount, newPassedChecksum, gps.failedChecksum()
+      //   Any temperature sensors?
       
-      // M5.Lcd.setTextSize(2);
-
-      // if (WiFi.status() != WL_CONNECTED) 
-      //   M5.Lcd.setTextColor(TFT_WHITE, TFT_RED);
-      // else
-      //   M5.Lcd.setTextColor(TFT_WHITE, mainBackColour);
-
-      // int16_t xCurs = M5.Lcd.getCursorX();
-      // int16_t yCurs = M5.Lcd.getCursorY();
-
-      // Option 1 for this line output
-//      // M5.Lcd.printf("     %-15s", IPBuffer); //(WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() : "No WiFi         "));
-      // Option 2 for this line output
-//      // M5.Lcd.printf("     %i %-15s", showOnMapRequestIndex, showOnMapRequest.c_str()); //(WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() : "No WiFi         "));
-      // Option 3 for this line output - this is the one I have been using most recently
-//      M5.Lcd.printf("     %i %-15s", setTargetRequestIndex, setTargetRequest.c_str()); //(WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() : "No WiFi         "));
-
-      // M5.Lcd.setCursor(xCurs,yCurs);
-      // M5.Lcd.setTextColor(TFT_MAGENTA, TFT_BLACK);
-      // M5.Lcd.printf("%.1fC",M5.Axp.GetTempInAXP192());
-
-      // M5.Lcd.setTextColor(TFT_WHITE, mainBackColour);
       uplinkMessageListenTimer = 0;
       
-      if (!messageValidatedOk)    // validation fails if mako telemetry not invalid size
+      if (!messageValidatedOk)
       {
         processUplinkMessage = false;
         return;
@@ -1286,13 +1117,6 @@ void loop()
 
     timeOfNextLemonStatus = millis() + lemonStatusDutyCycle;
   }
-
-  // WARNING DO NOT ENABLE THIS UNLESS LEAK DETECTOR ACTUALLY FITTED
-  // OTHERWISE IT WILL BLOCK
-  // checkForLeak(leakAlarmMsg);
-
-  // receives messages from lantern arduino when reed switches activated
-  // checkForFloatBoxReedSwitches();
 
 #ifdef ENABLE_TELEGRAM_BOT_AT_COMPILE_TIME
   if (enableTelegram && now > timeOfNextTelegramBotUpdateSendMsg)

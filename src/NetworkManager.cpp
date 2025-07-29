@@ -859,7 +859,7 @@ void NetworkManager::uploadOTABeginCallback() {
     
     displayManager.display.setDrawColor(1);  // White (draw)
     displayManager.display.drawUTF8(x1, 20, line1);  // First line at y=20
-    displayManager.display.drawUTF8(x2, 35, line2);  // Second line at y=35 (more spacing)
+    displayManager.display.drawUTF8(x2, 38, line2);  // Second line at y=38 (more spacing)
     
     // Draw progress bar bounding box (moved down to y=50)
     int barWidth = 180;

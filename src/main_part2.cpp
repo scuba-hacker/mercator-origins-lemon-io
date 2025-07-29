@@ -175,6 +175,7 @@ void checkForFloatBoxReedSwitches()
 
   /*
   // WARNING DO NOT ENABLE THIS UNLESS LEAK DETECTOR ACTUALLY FITTED
+const char* leakAlarmMsg = "    Float\n\n    Leak!";
 void checkForLeak(const char* msg)
 {
   bool leakStatus = false;

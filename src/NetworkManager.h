@@ -179,8 +179,6 @@ public:
     // External dependency injection
     void setTelemetryPipeline(TelemetryPipeline* pipeline) { telemetryPipeline = pipeline; }
     void setGetStatsCallback(std::function<String()> callback);
-    void setSendLemonStatusCallback(std::function<void(const char*)> callback) { sendLemonStatusCallback = callback; }
-    void setUpdateButtonsAndBuzzerCallback(std::function<void()> callback) { updateButtonsAndBuzzerCallback = callback; }
     void setIsDevNetworkCallback(std::function<bool()> callback) { isDevNetworkCallback = callback; }
     
     // Main networking functions
