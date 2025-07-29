@@ -912,6 +912,7 @@ void loop()
     lastWebSocketUpdate = millis();
   }
   
+  // *************  START CODE FOR RECEIVING GPS MESSAGE
   // Process GPS data - limit bytes per loop iteration to avoid blocking WebSocket updates
   const int maxGPSBytesPerLoop = 1000; // Process max 50 bytes per loop iteration
   int gpsDataBytesProcessed = 0;
@@ -959,13 +960,11 @@ void loop()
         if (newFixCount > fixCount)
         {
           fixCount = newFixCount;
-
           USB_SERIAL_PRINTF("\nFix: %lu Good GPS Msg: %lu Bad GPS Msg: %lu\n", fixCount, newPassedChecksum, gps.failedChecksum());
         }
 
         if (nofix_byte_loop_count > -1)
         {
-          // clear the onscreen counter that increments whilst attempting to get first valid location
           nofix_byte_loop_count = -1;
         }
 
@@ -973,7 +972,7 @@ void loop()
 
         if (newPassedChecksum <= passedChecksumCount)
         {
-          // incomplete message received, continue reading bytes, don't update display.
+          // incomplete message received
           return;
         }
         else
@@ -982,11 +981,9 @@ void loop()
         }
 
         populateCurrentLemonTelemetry(latestLemonTelemetry, gps);
-
       }
       else
       {
-        // get location invalid if there is no new fix to read before 1 second is up.
         if (nofix_byte_loop_count > -1)
         {
           // Bytes are being received but no valid location fix has been seen since startup
@@ -1001,7 +998,9 @@ void loop()
       // no byte received.
     }
   }
+  // *************  END CODE FOR RECEIVING GPS MESSAGE
 
+  // *************  START CODE FOR TELEMETRY PROCESSING FOR GPS MESSAGE RECEIVED
   if (nofix_byte_loop_count > 0)
   {
     sendLemonStatus(LC_NO_FIX);
@@ -1096,8 +1095,11 @@ void loop()
     }
   }
 
-  uint32_t now = millis();
+  // *************  END CODE FOR TELEMETRY PROCESSING FOR GPS MESSAGE RECEIVED
 
+
+  // *************  START CODE FOR SEND LEMON STATUS TO THE ARDUINO CALLED LANTERN
+  uint32_t now = millis();
   if (now > timeOfNextLemonStatus)
   {
     if (now > timeNextGoodFixExpectedBy)
@@ -1116,6 +1118,8 @@ void loop()
     }
 
     timeOfNextLemonStatus = millis() + lemonStatusDutyCycle;
+    // *************  END CODE FOR SEND LEMON STATUS TO THE ARDUINO CALLED LANTERN
+
   }
 
 #ifdef ENABLE_TELEGRAM_BOT_AT_COMPILE_TIME
