@@ -76,6 +76,9 @@ public:
 
 // Main NetworkManager class
 class NetworkManager {
+
+static const uint32_t timeBetweenInternetConnectivityChecksWhenPipelineNotDraining = 60000;    // 1 minute
+
 private:
     // Configuration
     NetworkConfig config;
@@ -104,7 +107,6 @@ private:
     AsyncElegantOtaClass* elegantOTA;
     
     // WebSocket statistics
-    int32_t timeBetweenSendingStatsUpdates;
     int32_t timeOfNextStatUpdate;
     
     // Web interface requests
