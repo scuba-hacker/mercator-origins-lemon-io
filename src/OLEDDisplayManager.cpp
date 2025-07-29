@@ -12,12 +12,56 @@ OLEDDisplayManager::OLEDDisplayManager(U8G2& u8g2Display, int screenWidth, int m
     , currentLineCount(0)
     , otaModeActive(false)
     , statusDisplayModeActive(false)
+    , screenSaverEnabled(true)
 {
     displayLines = new String[maxDisplayLines];
 }
 
 OLEDDisplayManager::~OLEDDisplayManager() {
     delete[] displayLines;
+}
+
+void OLEDDisplayManager::setScreenSaverPeriod(uint32_t ms)
+{
+    screenSaverPeriod = ms;
+}
+
+void OLEDDisplayManager::shiftScreen()
+{
+    if (screenSaverEnabled && millis() > nextScreenShift)
+    {
+        displayRootX += random(1, screenSaverStep) * screenSaverStepDirectionX;
+        displayRootY += random(1, screenSaverStep) * screenSaverStepDirectionY;
+        
+        if (displayRootX < 0)
+        {
+            displayRootX = 0;
+            screenSaverStepDirectionX *= -1;
+        }
+        else if (displayRootX > maxOffsetX)
+        {
+            displayRootX = maxOffsetX;
+            screenSaverStepDirectionX *= -1;
+        }
+
+        if (displayRootY < 0)
+        {
+            displayRootY = 0;
+            screenSaverStepDirectionY *= -1;
+        }
+        else if (displayRootY > maxOffsetY)
+        {
+            displayRootY = maxOffsetY;
+            screenSaverStepDirectionY *= -1;
+        }
+
+        nextScreenShift += screenSaverPeriod;
+    }
+    else
+    {
+        displayRootX=0;
+        displayRootY=0;
+    }   
 }
 
 void OLEDDisplayManager::startProgressAnimation() {
@@ -78,6 +122,12 @@ void OLEDDisplayManager::addDisplayLine(const String& newLine, bool preserveWiFi
     }
 }
 
+
+u8g2_uint_t OLEDDisplayManager::safeDrawStr(u8g2_uint_t x, u8g2_uint_t y, const char *s) 
+{ 
+    return display.drawStr(x + displayRootX, y + displayRootY, s);
+}
+
 void OLEDDisplayManager::refreshDisplay() {
     display.setFont(u8g2_font_ncenB08_tr);
     
@@ -89,7 +139,7 @@ void OLEDDisplayManager::refreshDisplay() {
     // Draw all current lines
     for (int i = 0; i < currentLineCount; i++) {
         int yPos = 10 + (i * 15);  // 15 pixels between lines
-        display.drawStr(0, yPos, displayLines[i].c_str());
+        safeDrawStr(0, yPos, displayLines[i].c_str());
     }
     
     display.sendBuffer();
@@ -106,7 +156,7 @@ void OLEDDisplayManager::updateScrollingStatusLineDisplay(int yPosition) {
     
     // If text fits on screen, display normally
     if (textWidth <= maxLineWidth) {
-        display.drawStr(0, yPosition, scrollingStatusLine.c_str());
+        safeDrawStr(0, yPosition, scrollingStatusLine.c_str());
         scrollOffset = 0;
     } else {
         // Text is too long, need to scroll to show the end
@@ -114,7 +164,7 @@ void OLEDDisplayManager::updateScrollingStatusLineDisplay(int yPosition) {
         if (scrollOffset < targetScrollOffset) {
             scrollOffset = targetScrollOffset;  // Jump to end position for progress display
         }
-        display.drawStr(-scrollOffset, yPosition, scrollingStatusLine.c_str());
+        safeDrawStr(-scrollOffset, yPosition, scrollingStatusLine.c_str());
     }
     
     display.sendBuffer();
@@ -162,7 +212,7 @@ void OLEDDisplayManager::updateScrollingStatusLine(const String& newText, bool a
             display.setDrawColor(1);  // White (draw)
             
             // Draw the text with current offset
-            display.drawStr(-scrollOffset, yPosition, scrollingStatusLine.c_str());
+            safeDrawStr(-scrollOffset, yPosition, scrollingStatusLine.c_str());
             display.sendBuffer();
             
             scrollOffset += 1;  // Scroll by 1 pixel at a time
@@ -177,7 +227,7 @@ void OLEDDisplayManager::updateScrollingStatusLine(const String& newText, bool a
             display.drawBox(0, yPosition-8, maxLineWidth, 10);
             display.setDrawColor(1);  // White (draw)
             
-            display.drawStr(0, yPosition, scrollingStatusLine.c_str());
+            safeDrawStr(0, yPosition, scrollingStatusLine.c_str());
             display.sendBuffer();
             scrollOffset = 0;
         } else {
@@ -192,7 +242,7 @@ void OLEDDisplayManager::updateScrollingStatusLine(const String& newText, bool a
                 display.setDrawColor(1);  // White (draw)
                 
                 // Draw the text with current offset
-                display.drawStr(-scrollOffset, yPosition, scrollingStatusLine.c_str());
+                safeDrawStr(-scrollOffset, yPosition, scrollingStatusLine.c_str());
                 display.sendBuffer();
                 
                 scrollOffset += 1;  // Scroll by 1 pixel at a time
@@ -229,17 +279,17 @@ void OLEDDisplayManager::drawStatusIndicator(int x, int y, const String& label, 
     display.setFont(u8g2_font_4x6_tr);
     
     // Draw label
-    display.drawStr(x, y, label.c_str());
+    safeDrawStr(x, y, label.c_str());
     
     // Draw status indicator (✓ or ✗)
     int labelWidth = display.getUTF8Width(label.c_str());
     const char* statusChar = status ? "+" : "-";
-    display.drawStr(x + labelWidth + 2, y, statusChar);
+    safeDrawStr(x + labelWidth + 2, y, statusChar);
     
     // Draw value if provided
     if (value.length() > 0) {
         int statusWidth = display.getUTF8Width(statusChar);
-        display.drawStr(x + labelWidth + statusWidth + 4, y, value.c_str());
+        safeDrawStr(x + labelWidth + statusWidth + 4, y, value.c_str());
     }
 }
 /*
@@ -282,6 +332,8 @@ void OLEDDisplayManager::displayStatusScreen(
         return;
     }
     
+    shiftScreen();  // screen saver
+    
     // Clear display
     display.setDrawColor(0);
     display.drawBox(0, 0, maxLineWidth, 64);
@@ -297,7 +349,7 @@ void OLEDDisplayManager::displayStatusScreen(
     
     // GPS Device Status
     if (!hasGPSDevice) {
-        display.drawStr(leftX, y, "NO GPS DEVICE");
+        safeDrawStr(leftX, y, "NO GPS DEVICE");
         y += lineHeight;
     } else {
         String gpsStatus = hasGPSFix ? "GPS FIX" : "NO FIX";
@@ -305,23 +357,23 @@ void OLEDDisplayManager::displayStatusScreen(
         y += lineHeight;
         
         // GPS message statistics
-        display.drawStr(leftX, y, ("MSG:" + String(gpsMessagesReceived)).c_str());
+        safeDrawStr(leftX, y, ("MSG:" + String(gpsMessagesReceived)).c_str());
         y += lineHeight;
         
-        display.drawStr(leftX, y, ("FIX:" + String(gpsFixes)).c_str());
+        safeDrawStr(leftX, y, ("FIX:" + String(gpsFixes)).c_str());
         y += lineHeight;
         
         if (gpsBadChecksum > 0 || gpsBadLength > 0) {
-            display.drawStr(leftX, y, ("ERR:" + String(gpsBadChecksum + gpsBadLength)).c_str());
+            safeDrawStr(leftX, y, ("ERR:" + String(gpsBadChecksum + gpsBadLength)).c_str());
             y += lineHeight;
         }
         
         // GPS quality
         if (hasGPSFix) {
-            display.drawStr(leftX, y, ("SAT:" + String(gpsSatellites)).c_str());
+            safeDrawStr(leftX, y, ("SAT:" + String(gpsSatellites)).c_str());
             y += lineHeight;
             
-            display.drawStr(leftX, y, ("HDOP:" + String(gpsHdop, 1)).c_str());
+            safeDrawStr(leftX, y, ("HDOP:" + String(gpsHdop, 1)).c_str());
         }
     }
     
@@ -346,7 +398,7 @@ void OLEDDisplayManager::displayStatusScreen(
     
     // IP Address (if connected)
     if (wifiConnected && ipAddress.length() > 0) {
-        display.drawStr(rightX, y, ipAddress.c_str());
+        safeDrawStr(rightX, y, ipAddress.c_str());
     }
     
     display.sendBuffer();

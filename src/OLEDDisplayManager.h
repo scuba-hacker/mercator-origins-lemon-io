@@ -26,6 +26,9 @@ public:
     void startProgressAnimation();
     void stopProgressAnimation();
     void updateProgressAnimation(int yPosition = 55);
+
+    // Set screensaver period
+    void setScreenSaverPeriod(uint32_t ms);
     
     // Status display methods
     void displayStatusScreen(
@@ -48,7 +51,28 @@ public:
     int getCurrentLineCount() const { return currentLineCount; }
     String getCurrentScrollingStatusLine() const { return scrollingStatusLine; }
 
+    void enableScreenSaver(bool enable) 
+    { 
+        if (!enable)
+            displayRootX = displayRootY = 0;
+
+        screenSaverEnabled = enable; 
+    }
+
 private:
+    int displayRootX = 0;
+    int displayRootY = 0;
+    const int maxOffsetX = 20;
+    const int maxOffsetY = 10;
+    const int screenSaverStep = 3;
+    int screenSaverStepDirectionX = 1;
+    int screenSaverStepDirectionY = 1;
+    uint32_t screenSaverPeriod = 5000;
+    bool screenSaverEnabled;
+    uint32_t nextScreenShift = screenSaverPeriod; 
+
+    void shiftScreen();
+
     // Generic scrolling status line variables
     String scrollingStatusLine;
     String baseStatusLine;  // Base line without progress chars
@@ -71,4 +95,5 @@ private:
     // Private helper methods
     void updateScrollingStatusLineDisplay(int yPosition);
     void drawStatusIndicator(int x, int y, const String& label, bool status, const String& value = "");
+    u8g2_uint_t safeDrawStr(u8g2_uint_t x, u8g2_uint_t y, const char *s);
 };
