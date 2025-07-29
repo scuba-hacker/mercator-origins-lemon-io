@@ -215,8 +215,8 @@ uint32_t privateMQTTUploadCount = 0;
 // #### START IN-MEMORY TELEMETRY-PIPELINE / MESSAGE BUFFER CONFIG
 TelemetryPipeline telemetryPipeline;
 
-const uint32_t telemetry_online_head_commit_duty_ms = 1900;
-const uint32_t telemetry_offline_head_commit_duty_ms = 10000;
+const uint32_t telemetry_online_head_commit_duty_ms = 1000;
+const uint32_t telemetry_offline_head_commit_duty_ms = telemetry_online_head_commit_duty_ms;
 uint32_t last_head_committed_at = 0;
 bool g_offlineStorageThrottleApplied = false;
 // #### END IN-MEMORY TELEMETRY-PIPELINE / MESSAGE BUFFER CONFIG
