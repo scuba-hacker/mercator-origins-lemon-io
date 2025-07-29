@@ -8,6 +8,7 @@ UMS3 ProS3;
 
 #include <U8g2lib.h>
 
+#include <Adafruit_SSD1327.h>
 #include "LGFX_Adafruit_SSD1327.h"
 
 #include "OLEDDisplayManager.h"
@@ -550,11 +551,11 @@ class mqttConnectionTest
 mqttConnectionTest mqttCheck;
 
 bool fullTestAdafruitDisplay = false;
-bool singleScreenTestAdafruitDisplay = false;
-bool testLgfxAdafruitDisplay = true;
+bool singleScreenTestAdafruitDisplay = true;
+bool testLgfxAdafruitDisplay = false;
 
-bool useGsDisplayManager = false;
-bool useLxDisplayManager = true;
+bool useGsDisplayManager = true;
+bool useLxDisplayManager = false;
 
 void setup()
 {

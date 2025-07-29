@@ -2,7 +2,7 @@
 
 #include <Arduino.h>
 #include <U8g2lib.h>
-#include <Adafruit_SSD1327.h>
+//#include <Adafruit_SSD1327.h>
 
 class OLEDWideDisplayManager {
 public:

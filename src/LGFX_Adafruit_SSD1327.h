@@ -1,7 +1,6 @@
 #pragma once
 
-#define LGFX_USE_V1
-
+// see https://github.com/lovyan03/LovyanGFX
 #include <LovyanGFX.hpp>
 
 #define OLED_RST_ADA_GREEN_LV 0         // copied from main.cpp for now
