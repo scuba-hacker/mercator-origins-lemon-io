@@ -4,16 +4,16 @@
 #include <U8g2lib.h>
 #include <Adafruit_SSD1327.h>
 
-class OLEDDisplayManager {
+class OLEDWideDisplayManager {
 public:
     // Reference to the U8G2 display object
     U8G2& display;
     
     // Constructor
-    OLEDDisplayManager(U8G2& u8g2Display, int screenWidth = 256, int maxLines = 4);
+    OLEDWideDisplayManager(U8G2& u8g2Display, int screenWidth = 256, int maxLines = 4);
     
     // Destructor
-    ~OLEDDisplayManager();
+    ~OLEDWideDisplayManager();
     
     // Multi-line scrolling display methods
     void addDisplayLine(const String& newLine, bool preserveWiFiLine = false, bool skipRefresh = false);

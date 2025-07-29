@@ -25,7 +25,7 @@ void MQTTConnectionTest::resetCheckTrigger(const uint32_t period) {
 
 // NetworkManager implementation
 NetworkManager::NetworkManager(const NetworkConfig& networkConfig, 
-                               OLEDDisplayManager& displayMgr,
+                               OLEDWideDisplayManager& displayMgr,
                                MercatorMQTT& mqtt)
     : config(networkConfig)
     , displayManager(displayMgr)

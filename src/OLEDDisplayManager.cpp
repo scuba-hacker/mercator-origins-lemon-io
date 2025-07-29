@@ -1,6 +1,6 @@
 #include "OLEDDisplayManager.h"
 
-OLEDDisplayManager::OLEDDisplayManager(U8G2& u8g2Display, int screenWidth, int maxLines)
+OLEDWideDisplayManager::OLEDWideDisplayManager(U8G2& u8g2Display, int screenWidth, int maxLines)
     : display(u8g2Display)
     , scrollingStatusLine("")
     , baseStatusLine("")
@@ -17,16 +17,16 @@ OLEDDisplayManager::OLEDDisplayManager(U8G2& u8g2Display, int screenWidth, int m
     displayLines = new String[maxDisplayLines];
 }
 
-OLEDDisplayManager::~OLEDDisplayManager() {
+OLEDWideDisplayManager::~OLEDWideDisplayManager() {
     delete[] displayLines;
 }
 
-void OLEDDisplayManager::setScreenSaverPeriod(uint32_t ms)
+void OLEDWideDisplayManager::setScreenSaverPeriod(uint32_t ms)
 {
     screenSaverPeriod = ms;
 }
 
-void OLEDDisplayManager::shiftScreen()
+void OLEDWideDisplayManager::shiftScreen()
 {
     if (screenSaverEnabled && millis() > nextScreenShift)
     {
@@ -64,19 +64,19 @@ void OLEDDisplayManager::shiftScreen()
     }   
 }
 
-void OLEDDisplayManager::startProgressAnimation() {
+void OLEDWideDisplayManager::startProgressAnimation() {
     showingProgress = true;
     progressCharCount = 0;
     baseStatusLine = scrollingStatusLine;  // Save current line as base
 }
 
-void OLEDDisplayManager::stopProgressAnimation() {
+void OLEDWideDisplayManager::stopProgressAnimation() {
     showingProgress = false;
     progressCharCount = 0;
     scrollingStatusLine = baseStatusLine;  // Restore base line without progress chars
 }
 
-void OLEDDisplayManager::updateProgressAnimation(int yPosition) {
+void OLEDWideDisplayManager::updateProgressAnimation(int yPosition) {
     if (!showingProgress) return;
 
     const int maxDotCount = 5;      // Maximum of 5 dots
@@ -97,7 +97,7 @@ void OLEDDisplayManager::updateProgressAnimation(int yPosition) {
     updateScrollingStatusLineDisplay(yPosition);
 }
 
-void OLEDDisplayManager::addDisplayLine(const String& newLine, bool preserveWiFiLine, bool skipRefresh) {
+void OLEDWideDisplayManager::addDisplayLine(const String& newLine, bool preserveWiFiLine, bool skipRefresh) {
     // Block all display updates during OTA mode
     if (otaModeActive) {
         return;
@@ -123,12 +123,12 @@ void OLEDDisplayManager::addDisplayLine(const String& newLine, bool preserveWiFi
 }
 
 
-u8g2_uint_t OLEDDisplayManager::safeDrawStr(u8g2_uint_t x, u8g2_uint_t y, const char *s) 
+u8g2_uint_t OLEDWideDisplayManager::safeDrawStr(u8g2_uint_t x, u8g2_uint_t y, const char *s) 
 { 
     return display.drawStr(x + displayRootX, y + displayRootY, s);
 }
 
-void OLEDDisplayManager::refreshDisplay() {
+void OLEDWideDisplayManager::refreshDisplay() {
     display.setFont(u8g2_font_ncenB08_tr);
     
     // Clear the display
@@ -145,7 +145,7 @@ void OLEDDisplayManager::refreshDisplay() {
     display.sendBuffer();
 }
 
-void OLEDDisplayManager::updateScrollingStatusLineDisplay(int yPosition) {
+void OLEDWideDisplayManager::updateScrollingStatusLineDisplay(int yPosition) {
     display.setFont(u8g2_font_ncenB08_tr);
     int textWidth = display.getUTF8Width(scrollingStatusLine.c_str());
     
@@ -170,7 +170,7 @@ void OLEDDisplayManager::updateScrollingStatusLineDisplay(int yPosition) {
     display.sendBuffer();
 }
 
-void OLEDDisplayManager::updateScrollingStatusLine(const String& newText, bool append, bool scrollOffPrevious, int yPosition) {
+void OLEDWideDisplayManager::updateScrollingStatusLine(const String& newText, bool append, bool scrollOffPrevious, int yPosition) {
     // Block all scrolling status updates during OTA mode
     if (otaModeActive) {
         return;
@@ -252,7 +252,7 @@ void OLEDDisplayManager::updateScrollingStatusLine(const String& newText, bool a
     }
 }
 
-void OLEDDisplayManager::clearDisplay() {
+void OLEDWideDisplayManager::clearDisplay() {
     display.setDrawColor(0);  // Black (erase)
     display.drawBox(0, 0, maxLineWidth, 64);  // Clear entire display
     display.setDrawColor(1);  // White (draw)
@@ -267,15 +267,15 @@ void OLEDDisplayManager::clearDisplay() {
     progressCharCount = 0;
 }
 
-void OLEDDisplayManager::setOTAMode(bool enabled) {
+void OLEDWideDisplayManager::setOTAMode(bool enabled) {
     otaModeActive = enabled;
 }
 
-void OLEDDisplayManager::setStatusDisplayMode(bool enabled) {
+void OLEDWideDisplayManager::setStatusDisplayMode(bool enabled) {
     statusDisplayModeActive = enabled;
 }
 
-void OLEDDisplayManager::drawStatusIndicator(int x, int y, const String& label, bool status, const String& value) {
+void OLEDWideDisplayManager::drawStatusIndicator(int x, int y, const String& label, bool status, const String& value) {
     display.setFont(u8g2_font_4x6_tr);
     
     // Draw label
@@ -320,7 +320,7 @@ Tests to do mid-way through system operation: (ie not at boot)
 8. TO DO: check that bounce of WiFi Hub there is automatic reconnection of WiFi.
 
 */
-void OLEDDisplayManager::displayStatusScreen(
+void OLEDWideDisplayManager::displayStatusScreen(
     uint32_t gpsMessagesReceived, uint32_t gpsFixes, uint32_t gpsNoFix,
     uint32_t gpsBadChecksum, uint32_t gpsBadLength, bool hasGPSDevice,
     bool hasGPSFix, double gpsHdop, uint8_t gpsSatellites,

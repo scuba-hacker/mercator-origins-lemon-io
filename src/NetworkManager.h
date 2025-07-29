@@ -79,7 +79,7 @@ class NetworkManager {
 private:
     // Configuration
     NetworkConfig config;
-    OLEDDisplayManager& displayManager;
+    OLEDWideDisplayManager& displayManager;
     
     // Network state
     WiFiClient wifiClient;
@@ -173,7 +173,7 @@ private:
 public:
     // Constructor
     NetworkManager(const NetworkConfig& networkConfig, 
-                   OLEDDisplayManager& displayMgr,
+                   OLEDWideDisplayManager& displayMgr,
                    MercatorMQTT& mqtt);
     
     // Destructor

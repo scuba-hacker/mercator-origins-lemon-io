@@ -7,8 +7,12 @@
 UMS3 ProS3;
 
 #include <U8g2lib.h>
+
+#include "LGFX_Adafruit_SSD1327.h"
+
 #include "OLEDDisplayManager.h"
 #include "OLEDGSDisplayManager.h"
+#include "OLEDLXDisplayManager.h"
 
 #include "SerialConfig.h"
 #include "NetworkManager.h"
@@ -35,12 +39,14 @@ U8G2_SSD1322_NHD_256X64_F_4W_HW_SPI wideOLEDDisplay(U8G2_R0, OLED_CS_ORANGE, OLE
 //Adafruit_SSD1327 display(128, 128, &SPI, OLED_DC_PURPLE, OLED_RST_ADA_GREEN, OLED_CS_ADA_WHITE);
 
 // I2C - check default pins for ProS3 are matching the I2C connector on top of board
-// SDA = 8, SCL = 9
+// SDA = 8, SCL = 9, resetpin = OLED_RST_ADA_GREEN, preclk = 1000000, postclk = 100000
 Adafruit_SSD1327 adafruitDisplay(128, 128, &Wire, OLED_RST_ADA_GREEN, 1000000);
+LGFX_I2C_Adafruit_SSD1327_128x128_Grey_OLE lgfxAdafruitDisplay;
 
 // Create display manager instance (256px wide, 4 lines max)
-OLEDDisplayManager   displayManager(wideOLEDDisplay, 256, 4);
+OLEDWideDisplayManager   displayManager(wideOLEDDisplay, 256, 4);
 OLEDGSDisplayManager GSdisplayManager(adafruitDisplay);
+OLEDLXDisplayManager LXdisplayManager(lgfxAdafruitDisplay);
 
 #include <SPI.h>
 
@@ -543,8 +549,12 @@ class mqttConnectionTest
 
 mqttConnectionTest mqttCheck;
 
-const bool fullTestAdafruitDisplay = false;
-const bool singleScreenTestAdafruitDisplay = true;
+bool fullTestAdafruitDisplay = false;
+bool singleScreenTestAdafruitDisplay = false;
+bool testLgfxAdafruitDisplay = true;
+
+bool useGsDisplayManager = false;
+bool useLxDisplayManager = true;
 
 void setup()
 {
@@ -558,29 +568,28 @@ void setup()
   USB_SERIAL_PRINTF("=== MAIN SETUP START ===\n");
   statusLEDColour();
   statusLEDOn();
-  
-  if (fullTestAdafruitDisplay || singleScreenTestAdafruitDisplay)
+
+  if (useLxDisplayManager)
   {
-    if (adafruitDisplay.begin(0x3D)) 
-    {
-      USB_SERIAL_PRINTLN("=== ADAFRUIT GREYSCALE OLED STARTED ===");
-      if (singleScreenTestAdafruitDisplay)
-        GSdisplayManager.drawAFewSnowflakes();
-      else        
-      {
-        // infinite loop with this test - not intended to run the remainder of the code in setup() or beyond
-        GSdisplayManager.fullDisplayTest();     // blocking 
-      }
-    }
-    else
-    {
-      USB_SERIAL_PRINTLN("Unable to initialize Adafruit Greyscale OLED");
-    }
+    LXdisplayManager.begin();
+    USB_SERIAL_PRINTLN("=== ADAFRUIT GREYSCALE OLED STARTED - LoyvanGFX Driver ===");
+    useGsDisplayManager = fullTestAdafruitDisplay = singleScreenTestAdafruitDisplay = false;
   }
-  else
+  else if (useGsDisplayManager)
   {
-    USB_SERIAL_PRINTLN("Initialisation disabled for Adafruit Greyscale OLED");
-  } 
+    useLxDisplayManager = testLgfxAdafruitDisplay = false;
+    if (adafruitDisplay.begin(0x3D)) 
+      USB_SERIAL_PRINTLN("=== ADAFRUIT GREYSCALE OLED STARTED - Adafruit Driver ===");
+    else
+      USB_SERIAL_PRINTLN("Unable to initialize Adafruit Greyscale OLED - Adafruit Driver");
+  }
+
+  if (testLgfxAdafruitDisplay)
+    LXdisplayManager.rotatedGrayBarTest();
+  else if (singleScreenTestAdafruitDisplay)
+    GSdisplayManager.drawAFewSnowflakes();
+  else if (fullTestAdafruitDisplay)
+    GSdisplayManager.fullDisplayTest();     // blocking 
 
   // Display startup status
   wideOLEDDisplay.begin();
@@ -685,7 +694,10 @@ void setup()
 
   networkManager.getMQTTConnectionTest().resetCheckTrigger(1500);
 
-  GSdisplayManager.clearDisplay();
+  if (useGsDisplayManager)
+    GSdisplayManager.clearDisplay();
+  else if (useLxDisplayManager)
+    LXdisplayManager.clearDisplay();
 }
 
 char* customiseNMEASentence(char* sentence, int showOnMapIndex)
