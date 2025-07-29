@@ -142,6 +142,7 @@ private:
     
     // Private helper methods
     void initWebSocket();
+    void addWebSocketToServer();
     void handleWebSocketMessage(void *arg, uint8_t *data, size_t len);
     void onWebSocketEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type, void *arg, uint8_t *data, size_t len);
     void webSerialReceiveMessage(uint8_t *data, size_t len);

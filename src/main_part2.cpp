@@ -152,7 +152,6 @@ String getStats()
   return jsonString;
 }
 
-
 // This is only a test function for the Arduino neopixel UART
 void checkForFloatBoxReedSwitches()
 {
@@ -174,6 +173,8 @@ void checkForFloatBoxReedSwitches()
   }
 }
 
+  /*
+  // WARNING DO NOT ENABLE THIS UNLESS LEAK DETECTOR ACTUALLY FITTED
 void checkForLeak(const char* msg)
 {
   bool leakStatus = false;
@@ -202,6 +203,7 @@ void checkForLeak(const char* msg)
     // M5.Lcd.fillScreen(TFT_BLACK);
   }
 }
+    */
 
 bool doesHeadCommitRequireForce(BlockHeader& block)
 {

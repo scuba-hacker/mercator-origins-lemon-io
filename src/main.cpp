@@ -79,7 +79,7 @@ Button redButton = Button(RED_BUTTON_GPIO, true, DEBOUNCE_MS);
 
 // START FEATURE ENABLE FLAGS
 bool writeLogToSerial = true;
-bool writeTelemetryLogToSerial = true; // writeLogToSerial must also be true
+bool writeTelemetryLogToSerial = false; // writeLogToSerial must also be true
 
 bool enableMQTTEncryption = true; // Set to true to use encrypted MQTT connections (port 8883, otherwise port 8887)
 
@@ -310,8 +310,6 @@ void updateButtonsAndBuzzer();
 
 void toggleOTAActive();
 void toggleWiFiActive();
-
-void checkForLeak(const char* msg);
 
 void checkForFloatBoxReedSwitches();
 
@@ -585,10 +583,10 @@ void setup()
   USB_SERIAL_PRINTLN("Unexpected Maker Pro S3 Initialised...");
 
   if (!SPIFFS.begin(true)) {
-    Serial.println("SPIFFS mount failed");
+    USB_SERIAL_PRINTLN("SPIFFS mount failed");
     displayManager.addDisplayLine("SPIFFS Mount Failed");
   } else {
-    Serial.println("SPIFFS mounted OK");
+    USB_SERIAL_PRINTLN("SPIFFS mounted OK");
     displayManager.addDisplayLine("SPIFFS OK");
   }
 
@@ -957,6 +955,8 @@ void loop()
   {
       privateMQTT.loop();
   }
+  if (publishMQTTTestMessages)
+    networkManager.publishMQTTTestMessageOnDutyCycle();
 
   if (!accumulateMissedMessageCount && millis() > delayBeforeCountingMissedMessages)
     accumulateMissedMessageCount = true;
@@ -970,18 +970,43 @@ void loop()
   }
 
   // WebSocket stats updates - independent of GPS processing
-  if (networkManager.getWebSocketClientCount() && millis() > networkManager.getTimeOfNextStatUpdate())
-  {
-    networkManager.sendStatsWebSocketNotification();
-    networkManager.setTimeOfNextStatUpdate(millis() + 990); // timeBetweenSendingStatsUpdates
-    dumpHeapUsage("Sent stats: ");
+  static uint32_t lastWebSocketDebugAt = 0;
+  static uint32_t lastPeriodicUpdate = 0;
+  uint32_t wsClientCount = networkManager.getWebSocketClientCount();
+  uint32_t currentTime = millis();
+  uint32_t nextStatUpdate = networkManager.getTimeOfNextStatUpdate();
+  
+  // Debug WebSocket stats every 5 seconds (more frequent for debugging)
+  if (currentTime > lastWebSocketDebugAt + 5000) {
+    USB_SERIAL_PRINTF("WebSocket Debug: clients=%d, time=%lu, nextUpdate=%lu, lastPeriodicUpdate=%lu, shouldSend=%d\n", 
+                      wsClientCount, currentTime, nextStatUpdate, lastPeriodicUpdate, 
+                      ((wsClientCount && currentTime > nextStatUpdate) || (wsClientCount > 0 && currentTime > lastPeriodicUpdate + 990)));
+    lastWebSocketDebugAt = currentTime;
   }
 
-  while (enableGPSRead && gps_serial.available() > 0)
+  // Send periodic updates if we have WebSocket clients - simplified logic
+  if (wsClientCount > 0 && currentTime > lastPeriodicUpdate + 990)
   {
-    checkForLeak(leakAlarmMsg);
+    USB_SERIAL_PRINTF("Sending periodic WebSocket update - clients=%d, time=%lu, last=%lu\n", 
+                      wsClientCount, currentTime, lastPeriodicUpdate);
+    networkManager.sendStatsWebSocketNotification();
+    networkManager.setTimeOfNextStatUpdate(millis() + 990); // timeBetweenSendingStatsUpdates
+    lastPeriodicUpdate = millis();
+    dumpHeapUsage("Sent stats: ");
+  }
+  
+  // Process GPS data - limit bytes per loop iteration to avoid blocking WebSocket updates
+  const int maxGPSBytesPerLoop = 1000; // Process max 50 bytes per loop iteration
+  int gpsDataBytesProcessed = 0;
+  
+  while (enableGPSRead && gps_serial.available() > 0 && gpsDataBytesProcessed < maxGPSBytesPerLoop)
+  {
+    // WARNING DO NOT ENABLE THIS UNLESS LEAK DETECTOR ACTUALLY FITTED
+    // OTHERWISE IT WILL BLOCK
+    // checkForLeak(leakAlarmMsg);
 
     char nextByte = gps_serial.read();
+    gpsDataBytesProcessed++; // Count processed bytes to limit loop iterations
 
     if (gps.encode(nextByte))
     {
@@ -1262,9 +1287,12 @@ void loop()
     timeOfNextLemonStatus = millis() + lemonStatusDutyCycle;
   }
 
-  checkForLeak(leakAlarmMsg);
+  // WARNING DO NOT ENABLE THIS UNLESS LEAK DETECTOR ACTUALLY FITTED
+  // OTHERWISE IT WILL BLOCK
+  // checkForLeak(leakAlarmMsg);
 
-  checkForFloatBoxReedSwitches();
+  // receives messages from lantern arduino when reed switches activated
+  // checkForFloatBoxReedSwitches();
 
 #ifdef ENABLE_TELEGRAM_BOT_AT_COMPILE_TIME
   if (enableTelegram && now > timeOfNextTelegramBotUpdateSendMsg)

@@ -438,8 +438,12 @@ bool NetworkManager::setupOTAWebServer(const char* _ssid, const char* _password,
             USB_SERIAL_PRINTLN("setupOTAWebServer: calling asyncWebServer.on");
 
             setupWebServerRoutes();
+            
+            // Initialize WebSocket (like in backup - after routes, before server.begin())
             initWebSocket();
-              USB_SERIAL_PRINTLN("setupOTAWebServer: calling AsyncElegantOTA.begin");
+            addWebSocketToServer();
+
+            USB_SERIAL_PRINTLN("setupOTAWebServer: calling AsyncElegantOTA.begin");
 
             elegantOTA->setID(config.otaDeviceLabel);
             elegantOTA->setUploadBeginCallback(uploadOTABeginCallbackWrapper);
@@ -611,6 +615,10 @@ void NetworkManager::toggleOTAActive() {
         delay(2000);
     } else {
         if (WiFi.status() == WL_CONNECTED) {
+            // Need to re-setup routes and WebSocket when restarting server
+            setupWebServerRoutes();
+            initWebSocket();
+            addWebSocketToServer();
             asyncWebServer->begin();
             otaActive = true;
         }
@@ -641,8 +649,14 @@ void NetworkManager::initWebSocket() {
     ws->onEvent([this](AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type, void *arg, uint8_t *data, size_t len) {
         this->onWebSocketEvent(server, client, type, arg, data, len);
     });
-    asyncWebServer->addHandler(ws);
-    USB_SERIAL_PRINTF("NetworkManager: WebSocket handler added to server\n");
+    USB_SERIAL_PRINTF("NetworkManager: WebSocket event handler set\n");
+}
+
+void NetworkManager::addWebSocketToServer() {
+    if (asyncWebServer && ws) {
+        asyncWebServer->addHandler(ws);
+        USB_SERIAL_PRINTF("NetworkManager: WebSocket handler added to server\n");
+    }
 }
 
 void NetworkManager::onWebSocketEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type, void *arg, uint8_t *data, size_t len) {
@@ -657,7 +671,7 @@ void NetworkManager::onWebSocketEvent(AsyncWebSocket *server, AsyncWebSocketClie
             }
             break;
         case WS_EVT_DISCONNECT:
-            USB_SERIAL_PRINTF("WebSocket: Client disconnected\n");
+            USB_SERIAL_PRINTF("WebSocket: Client disconnected - remaining clients: %d\n", ws ? ws->count() : 0);
             break;
         case WS_EVT_DATA:
             USB_SERIAL_PRINTF("WebSocket: Received data from client\n");
@@ -674,10 +688,23 @@ void NetworkManager::onWebSocketEvent(AsyncWebSocket *server, AsyncWebSocketClie
 
 void NetworkManager::handleWebSocketMessage(void *arg, uint8_t *data, size_t len) {
     AwsFrameInfo *info = (AwsFrameInfo*)arg;
+    USB_SERIAL_PRINTF("WebSocket: Message received - len=%d, final=%d, index=%d, info->len=%d, opcode=%d\n", 
+                      len, info->final, info->index, info->len, info->opcode);
+    
     if (info->final && info->index == 0 && info->len == len && info->opcode == WS_TEXT) {
         data[len] = 0;
-        if (getStatsCallback)
-            notifyWebSocketClients(getStatsCallback());
+        USB_SERIAL_PRINTF("WebSocket: Processing message: %s\n", (char*)data);
+        
+        if (getStatsCallback) {
+            USB_SERIAL_PRINTF("WebSocket: Calling getStats callback\n");
+            String stats = getStatsCallback();
+            USB_SERIAL_PRINTF("WebSocket: Stats result length: %d\n", stats.length());
+            notifyWebSocketClients(stats);
+        } else {
+            USB_SERIAL_PRINTF("WebSocket: ERROR - getStatsCallback is NULL!\n");
+        }
+    } else {
+        USB_SERIAL_PRINTF("WebSocket: Message conditions not met - ignoring\n");
     }
 }
 
@@ -693,14 +720,26 @@ void NetworkManager::notifyWebSocketClients(const String& sensorReadings) {
 void NetworkManager::setGetStatsCallback(std::function<String()> callback) {
     getStatsCallback = callback; 
     USB_SERIAL_PRINTF("NetworkManager: getStatsCallback has been set\n");
+    
+    // Test the callback immediately to ensure it works
+    if (getStatsCallback) {
+        String testStats = getStatsCallback();
+        USB_SERIAL_PRINTF("NetworkManager: Test callback result length: %d\n", testStats.length());
+        if (testStats.length() > 0) {
+            USB_SERIAL_PRINTF("NetworkManager: Test callback result preview: %.100s\n", testStats.c_str());
+        }
+    }
 }
 
 void NetworkManager::sendStatsWebSocketNotification() {
+    USB_SERIAL_PRINTF("WebSocket: sendStatsWebSocketNotification() called - client count: %d\n", getWebSocketClientCount());
     if (getStatsCallback) {
-        USB_SERIAL_PRINTF("WebSocket: sendStatsWebSocketNotification() called\n");
-        notifyWebSocketClients(getStatsCallback());
+        USB_SERIAL_PRINTF("WebSocket: Calling getStats and notifying clients\n");
+        String stats = getStatsCallback();
+        USB_SERIAL_PRINTF("WebSocket: Generated stats length: %d\n", stats.length());
+        notifyWebSocketClients(stats);
     } else {
-        USB_SERIAL_PRINTF("WebSocket: sendStatsWebSocketNotification() called but getStatsCallback is not set!\n");
+        USB_SERIAL_PRINTF("WebSocket: ERROR - getStatsCallback is not set!\n");
     }
 }
 
