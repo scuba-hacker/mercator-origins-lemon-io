@@ -62,9 +62,9 @@ public:
 private:
     int displayRootX = 0;
     int displayRootY = 0;
-    const int maxOffsetX = 20;
-    const int maxOffsetY = 10;
-    const int screenSaverStep = 3;
+    const int maxOffsetX = 30;
+    const int maxOffsetY = 20;
+    const int screenSaverStep = 7;
     int screenSaverStepDirectionX = 1;
     int screenSaverStepDirectionY = 1;
     uint32_t screenSaverPeriod = 5000;

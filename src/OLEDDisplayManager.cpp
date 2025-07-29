@@ -35,23 +35,23 @@ void OLEDDisplayManager::shiftScreen()
         
         if (displayRootX < 0)
         {
-            displayRootX = 0;
+            displayRootX = random(1, screenSaverStep);;
             screenSaverStepDirectionX *= -1;
         }
         else if (displayRootX > maxOffsetX)
         {
-            displayRootX = maxOffsetX;
+            displayRootX = maxOffsetX - random(1, screenSaverStep);
             screenSaverStepDirectionX *= -1;
         }
 
         if (displayRootY < 0)
         {
-            displayRootY = 0;
+            displayRootY = random(1, screenSaverStep);;
             screenSaverStepDirectionY *= -1;
         }
         else if (displayRootY > maxOffsetY)
         {
-            displayRootY = maxOffsetY;
+            displayRootY = maxOffsetY - random(1, screenSaverStep);
             screenSaverStepDirectionY *= -1;
         }
 

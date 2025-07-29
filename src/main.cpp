@@ -548,6 +548,8 @@ const bool singleScreenTestAdafruitDisplay = true;
 
 void setup()
 {
+  randomSeed(analogRead(A12));  // Use a floating analog pin for entropy
+
   Serial.begin(115200);
   Serial.flush();
   delay(500);
