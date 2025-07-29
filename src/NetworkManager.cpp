@@ -53,7 +53,7 @@ NetworkManager::NetworkManager(const NetworkConfig& networkConfig,
     , lastInternetConnectivityStatus(false)
     , lastDNSConnectivityStatus(false)
     , lastIPConnectivityStatus(false)
-    , forceConnectivityCheckForDisplay(true)  // Start with testing enabled
+    , forceConnectivityCheckForDisplay(false)  // Disable force which is used for testing
 #ifdef ENABLE_TELEGRAM_BOT_AT_COMPILE_TIME
     , secured_client(nullptr)
     , telegramBot(nullptr)
