@@ -305,13 +305,13 @@ Tests to do mid-way through system operation: (ie not at boot)
         Bathroom-DietPi# systemctl stop mosquitto
         Bathroom-DietPi# systemctl start mosquitto
 
-3. TO DO: Use Asus-Router to block 192.168.0.58 Lemon - simulate no WiFi router, eg WiFi hotspot powered down.
+3. TO DO: Use Asus-Router to block 192.168.0.58 Lemon from reaching anywhere - simulate no WiFi router, eg WiFi hotspot powered down.
         - then revert and check ok
 
 4. TO DO: Use a rule on asus-router to block an IP address - simulate no WiFi network connectivity - ie SIM/LTE out of range.
         - then revert and check ok
-
-5. TO DO: DNS Resolution failure - ??
+        
+5. DONE: DNS Resolution failure and re-establish - used Pi-Hole block rules for google.com, the name it tests.
 
 6. TO DO: Change wifi password to break authentication.
 

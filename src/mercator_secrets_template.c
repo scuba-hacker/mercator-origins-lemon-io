@@ -15,7 +15,8 @@ static const char* password_3 = "";
 static const char* label_3 = "";
 static const int   timeout_3 = 10000;
 
-static const char* ping_target = "8.8.8.8";    // google DNS
+static const char* ping_ip_target = "1.1.1.1";
+static const char* ping_name_target = "google.com"
 
 static const char* private_mqqt_remote_host = "";
 static const int   private_mqqt_remote_port = 0;

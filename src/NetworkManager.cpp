@@ -3,6 +3,10 @@
 #include "TelemetryPipeline.h"
 #include <NavigationWaypoints.h>
 
+extern "C" {
+  #include "lwip/dns.h"
+}
+
 // Access global variables from main.cpp
 extern int32_t lastCheckForInternetConnectivityAt;
 extern uint32_t privateMQTTUploadCount;
@@ -810,11 +814,13 @@ void NetworkManager::checkConnectivity() {
     }
 }
 
+
 bool NetworkManager::isInternetAccessible() {
     lastCheckForInternetConnectivityAt = millis();
     
+    dns_clear_cache();
     // First try DNS resolution - ping google.com 
-    lastDNSConnectivityStatus = Ping.ping("google.com", maxPingAttempts);
+    lastDNSConnectivityStatus = Ping.ping(config.ping_name_target, maxPingAttempts);
     
     if (lastDNSConnectivityStatus) {
         lastIPConnectivityStatus = true;  // If DNS works, IP connectivity is also working
@@ -823,7 +829,8 @@ bool NetworkManager::isInternetAccessible() {
     
     // DNS failed, try direct IP ping as fallback
     // This helps distinguish DNS issues from full internet outage
-    lastIPConnectivityStatus = Ping.ping(config.ping_target, maxPingAttempts);
+    lastIPConnectivityStatus = Ping.ping(config.ping_ip_target, maxPingAttempts);
+
     return lastIPConnectivityStatus;
 }
 

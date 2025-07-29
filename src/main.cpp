@@ -180,7 +180,8 @@ NetworkConfig networkConfig = {
     ssid_1, password_1, label_1, timeout_1,
     ssid_2, password_2, label_2, timeout_2, 
     ssid_3, password_3, label_3, timeout_3,
-    ping_target,
+    ping_name_target,
+    ping_ip_target,
     "lemon",  // device hostname
     enableOTAServer,
 #ifdef USE_WEBSERIAL

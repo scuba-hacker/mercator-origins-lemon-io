@@ -41,7 +41,8 @@ struct NetworkConfig {
     uint32_t timeout_3;
     
     // Network settings
-    const char* ping_target;
+    const char* ping_name_target;
+    const char* ping_ip_target;
     const char* device_hostname;
     
     // Feature flags
