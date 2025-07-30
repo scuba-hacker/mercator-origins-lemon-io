@@ -693,6 +693,8 @@ void setup()
   displayManager.addDisplayLine("Lemon-IO Online @ " + networkManager.getLocalIP());
   delay(2000);  // Show final status for 2 seconds
 
+  // Force connectivity check to update DNS/IP status for display
+  networkManager.setForceConnectivityCheckForDisplay();
   networkManager.getMQTTConnectionTest().resetCheckTrigger(1500);
 
   if (useGsDisplayManager)
