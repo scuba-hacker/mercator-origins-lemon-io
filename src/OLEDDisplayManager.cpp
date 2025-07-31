@@ -1,4 +1,5 @@
 #include "OLEDDisplayManager.h"
+#include "SerialConfig.h"
 
 OLEDWideDisplayManager::OLEDWideDisplayManager(U8G2& u8g2Display, int screenWidth, int maxLines)
     : display(u8g2Display)
@@ -325,7 +326,7 @@ void OLEDWideDisplayManager::displayStatusScreen(
     uint32_t gpsBadChecksum, uint32_t gpsBadLength, bool hasGPSDevice,
     bool hasGPSFix, double gpsHdop, uint8_t gpsSatellites,
     const String& ipAddress, uint32_t mqttUploads, bool wifiConnected,
-    const String& wifiSSID, bool dnsConnected, bool ipConnected, bool mqttConnected) {
+    const String& wifiSSID, bool dnsConnected, bool ipConnected, bool mqttConnected, uint8_t latestLanternReedState) {
     
     // Block status display updates during OTA mode
     if (otaModeActive) {
@@ -370,7 +371,7 @@ void OLEDWideDisplayManager::displayStatusScreen(
         
         // GPS quality
         if (hasGPSFix) {
-            safeDrawStr(leftX, y, ("SAT:" + String(gpsSatellites)).c_str());
+            safeDrawStr(leftX, y, ("SAT:" + String((int)gpsSatellites)).c_str());
             y += lineHeight;
             
             safeDrawStr(leftX, y, ("HDOP:" + String(gpsHdop, 1)).c_str());
@@ -400,6 +401,13 @@ void OLEDWideDisplayManager::displayStatusScreen(
     if (wifiConnected && ipAddress.length() > 0) {
         safeDrawStr(rightX, y, ipAddress.c_str());
     }
+    y += lineHeight;
+
+    // should change any other string concatenation to snprintf above
+    char reedDisplay[32];
+    snprintf(reedDisplay, sizeof(reedDisplay), "Reed:%u", latestLanternReedState);
+    safeDrawStr(rightX, y, reedDisplay);
+    y += lineHeight;
     
     display.sendBuffer();
 }

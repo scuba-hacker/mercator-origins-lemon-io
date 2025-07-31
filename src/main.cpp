@@ -11,6 +11,8 @@ UMS3 ProS3;
 #include <Adafruit_SSD1327.h>
 #include "LGFX_Adafruit_SSD1327.h"
 
+#include "driver/uart.h"
+
 #include "OLEDDisplayManager.h"
 #include "OLEDGSDisplayManager.h"
 #include "OLEDLXDisplayManager.h"
@@ -118,37 +120,9 @@ const bool publishMQTTTestMessages = true;
 #endif
 // END FEATURE ENABLE FLAGS
 
-// ################## START SERIAL/UART/GPIO CONFIGURATION
-const int GPS_BAUD_RATE = 9600;
-
-// ******** Tx = GPIO2 Max Speed Tests ********
-// GPIO2 Tx works for 57600, 71000, 91000, 576000
-// at 1,700,000 getting about 10% bad msgs - 5% missing uplinks and 5% bad length uplinks (may help to have a small pause before sending response)
-// at 2,100,000 getting about 14% bad msgs -  7% missing uplinks and 7% bad length uplinks
-// ^^^^ add 3ms linger time before mako replying to lemon to get rid of all bad messages at 2,100,000
-// ^^^^^ probably also works at 1,700,000
-// Other rates to try which did work with tx only to Mako when not expecting a reply: 
-//    922190, 1100000,1500000,1900000
-// rates that did not work TO mako prior to changing reply to wired from IR LED:
-//    921600, 1800000
-const int UPLINK_BAUD_RATE = 57600;       // max working test so far: 2,100,000
-
-const int NEOPIXELS_ARDUINO_BAUD_RATE = 9600;
-
-#define MAKO_GOPRO_SERIAL Serial1
-
-const uint8_t GPS_TX_GPIO = 39;
-const uint8_t GPS_RX_GPIO = 38;
-
-const uint8_t MAKO_GOPRO_TX_GPIO = 43;    // should be called mako gopro GPIO
-const uint8_t MAKO_GOPRO_RX_GPIO = 44;    // should be called mako gopro GPIO
-
-const uint8_t TX_TO_NEOPIXELS_GPIO = 40;
-const uint8_t RX_TO_NEOPIXELS_GPIO = 41;
 
 #define STATUS_LED_ON HIGH
 #define STATUS_LED_OFF LOW
-// ################## END SERIAL/UART CONFIGURATION
 
 uint8_t statusLED = STATUS_LED_OFF;
 
@@ -246,28 +220,10 @@ uint32_t lastGPSByteTime = 0;
 bool hasGPSDevice = true;  // Assume GPS device present until proven otherwise
 
 TinyGPSPlus gps;
-int uart_number_gps = 2;
-HardwareSerial gps_serial(uart_number_gps);
-
-int uart_number_mako_gopro = 1;
-HardwareSerial ss_to_mako_gopro(uart_number_mako_gopro);
-
-HardwareSerial& neopixels_serial = Serial0;
 
 bool diveInProgress = false;
 
 String getStats();
-
-void sendLemonStatus(const e_lemon_status status)
-{
-  if (!writeLogToSerial)
-  {
-    if (diveInProgress)
-      neopixels_serial.write(status | LC_DIVE_IN_PROGRESS);
-    else
-      neopixels_serial.write(status);
-  }
-}
 
 int nofix_byte_loop_count = 0;
 template <typename T> struct vector
@@ -316,7 +272,7 @@ void updateButtonsAndBuzzer();
 void toggleOTAActive();
 void toggleWiFiActive();
 
-void checkForFloatBoxReedSwitches();
+uint8_t checkForLanternLatestReedEvent();
 
 bool setupOTAWebServer(const char* _ssid, const char* _password, const char* label, uint32_t timeout, bool wifiOnly);
 
@@ -324,6 +280,7 @@ void updateButtonsAndBuzzer()
 {
   p_primaryButton->read();
 }
+void sendLemonStatus(const e_lemon_status status);
 struct MakoStats
 {
   uint16_t minimum_sensor_read_time;
@@ -484,43 +441,6 @@ void statusLEDOn()     { statusLED = true;       ProS3.setPixelPower(statusLED);
 void statusLEDOff()    { statusLED = false;      ProS3.setPixelPower(statusLED); ProS3.writePixel(); }
 void statusLEDColour() { ProS3.setPixelColor(128,128,0); }
 
-bool haltAllProcessingDuringOTAUpload = false;
-
-void disableFeaturesForOTA()
-{
-  enableConnectToPrivateMQTT = false;
-  enableUploadToPrivateMQTT = false;
-  privateMQTT.setEnabled(false, false);
-  enableReadUplinkComms = false;
-  processUplinkMessage = false;
-  enableAllUplinkMessageIntegrityChecks = false;
-  enableGPSRead = false;
-  writeLogToSerial = false;
-  writeTelemetryLogToSerial = false;
-
-  gps_serial.end();
-  MAKO_GOPRO_SERIAL.end();
-  neopixels_serial.end();
-
-  privateMQTT.disconnect();
-  
-  statusLEDOn();
-
-  haltAllProcessingDuringOTAUpload = true;
-
-  dumpHeapUsage("Disabled OTA stats: ");
-
-  telemetryPipeline.teardown();
-
-  dumpHeapUsage("Torn Down Telemetry Pipeline: ");
-
-  #ifdef USE_WEBSERIAL
-    ws.closeAll();          // close all websocket connections for test page
-    WebSerial.closeAll();   // close all websocket connetions for WebSerial
-
-    dumpHeapUsage("Closed Web Sockets and Web Serial : ");
-  #endif
-}
 
 TaskHandle_t mainTaskHandle = nullptr;
 BaseType_t mainTaskCoreId = 0;
@@ -557,13 +477,161 @@ bool testLgfxAdafruitDisplay = false;
 bool useGsDisplayManager = true;
 bool useLxDisplayManager = false;
 
-void setup()
-{
-  randomSeed(analogRead(A12));  // Use a floating analog pin for entropy
+#define UART_NUMBER_LANTERN_NEOPIXELS  0
+#define LANTERN_NEOPIXELS_ARDUINO_BAUD_RATE 9600
+#define LANTERN_NEOPIXELS_TX_GPIO 40
+#define LANTERN_NEOPIXELS_RX_GPIO 41
+HardwareSerial serial_lantern_neopixels(UART_NUMBER_LANTERN_NEOPIXELS);
 
+#define UART_NUMBER_GPS 1
+#define GPS_BAUD_RATE 9600
+#define GPS_TX_GPIO 39
+#define GPS_RX_GPIO 38
+HardwareSerial serial_gps(UART_NUMBER_GPS);
+
+// ******** Tx = GPIO2 Max Speed Tests ********
+// GPIO2 Tx works for 57600, 71000, 91000, 576000
+// at 1,700,000 getting about 10% bad msgs - 5% missing uplinks and 5% bad length uplinks (may help to have a small pause before sending response)
+// at 2,100,000 getting about 14% bad msgs -  7% missing uplinks and 7% bad length uplinks
+// ^^^^ add 3ms linger time before mako replying to lemon to get rid of all bad messages at 2,100,000
+// ^^^^^ probably also works at 1,700,000
+// Other rates to try which did work with tx only to Mako when not expecting a reply: 
+//    922190, 1100000,1500000,1900000
+// rates that did not work TO mako prior to changing reply to wired from IR LED:
+//    921600, 1800000
+#define UART_NUMBER_MAKO_GOPRO 2
+#define MAKO_UPLINK_BAUD_RATE 57600       // max working test so far: 2,100,000
+#define MAKO_GOPRO_TX_GPIO 43
+#define MAKO_GOPRO_RX_GPIO 44
+HardwareSerial serial_mako_gopro(UART_NUMBER_MAKO_GOPRO);
+
+void initialiseUARTS()
+{
+  // Prevent UART0 interference from bootloader / panic handler
+  esp_log_level_set("*", ESP_LOG_NONE);          // Disable logging - this is needed to prevent the bootloader from interfering with the UART
+  esp_deep_sleep_disable_rom_logging();          // Stop ROM from using UART0
+  uart_driver_delete(UART_NUM_0);                 // Force-remove any driver on UART0
+
+  // Begin USB CDC Serial for Debug - not UART0 on an ESP32-S3 (unlike ESP32)
   Serial.begin(115200);
   Serial.flush();
   delay(500);
+
+  // Begin UART0 for serial comms with Lantern Arduino Nano Every for Neo-Pixel Lights and Reed Relay Control
+  // Must use the uart_set_pin as well on ESP32-S3. Remove it and Rx will not work.
+  serial_lantern_neopixels.begin(LANTERN_NEOPIXELS_ARDUINO_BAUD_RATE, SERIAL_8N1, LANTERN_NEOPIXELS_RX_GPIO, LANTERN_NEOPIXELS_TX_GPIO);
+  uart_set_pin(UART_NUM_0, LANTERN_NEOPIXELS_TX_GPIO, LANTERN_NEOPIXELS_RX_GPIO, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+
+  // UART1 for receiving data from GPS
+  serial_gps.begin(GPS_BAUD_RATE, SERIAL_8N1, GPS_RX_GPIO, GPS_TX_GPIO);   // pin 33=rx (white M5), pin 32=tx (yellow M5), specifies the grove SCL/SDA pins for Rx/Tx
+
+  // UART2 for sending/receiving data to/from GoPro
+  serial_mako_gopro.setRxBufferSize(1024); // was 256 - must set before begin
+  serial_mako_gopro.begin(MAKO_UPLINK_BAUD_RATE, SERIAL_8N2, MAKO_GOPRO_RX_GPIO, MAKO_GOPRO_TX_GPIO);
+
+  // NOTES FOR UPGRADING RS485 Interface linking Mako <--> Lemon
+  // If using a MAX485 board which exposes driver enable control DE / RE then can use this mode which would be better than now
+  // would prevent bytes echoing back and having to chuck out trash bytes. It uses an RTS pin.
+
+  // https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/peripherals/uart.html
+  // uart_set_pin(UART_NUM_1, txPin, rxPin, rtsPin, UART_PIN_NO_CHANGE);
+  // uart_set_mode(UART_NUM_1, UART_MODE_RS485_HALF_DUPLEX);
+
+  // https://www.keyestudio.com/products/max485-module-rs-485-module-ttl-rs-485-module-for-arduino
+}
+
+void testTightSerialRxLoop()
+{
+  // Prevent UART0 interference from bootloader / panic handler
+  esp_log_level_set("*", ESP_LOG_NONE);          // Disable logging - this is needed to prevent the bootloader from interfering with the UART
+  esp_deep_sleep_disable_rom_logging();          // Stop ROM from using UART0
+  uart_driver_delete(UART_NUM_0);                 // Force-remove any driver on UART0
+
+  Serial.begin(115200);         // This is USB CDC Serial for Debug - not UART0
+  Serial.flush();
+  delay(500);
+
+  serial_lantern_neopixels.begin(LANTERN_NEOPIXELS_ARDUINO_BAUD_RATE, SERIAL_8N1, LANTERN_NEOPIXELS_RX_GPIO, LANTERN_NEOPIXELS_TX_GPIO);
+  uart_set_pin(UART_NUM_0, LANTERN_NEOPIXELS_TX_GPIO, LANTERN_NEOPIXELS_RX_GPIO, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+  
+  USB_SERIAL_PRINTF("UART1 configured: RX=GPIO%d, TX=GPIO%d, Baud=%d\n",
+                    LANTERN_NEOPIXELS_RX_GPIO, LANTERN_NEOPIXELS_TX_GPIO, LANTERN_NEOPIXELS_ARDUINO_BAUD_RATE);
+  uint32_t nextTestMsg = 500;
+  while(1)
+  {
+    if (serial_lantern_neopixels.available())
+      Serial.println(serial_lantern_neopixels.read());
+
+    if (millis() > nextTestMsg)
+    {
+      Serial.println("Test");
+      nextTestMsg = millis() + 500;
+    }
+  }
+}
+
+uint32_t timeOfNextLemonStatus = 0;
+const uint32_t lemonStatusDutyCycle = 1000;
+
+uint32_t timeOfNextTelegramBotUpdateSendMsg = 0;
+const uint32_t telegramBotDutyCycle = 10000;
+
+const int initNeopixelSerialByteRead = -1;
+int neopixelSerialByteRead = initNeopixelSerialByteRead;
+
+uint8_t latestLanternReedState = 0;
+
+bool haltAllProcessingDuringOTAUpload = false;
+
+void disableFeaturesForOTA()
+{
+  enableConnectToPrivateMQTT = false;
+  enableUploadToPrivateMQTT = false;
+  privateMQTT.setEnabled(false, false);
+  enableReadUplinkComms = false;
+  processUplinkMessage = false;
+  enableAllUplinkMessageIntegrityChecks = false;
+  enableGPSRead = false;
+  writeLogToSerial = false;
+  writeTelemetryLogToSerial = false;
+
+  serial_gps.end();
+  serial_mako_gopro.end();
+  serial_lantern_neopixels.end();
+
+  privateMQTT.disconnect();
+  
+  statusLEDOn();
+
+  haltAllProcessingDuringOTAUpload = true;
+
+  dumpHeapUsage("Disabled OTA stats: ");
+
+  telemetryPipeline.teardown();
+
+  dumpHeapUsage("Torn Down Telemetry Pipeline: ");
+
+  #ifdef USE_WEBSERIAL
+    ws.closeAll();          // close all websocket connections for test page
+    WebSerial.closeAll();   // close all websocket connetions for WebSerial
+
+    dumpHeapUsage("Closed Web Sockets and Web Serial : ");
+  #endif
+}
+
+void sendLemonStatus(const e_lemon_status status)
+{
+  if (diveInProgress)
+    serial_lantern_neopixels.write(status | LC_DIVE_IN_PROGRESS);
+  else
+    serial_lantern_neopixels.write(status);
+}
+
+void setup()
+{
+  randomSeed(analogRead(A12));  // Use a floating analog pin for entropy  // THIS IS GPIO 13 !!!!
+
+  initialiseUARTS();
 
   ProS3.begin();
   USB_SERIAL_PRINTF("=== MAIN SETUP START ===\n");
@@ -638,12 +706,9 @@ void setup()
 
   statusLEDOff();
 
-  pinMode(TX_TO_NEOPIXELS_GPIO, OUTPUT);
-  digitalWrite(TX_TO_NEOPIXELS_GPIO, HIGH); // switch off
-  pinMode(RX_TO_NEOPIXELS_GPIO, INPUT);
-
-  const bool invert = false;
-  neopixels_serial.begin(NEOPIXELS_ARDUINO_BAUD_RATE, SERIAL_8N1, RX_TO_NEOPIXELS_GPIO, TX_TO_NEOPIXELS_GPIO, invert);
+  serial_lantern_neopixels.begin(LANTERN_NEOPIXELS_ARDUINO_BAUD_RATE, SERIAL_8N1, LANTERN_NEOPIXELS_RX_GPIO, LANTERN_NEOPIXELS_TX_GPIO);
+  USB_SERIAL_PRINTF("UART1 configured: RX=GPIO%d, TX=GPIO%d, Baud=%d\n",
+                    LANTERN_NEOPIXELS_RX_GPIO, LANTERN_NEOPIXELS_TX_GPIO, LANTERN_NEOPIXELS_ARDUINO_BAUD_RATE);
 
   sendLemonStatus(LC_STARTUP);
 
@@ -667,14 +732,6 @@ void setup()
       delay(2000);    // show state for 2 seconds
   }
 
-  // https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/peripherals/uart.html
-  //  uart_set_mode(uart_number, UART_MODE_RS485_HALF_DUPLEX);
-
-  gps_serial.begin(GPS_BAUD_RATE, SERIAL_8N1, GPS_RX_GPIO, GPS_TX_GPIO);   // pin 33=rx (white M5), pin 32=tx (yellow M5), specifies the grove SCL/SDA pins for Rx/Tx
-
-  // setup second serial port for sending/receiving data to/from GoPro
-  MAKO_GOPRO_SERIAL.setRxBufferSize(1024); // was 256 - must set before begin
-  MAKO_GOPRO_SERIAL.begin(UPLINK_BAUD_RATE, SERIAL_8N2, MAKO_GOPRO_RX_GPIO, MAKO_GOPRO_TX_GPIO);
 
   displayManager.addDisplayLine("GPS Ready");
   delay(500);
@@ -694,7 +751,7 @@ void setup()
   delay(2000);  // Show final status for 2 seconds
 
   // Force connectivity check to update DNS/IP status for display
-  networkManager.setForceConnectivityCheckForDisplay();
+  networkManager.setForceConnectivityCheckForDisplay(true);
   networkManager.getMQTTConnectionTest().resetCheckTrigger(1500);
 
   if (useGsDisplayManager)
@@ -933,17 +990,6 @@ char* customiseNMEASentence(char* sentence, int showOnMapIndex)
   return sentence;
 }
 
-uint32_t mainBackColour = TFT_BLACK;
-
-uint32_t timeOfNextLemonStatus = 0;
-const uint32_t lemonStatusDutyCycle = 1000;
-
-uint32_t timeOfNextTelegramBotUpdateSendMsg = 0;
-const uint32_t telegramBotDutyCycle = 10000;
-
-const int initNeopixelSerialByteRead = -1;
-int neopixelSerialByteRead = initNeopixelSerialByteRead;
-
 void loop()
 {
   // Handle NetworkManager processing (includes MQTT testing, OTA restart, etc.)
@@ -1004,7 +1050,8 @@ void loop()
       gpsFailedChecksumCount, gpsBadLengthCount, hasGPSDevice,
       hasGPSFix, gpsHdop, gpsSatellites,
       ipAddress, privateMQTTUploadCount, wifiConnected,
-      wifiSSID, dnsConnected, ipConnected, mqttConnected
+      wifiSSID, dnsConnected, ipConnected, mqttConnected,
+      latestLanternReedState
     );
     
     lastStatusUpdate = millis();
@@ -1015,9 +1062,9 @@ void loop()
   const int maxGPSBytesPerLoop = 1000; // Process max 50 bytes per loop iteration
   int gpsDataBytesProcessed = 0;
   
-  while (enableGPSRead && gps_serial.available() > 0 && gpsDataBytesProcessed < maxGPSBytesPerLoop)
+  while (enableGPSRead && serial_gps.available() > 0 && gpsDataBytesProcessed < maxGPSBytesPerLoop)
   {
-    char nextByte = gps_serial.read();
+    char nextByte = serial_gps.read();
     gpsDataBytesProcessed++; // Count processed bytes to limit loop iterations
     
     // Update GPS device detection
@@ -1047,7 +1094,7 @@ void loop()
 
         //////////////////////////////////////////////////////////
         // send message to outgoing serial connection to mako gopro
-        MAKO_GOPRO_SERIAL.write(customiseNMEASentence(gps.getSentence(), networkManager.getShowOnMapRequestIndex()));
+        serial_mako_gopro.write(customiseNMEASentence(gps.getSentence(), networkManager.getShowOnMapRequestIndex()));
         consoleDownlinkMsgCount++;
 
         if (gps.isSentenceGGA())
@@ -1229,6 +1276,9 @@ void loop()
     // *************  END CODE FOR SEND LEMON STATUS TO THE ARDUINO CALLED LANTERN
 
   }
+
+  // This is for test - shows value on display, good to make sure reed switches are being read ok.
+  latestLanternReedState = checkForLanternLatestReedEvent();
 
 #ifdef ENABLE_TELEGRAM_BOT_AT_COMPILE_TIME
   if (enableTelegram && now > timeOfNextTelegramBotUpdateSendMsg)

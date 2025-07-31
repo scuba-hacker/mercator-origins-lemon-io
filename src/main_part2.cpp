@@ -153,24 +153,38 @@ String getStats()
 }
 
 // This is only a test function for the Arduino neopixel UART
-void checkForFloatBoxReedSwitches()
+// The current reed state is latched, it gives the last known state
+uint8_t checkForLanternLatestReedEvent()
 {
-  while (!writeLogToSerial && neopixels_serial.available())
+  static uint8_t currentReedState = 0;  // Maintain state between calls
+  
+  while (serial_lantern_neopixels.available())
   {
-    neopixelSerialByteRead = neopixels_serial.read();
+    neopixelSerialByteRead = serial_lantern_neopixels.read();
+    USB_SERIAL_PRINTF("Reed raw byte: %d\n", neopixelSerialByteRead);
     // have an indication on the screen of a byte read and which byte
     // these map to the reed switches that are in the float box
     if (neopixelSerialByteRead == 100)
     {
-      mainBackColour = TFT_BLUE;
-//      M5.Lcd.fillScreen(TFT_BLUE);
+      currentReedState = 100;
+      USB_SERIAL_PRINTF("Reed state set to: %d\n", currentReedState);
     }
     else if (neopixelSerialByteRead == 200)
     {
-      mainBackColour = TFT_MAGENTA;
-//      M5.Lcd.fillScreen(TFT_MAGENTA);
+      currentReedState = 200;
+      USB_SERIAL_PRINTF("Reed state set to: %d\n", currentReedState);
+    }
+    else if (neopixelSerialByteRead == 10)
+    {
+      currentReedState = 0;
+      USB_SERIAL_PRINTF("Reed state set to: %d\n", currentReedState);
+    }
+    else
+    {
+      USB_SERIAL_PRINTF("Reed state left as is - not recognised neopixel code: %d\n", neopixelSerialByteRead);
     }
   }
+  return currentReedState;
 }
 
   /*
@@ -261,12 +275,12 @@ bool checkForValidPreambleOnUplink()
     char  preambleMBJ[preambleMBJSize] = "Preamble MBJ: ";
     char* nextCharIndexForSerialOutput = preambleMBJ + strlen(preambleMBJ);
 
-    while ((MAKO_GOPRO_SERIAL.available() || 
-            !MAKO_GOPRO_SERIAL.available() && millis() < uplinkLingerTimeoutAt) && 
+    while ((serial_mako_gopro.available() || 
+            !serial_mako_gopro.available() && millis() < uplinkLingerTimeoutAt) && 
             *nextByteToFind != 0)
     {
       // throw away trash bytes from half-duplex clash - always present
-      char next = MAKO_GOPRO_SERIAL.read();
+      char next = serial_mako_gopro.read();
       if (next == *nextByteToFind)
       {
         if (writeTelemetryLogToSerial)
@@ -304,11 +318,11 @@ bool checkForValidPreambleOnUplink()
     if (*nextByteToFind == 0)
     {
       // found an MBJ now find an AEJ, ignoring any other MBJs
-     while ((MAKO_GOPRO_SERIAL.available() || 
-            !MAKO_GOPRO_SERIAL.available() && millis() < uplinkLingerTimeoutAt) && 
+     while ((serial_mako_gopro.available() || 
+            !serial_mako_gopro.available() && millis() < uplinkLingerTimeoutAt) && 
             *nextSecondSegmentByteToFind != 0)
      {
-        char next = MAKO_GOPRO_SERIAL.read();
+        char next = serial_mako_gopro.read();
         if (next == *nextSecondSegmentByteToFind)
         {
           if (writeTelemetryLogToSerial)
@@ -398,13 +412,13 @@ bool populateHeadWithMakoTelemetry(BlockHeader& headBlock, const bool validPream
     uint32_t endWait = millis() + maxWaitOneByteMS;
 
     // 3.1a Read the uplink message from Serial into the blockBuffer
-    while ((nextBlockByte-blockBuffer) < headMaxPayloadSize && (MAKO_GOPRO_SERIAL.available() || millis() < endWait))
+    while ((nextBlockByte-blockBuffer) < headMaxPayloadSize && (serial_mako_gopro.available() || millis() < endWait))
     {
       // must only listen for data when not sending gps data.
       // after send of gps must flush rx buffer
-      if (MAKO_GOPRO_SERIAL.available())
+      if (serial_mako_gopro.available())
       {
-        *(nextBlockByte++) = MAKO_GOPRO_SERIAL.read();
+        *(nextBlockByte++) = serial_mako_gopro.read();
         endWait = millis() + maxWaitOneByteMS;
       }
     }
@@ -920,7 +934,7 @@ const char* fake_no_fix = "$GPRMC,235316.000,A,4003.9040,N,10512.5792,W,0.09,144
 
 void sendFakeGPSData_No_Fix()
 {
-  MAKO_GOPRO_SERIAL.write(fake_no_fix);
+  serial_mako_gopro.write(fake_no_fix);
   delay(100);
 }
 
@@ -928,7 +942,7 @@ const char* fake_no_gps = "$GPRMC,092204.999,A,4250.5589,S,14718.5084,E,0.00,89.
 
 void sendFakeGPSData_No_GPS()
 {
-  MAKO_GOPRO_SERIAL.write(fake_no_gps);
+  serial_mako_gopro.write(fake_no_gps);
   delay(100);
 }
 
