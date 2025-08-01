@@ -35,7 +35,7 @@ extern const uint32_t MAP_HTML_SIZE;
 #define OLED_DIN_MOSI_SDA_BLUE      35  // Standard Arduino Hardware SPI MOSI for Pro S3
 
 #define OLED_CS_ADA_WHITE          "XX" // undefined currently
-#define OLED_RST_ADA_GREEN          0   // Strapping Pin - but we know nothing will pull low at boot so ok.
+#define OLED_RST_ADA_GREEN          42  // May not be needed - can also use 0 Strapping Pin - we know nothing will pull low at boot so ok. Could also share with SPI reset line for wide oled.
 U8G2_SSD1322_NHD_256X64_F_4W_HW_SPI wideOLEDDisplay(U8G2_R0, OLED_CS_ORANGE, OLED_DC_PURPLE, OLED_RST_BROWN);
 
 // hardware SPI
@@ -260,7 +260,7 @@ uint32_t uplinkRxMicroSeconds = 0;                      // Latency between end o
 uint32_t uplinkMessageListenTimer = 0;                  // Latency processing GPS message, send to mako and valid msg received from Mako.
 
 const int8_t maxPingAttempts = 1;
-int32_t checkInternetConnectivityDutyCycle = 10000; // 30 seconds between each check
+int32_t checkInternetConnectivityDutyCycle = 10000; // 10 seconds between each check
 
 const uint16_t pipelineBackedUpLength = 10;
 
@@ -439,8 +439,8 @@ void dumpHeapUsage(const char* msg)
 void toggleStatusLED() { statusLED = !statusLED; ProS3.setPixelPower(statusLED); ProS3.writePixel(); }
 void statusLEDOn()     { statusLED = true;       ProS3.setPixelPower(statusLED); ProS3.writePixel(); }
 void statusLEDOff()    { statusLED = false;      ProS3.setPixelPower(statusLED); ProS3.writePixel(); }
-void statusLEDColour() { ProS3.setPixelColor(128,128,0); }
-
+void statusLEDColourYellow() { ProS3.setPixelColor(128,128,0); }
+void statusLEDColourRed() { ProS3.setPixelColor(255,0,0); }
 
 TaskHandle_t mainTaskHandle = nullptr;
 BaseType_t mainTaskCoreId = 0;
@@ -477,6 +477,7 @@ bool testLgfxAdafruitDisplay = false;
 bool useGsDisplayManager = true;
 bool useLxDisplayManager = false;
 
+// ################### START UART SERIAL CONFIGURATION ############################
 #define UART_NUMBER_LANTERN_NEOPIXELS  0
 #define LANTERN_NEOPIXELS_ARDUINO_BAUD_RATE 9600
 #define LANTERN_NEOPIXELS_TX_GPIO 40
@@ -504,6 +505,8 @@ HardwareSerial serial_gps(UART_NUMBER_GPS);
 #define MAKO_GOPRO_TX_GPIO 43
 #define MAKO_GOPRO_RX_GPIO 44
 HardwareSerial serial_mako_gopro(UART_NUMBER_MAKO_GOPRO);
+
+// ################### END UART SERIAL CONFIGURATION ############################
 
 void initialiseUARTS()
 {
@@ -583,8 +586,10 @@ uint8_t latestLanternReedState = 0;
 
 bool haltAllProcessingDuringOTAUpload = false;
 
-void disableFeaturesForOTA()
+void prepareSystemForOTA()
 {
+  haltAllProcessingDuringOTAUpload = true;
+
   enableConnectToPrivateMQTT = false;
   enableUploadToPrivateMQTT = false;
   privateMQTT.setEnabled(false, false);
@@ -598,25 +603,10 @@ void disableFeaturesForOTA()
   serial_gps.end();
   serial_mako_gopro.end();
   serial_lantern_neopixels.end();
-
-  privateMQTT.disconnect();
   
-  statusLEDOn();
-
-  haltAllProcessingDuringOTAUpload = true;
-
-  dumpHeapUsage("Disabled OTA stats: ");
+  statusLEDColourRed();
 
   telemetryPipeline.teardown();
-
-  dumpHeapUsage("Torn Down Telemetry Pipeline: ");
-
-  #ifdef USE_WEBSERIAL
-    ws.closeAll();          // close all websocket connections for test page
-    WebSerial.closeAll();   // close all websocket connetions for WebSerial
-
-    dumpHeapUsage("Closed Web Sockets and Web Serial : ");
-  #endif
 }
 
 void sendLemonStatus(const e_lemon_status status)
@@ -635,7 +625,7 @@ void setup()
 
   ProS3.begin();
   USB_SERIAL_PRINTF("=== MAIN SETUP START ===\n");
-  statusLEDColour();
+  statusLEDColourYellow();
   statusLEDOn();
 
   if (useLxDisplayManager)
@@ -689,6 +679,7 @@ void setup()
   networkManager.setTelemetryPipeline(&telemetryPipeline);
   networkManager.setGetStatsCallback([]() { return getStats(); });
   networkManager.setIsDevNetworkCallback([]() { return devNetworkInUse(); });
+  networkManager.setPrepareEntireSystemForOTA([]() { prepareSystemForOTA(); });
   networkManager.begin();
 
   USB_SERIAL_PRINTF("sizeof LemonTelemetry: %lu\n",getSizeOfLemonTelemetryForStorage());

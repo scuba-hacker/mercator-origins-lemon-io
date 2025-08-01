@@ -424,8 +424,8 @@ bool NetworkManager::setupOTAWebServer(const char* _ssid, const char* _password,
     int count = timeout / progressStep;
     while (WiFi.status() != WL_CONNECTED && --count > 0) {
         // check for cancellation button - top button.
-        if (updateButtonsAndBuzzerCallback)
-            updateButtonsAndBuzzerCallback();
+        if (updateButtonsCallback)
+            updateButtonsCallback();
 
         // Note: Button checking would need to be injected via callback
         // if (p_primaryButton->isPressed()) {
@@ -474,8 +474,8 @@ bool NetworkManager::setupOTAWebServer(const char* _ssid, const char* _password,
             delay(2000);
             connected = true;
             
-            if (updateButtonsAndBuzzerCallback)
-                updateButtonsAndBuzzerCallback();
+            if (updateButtonsCallback)
+                updateButtonsCallback();
         }
     }
 
@@ -854,9 +854,7 @@ char* NetworkManager::getMQTTPayloadBuffer() {
     return privateMQTT->getPayloadBuffer();
 }
 
-void NetworkManager::disableFeaturesForOTA() {
-    // Note: Feature disabling would need to be done via callbacks
-    haltAllProcessingDuringOTAUpload = true;
+void NetworkManager::prepareNetworkForOTA() {
     privateMQTT->disconnect();
     
     if (ws) {
@@ -900,7 +898,10 @@ void NetworkManager::uploadOTABeginCallback() {
     
     displayManager.display.sendBuffer();
     
-    disableFeaturesForOTA();
+    prepareNetworkForOTA();
+
+    if (prepareEntireSystemForOTA)
+        prepareEntireSystemForOTA();
 }
 
 void NetworkManager::uploadOTAProgressCallback(size_t progress, size_t total) {

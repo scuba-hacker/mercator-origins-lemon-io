@@ -145,9 +145,9 @@ private:
     // External dependencies (injected)
     TelemetryPipeline* telemetryPipeline;
     std::function<String()> getStatsCallback;
-    std::function<void(const char*)> sendLemonStatusCallback;
-    std::function<void()> updateButtonsAndBuzzerCallback;
+    std::function<void()> updateButtonsCallback;
     std::function<bool()> isDevNetworkCallback;
+    std::function<void()> prepareEntireSystemForOTA;
     
     // Private helper methods
     void initWebSocket();
@@ -156,7 +156,7 @@ private:
     void onWebSocketEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type, void *arg, uint8_t *data, size_t len);
     void webSerialReceiveMessage(uint8_t *data, size_t len);
     void setupWebServerRoutes();
-    void disableFeaturesForOTA();
+    void prepareNetworkForOTA();
     
     // Static callback wrappers for WiFi events
     static void wifiStationConnectedWrapper(WiFiEvent_t event, WiFiEventInfo_t info);
@@ -189,6 +189,7 @@ public:
     void setTelemetryPipeline(TelemetryPipeline* pipeline) { telemetryPipeline = pipeline; }
     void setGetStatsCallback(std::function<String()> callback);
     void setIsDevNetworkCallback(std::function<bool()> callback) { isDevNetworkCallback = callback; }
+    void setPrepareEntireSystemForOTA(std::function<void()> callback) { prepareEntireSystemForOTA = callback; }
     
     // Main networking functions
     bool connectToWiFiAndInitOTA(const bool wifiOnly, int repeatScanAttempts);

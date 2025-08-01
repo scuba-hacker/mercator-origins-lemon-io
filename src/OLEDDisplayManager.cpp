@@ -328,6 +328,8 @@ void OLEDWideDisplayManager::displayStatusScreen(
     const String& ipAddress, uint32_t mqttUploads, bool wifiConnected,
     const String& wifiSSID, bool dnsConnected, bool ipConnected, bool mqttConnected, uint8_t latestLanternReedState) {
     
+    char lineBuffer[128];
+
     // Block status display updates during OTA mode
     if (otaModeActive) {
         return;
@@ -354,27 +356,28 @@ void OLEDWideDisplayManager::displayStatusScreen(
         y += lineHeight;
     } else {
         String gpsStatus = hasGPSFix ? "GPS FIX" : "NO FIX";
+
         drawStatusIndicator(leftX, y, "GPS", hasGPSFix, gpsStatus);
         y += lineHeight;
-        
+
         // GPS message statistics
         safeDrawStr(leftX, y, ("MSG:" + String(gpsMessagesReceived)).c_str());
         y += lineHeight;
         
-        safeDrawStr(leftX, y, ("FIX:" + String(gpsFixes)).c_str());
+        // GPS quality
+        if (hasGPSFix) {
+            snprintf(lineBuffer, sizeof(lineBuffer), "FIX:%u SAT:%u HDOP:%.1f", gpsFixes, gpsSatellites, gpsHdop);
+        }
+        else {
+            snprintf(lineBuffer, sizeof(lineBuffer), "FIX:%u SAT:- HDOP:-", gpsFixes);
+        }
+
+        safeDrawStr(leftX, y, lineBuffer);
         y += lineHeight;
         
         if (gpsBadChecksum > 0 || gpsBadLength > 0) {
             safeDrawStr(leftX, y, ("ERR:" + String(gpsBadChecksum + gpsBadLength)).c_str());
             y += lineHeight;
-        }
-        
-        // GPS quality
-        if (hasGPSFix) {
-            safeDrawStr(leftX, y, ("SAT:" + String((int)gpsSatellites)).c_str());
-            y += lineHeight;
-            
-            safeDrawStr(leftX, y, ("HDOP:" + String(gpsHdop, 1)).c_str());
         }
     }
     
@@ -404,9 +407,8 @@ void OLEDWideDisplayManager::displayStatusScreen(
     y += lineHeight;
 
     // should change any other string concatenation to snprintf above
-    char reedDisplay[32];
-    snprintf(reedDisplay, sizeof(reedDisplay), "Reed:%u", latestLanternReedState);
-    safeDrawStr(rightX, y, reedDisplay);
+    snprintf(lineBuffer, sizeof(lineBuffer), "Reed:%u", latestLanternReedState);
+    safeDrawStr(rightX, y, lineBuffer);
     y += lineHeight;
     
     display.sendBuffer();
