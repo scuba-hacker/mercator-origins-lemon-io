@@ -35,8 +35,40 @@ extern const uint32_t MAP_HTML_SIZE;
 #define OLED_DIN_MOSI_SDA_BLUE      35  // Standard Arduino Hardware SPI MOSI for Pro S3
 
 #define OLED_CS_ADA_WHITE          "XX" // undefined currently
-#define OLED_RST_ADA_GREEN          42  // May not be needed - can also use 0 Strapping Pin - we know nothing will pull low at boot so ok. Could also share with SPI reset line for wide oled.
+#define OLED_RST_ADA_GREEN          37  // May not be needed - can also use 0 Strapping Pin - we know nothing will pull low at boot so ok. Could also share with SPI reset line for wide oled.
 U8G2_SSD1322_NHD_256X64_F_4W_HW_SPI wideOLEDDisplay(U8G2_R0, OLED_CS_ORANGE, OLED_DC_PURPLE, OLED_RST_BROWN);
+
+// ################### START UART SERIAL CONFIGURATION ############################
+#define UART_NUMBER_LANTERN_NEOPIXELS  0
+#define LANTERN_NEOPIXELS_ARDUINO_BAUD_RATE 9600
+#define LANTERN_NEOPIXELS_TX_GPIO 40
+#define LANTERN_NEOPIXELS_RX_GPIO 41
+HardwareSerial serial_lantern_neopixels(UART_NUMBER_LANTERN_NEOPIXELS);
+
+#define UART_NUMBER_GPS    1
+#define GPS_BAUD_RATE      9600
+#define GPS_TX_YELLOW_GPIO 39
+#define GPS_RX_WHITE_GPIO  38
+
+HardwareSerial serial_gps(UART_NUMBER_GPS);
+
+// ******** Tx = GPIO2 Max Speed Tests ********
+// GPIO2 Tx works for 57600, 71000, 91000, 576000
+// at 1,700,000 getting about 10% bad msgs - 5% missing uplinks and 5% bad length uplinks (may help to have a small pause before sending response)
+// at 2,100,000 getting about 14% bad msgs -  7% missing uplinks and 7% bad length uplinks
+// ^^^^ add 3ms linger time before mako replying to lemon to get rid of all bad messages at 2,100,000
+// ^^^^^ probably also works at 1,700,000
+// Other rates to try which did work with tx only to Mako when not expecting a reply: 
+//    922190, 1100000,1500000,1900000
+// rates that did not work TO mako prior to changing reply to wired from IR LED:
+//    921600, 1800000
+#define UART_NUMBER_MAKO_GOPRO   2
+#define MAKO_UPLINK_BAUD_RATE    57600    // max working test so far: 2,100,000
+#define MAKO_GOPRO_TX_BLUE_GPIO  43       // marked TX on board
+#define MAKO_GOPRO_RX_GREEN_GPIO 44       // marked RX on board
+HardwareSerial serial_mako_gopro(UART_NUMBER_MAKO_GOPRO);
+
+// ################### END UART SERIAL CONFIGURATION ############################
 
 // hardware SPI
 //Adafruit_SSD1327 display(128, 128, &SPI, OLED_DC_PURPLE, OLED_RST_ADA_GREEN, OLED_CS_ADA_WHITE);
@@ -477,37 +509,6 @@ bool testLgfxAdafruitDisplay = false;
 bool useGsDisplayManager = true;
 bool useLxDisplayManager = false;
 
-// ################### START UART SERIAL CONFIGURATION ############################
-#define UART_NUMBER_LANTERN_NEOPIXELS  0
-#define LANTERN_NEOPIXELS_ARDUINO_BAUD_RATE 9600
-#define LANTERN_NEOPIXELS_TX_GPIO 40
-#define LANTERN_NEOPIXELS_RX_GPIO 41
-HardwareSerial serial_lantern_neopixels(UART_NUMBER_LANTERN_NEOPIXELS);
-
-#define UART_NUMBER_GPS 1
-#define GPS_BAUD_RATE 9600
-#define GPS_TX_GPIO 39
-#define GPS_RX_GPIO 38
-HardwareSerial serial_gps(UART_NUMBER_GPS);
-
-// ******** Tx = GPIO2 Max Speed Tests ********
-// GPIO2 Tx works for 57600, 71000, 91000, 576000
-// at 1,700,000 getting about 10% bad msgs - 5% missing uplinks and 5% bad length uplinks (may help to have a small pause before sending response)
-// at 2,100,000 getting about 14% bad msgs -  7% missing uplinks and 7% bad length uplinks
-// ^^^^ add 3ms linger time before mako replying to lemon to get rid of all bad messages at 2,100,000
-// ^^^^^ probably also works at 1,700,000
-// Other rates to try which did work with tx only to Mako when not expecting a reply: 
-//    922190, 1100000,1500000,1900000
-// rates that did not work TO mako prior to changing reply to wired from IR LED:
-//    921600, 1800000
-#define UART_NUMBER_MAKO_GOPRO 2
-#define MAKO_UPLINK_BAUD_RATE 57600       // max working test so far: 2,100,000
-#define MAKO_GOPRO_TX_GPIO 43
-#define MAKO_GOPRO_RX_GPIO 44
-HardwareSerial serial_mako_gopro(UART_NUMBER_MAKO_GOPRO);
-
-// ################### END UART SERIAL CONFIGURATION ############################
-
 void initialiseUARTS()
 {
   // Prevent UART0 interference from bootloader / panic handler
@@ -526,11 +527,11 @@ void initialiseUARTS()
   uart_set_pin(UART_NUM_0, LANTERN_NEOPIXELS_TX_GPIO, LANTERN_NEOPIXELS_RX_GPIO, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
 
   // UART1 for receiving data from GPS
-  serial_gps.begin(GPS_BAUD_RATE, SERIAL_8N1, GPS_RX_GPIO, GPS_TX_GPIO);   // pin 33=rx (white M5), pin 32=tx (yellow M5), specifies the grove SCL/SDA pins for Rx/Tx
+  serial_gps.begin(GPS_BAUD_RATE, SERIAL_8N1, GPS_RX_WHITE_GPIO, GPS_TX_YELLOW_GPIO);   // pin 33=rx (white M5), pin 32=tx (yellow M5), specifies the grove SCL/SDA pins for Rx/Tx
 
   // UART2 for sending/receiving data to/from GoPro
   serial_mako_gopro.setRxBufferSize(1024); // was 256 - must set before begin
-  serial_mako_gopro.begin(MAKO_UPLINK_BAUD_RATE, SERIAL_8N2, MAKO_GOPRO_RX_GPIO, MAKO_GOPRO_TX_GPIO);
+  serial_mako_gopro.begin(MAKO_UPLINK_BAUD_RATE, SERIAL_8N2, MAKO_GOPRO_RX_GREEN_GPIO, MAKO_GOPRO_TX_BLUE_GPIO);
 
   // NOTES FOR UPGRADING RS485 Interface linking Mako <--> Lemon
   // If using a MAX485 board which exposes driver enable control DE / RE then can use this mode which would be better than now
