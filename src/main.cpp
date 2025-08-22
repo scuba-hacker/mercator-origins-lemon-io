@@ -35,19 +35,21 @@ extern const uint32_t MAP_HTML_SIZE;
 #define OLED_DIN_MOSI_SDA_BLUE      35  // Standard Arduino Hardware SPI MOSI for Pro S3
 
 #define OLED_CS_ADA_WHITE          "XX" // undefined currently
-#define OLED_RST_ADA_GREEN          37  // May not be needed - can also use 0 Strapping Pin - we know nothing will pull low at boot so ok. Could also share with SPI reset line for wide oled.
+#define OLED_RST_ADA_BROWN          37  // May not be needed - can also use 0 Strapping Pin - we know nothing will pull low at boot so ok. Could also share with SPI reset line for wide oled.
 U8G2_SSD1322_NHD_256X64_F_4W_HW_SPI wideOLEDDisplay(U8G2_R0, OLED_CS_ORANGE, OLED_DC_PURPLE, OLED_RST_BROWN);
+
+#define RANDOM_NUMBER_ADC_GPIO_13 A12       // no connection required - floating
 
 // ################### START UART SERIAL CONFIGURATION ############################
 #define UART_NUMBER_LANTERN_NEOPIXELS  0
 #define LANTERN_NEOPIXELS_ARDUINO_BAUD_RATE 9600
-#define LANTERN_NEOPIXELS_TX_GPIO 40
-#define LANTERN_NEOPIXELS_RX_GPIO 41
+#define LANTERN_NEOPIXELS_TX_YELLOW_GPIO 40                             // Black wire connected to Arduino RX Pin
+#define LANTERN_NEOPIXELS_RX_ORANGE_GPIO 41                             // RED wire connected to Arduino TX Pin
 HardwareSerial serial_lantern_neopixels(UART_NUMBER_LANTERN_NEOPIXELS);
 
 #define UART_NUMBER_GPS    1
 #define GPS_BAUD_RATE      9600
-#define GPS_TX_YELLOW_GPIO 39
+#define GPS_TX_GREY_GPIO   39
 #define GPS_RX_WHITE_GPIO  38
 
 HardwareSerial serial_gps(UART_NUMBER_GPS);
@@ -71,11 +73,11 @@ HardwareSerial serial_mako_gopro(UART_NUMBER_MAKO_GOPRO);
 // ################### END UART SERIAL CONFIGURATION ############################
 
 // hardware SPI
-//Adafruit_SSD1327 display(128, 128, &SPI, OLED_DC_PURPLE, OLED_RST_ADA_GREEN, OLED_CS_ADA_WHITE);
+//Adafruit_SSD1327 display(128, 128, &SPI, OLED_DC_PURPLE, OLED_RST_ADA_BROWN, OLED_CS_ADA_WHITE);
 
 // I2C - check default pins for ProS3 are matching the I2C connector on top of board
-// SDA = 8, SCL = 9, resetpin = OLED_RST_ADA_GREEN, preclk = 1000000, postclk = 100000
-Adafruit_SSD1327 adafruitDisplay(128, 128, &Wire, OLED_RST_ADA_GREEN, 1000000);
+// SDA = 8, SCL = 9, resetpin = OLED_RST_ADA_BROWN, preclk = 1000000, postclk = 100000
+Adafruit_SSD1327 adafruitDisplay(128, 128, &Wire, OLED_RST_ADA_BROWN, 1000000);
 LGFX_I2C_Adafruit_SSD1327_128x128_Grey_OLE lgfxAdafruitDisplay;
 
 // Create display manager instance (256px wide, 4 lines max)
@@ -112,7 +114,7 @@ extern const char* isrg_root_ca;
 #include <ESP32Ping.h>
 
 #define DEBOUNCE_MS 10
-#define RED_BUTTON_GPIO 42
+#define RED_BUTTON_GPIO 42    // Not currently used
 Button redButton = Button(RED_BUTTON_GPIO, true, DEBOUNCE_MS);
 
 #ifdef ENABLE_TELEGRAM_BOT_AT_COMPILE_TIME
@@ -296,7 +298,7 @@ int32_t checkInternetConnectivityDutyCycle = 10000; // 10 seconds between each c
 
 const uint16_t pipelineBackedUpLength = 10;
 
-const uint8_t LEAK_DETECTOR_GPIO = 7;
+const uint8_t LEAK_DETECTOR_GPIO = 7;       // Not currently in use
 
 Button* p_primaryButton = nullptr;
 void updateButtonsAndBuzzer();
@@ -523,11 +525,11 @@ void initialiseUARTS()
 
   // Begin UART0 for serial comms with Lantern Arduino Nano Every for Neo-Pixel Lights and Reed Relay Control
   // Must use the uart_set_pin as well on ESP32-S3. Remove it and Rx will not work.
-  serial_lantern_neopixels.begin(LANTERN_NEOPIXELS_ARDUINO_BAUD_RATE, SERIAL_8N1, LANTERN_NEOPIXELS_RX_GPIO, LANTERN_NEOPIXELS_TX_GPIO);
-  uart_set_pin(UART_NUM_0, LANTERN_NEOPIXELS_TX_GPIO, LANTERN_NEOPIXELS_RX_GPIO, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+  serial_lantern_neopixels.begin(LANTERN_NEOPIXELS_ARDUINO_BAUD_RATE, SERIAL_8N1, LANTERN_NEOPIXELS_RX_ORANGE_GPIO, LANTERN_NEOPIXELS_TX_YELLOW_GPIO);
+  uart_set_pin(UART_NUM_0, LANTERN_NEOPIXELS_TX_YELLOW_GPIO, LANTERN_NEOPIXELS_RX_ORANGE_GPIO, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
 
   // UART1 for receiving data from GPS
-  serial_gps.begin(GPS_BAUD_RATE, SERIAL_8N1, GPS_RX_WHITE_GPIO, GPS_TX_YELLOW_GPIO);   // pin 33=rx (white M5), pin 32=tx (yellow M5), specifies the grove SCL/SDA pins for Rx/Tx
+  serial_gps.begin(GPS_BAUD_RATE, SERIAL_8N1, GPS_RX_WHITE_GPIO, GPS_TX_GREY_GPIO);
 
   // UART2 for sending/receiving data to/from GoPro
   serial_mako_gopro.setRxBufferSize(1024); // was 256 - must set before begin
@@ -555,11 +557,11 @@ void testTightSerialRxLoop()
   Serial.flush();
   delay(500);
 
-  serial_lantern_neopixels.begin(LANTERN_NEOPIXELS_ARDUINO_BAUD_RATE, SERIAL_8N1, LANTERN_NEOPIXELS_RX_GPIO, LANTERN_NEOPIXELS_TX_GPIO);
-  uart_set_pin(UART_NUM_0, LANTERN_NEOPIXELS_TX_GPIO, LANTERN_NEOPIXELS_RX_GPIO, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+  serial_lantern_neopixels.begin(LANTERN_NEOPIXELS_ARDUINO_BAUD_RATE, SERIAL_8N1, LANTERN_NEOPIXELS_RX_ORANGE_GPIO, LANTERN_NEOPIXELS_TX_YELLOW_GPIO);
+  uart_set_pin(UART_NUM_0, LANTERN_NEOPIXELS_TX_YELLOW_GPIO, LANTERN_NEOPIXELS_RX_ORANGE_GPIO, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
   
   USB_SERIAL_PRINTF("UART1 configured: RX=GPIO%d, TX=GPIO%d, Baud=%d\n",
-                    LANTERN_NEOPIXELS_RX_GPIO, LANTERN_NEOPIXELS_TX_GPIO, LANTERN_NEOPIXELS_ARDUINO_BAUD_RATE);
+                    LANTERN_NEOPIXELS_RX_ORANGE_GPIO, LANTERN_NEOPIXELS_TX_YELLOW_GPIO, LANTERN_NEOPIXELS_ARDUINO_BAUD_RATE);
   uint32_t nextTestMsg = 500;
   while(1)
   {
@@ -620,7 +622,7 @@ void sendLemonStatus(const e_lemon_status status)
 
 void setup()
 {
-  randomSeed(analogRead(A12));  // Use a floating analog pin for entropy  // THIS IS GPIO 13 !!!!
+  randomSeed(analogRead(RANDOM_NUMBER_ADC_GPIO_13));  // Use a floating analog pin for entropy - for OLED screen saver random movements
 
   initialiseUARTS();
 
@@ -698,9 +700,9 @@ void setup()
 
   statusLEDOff();
 
-  serial_lantern_neopixels.begin(LANTERN_NEOPIXELS_ARDUINO_BAUD_RATE, SERIAL_8N1, LANTERN_NEOPIXELS_RX_GPIO, LANTERN_NEOPIXELS_TX_GPIO);
+  serial_lantern_neopixels.begin(LANTERN_NEOPIXELS_ARDUINO_BAUD_RATE, SERIAL_8N1, LANTERN_NEOPIXELS_RX_ORANGE_GPIO, LANTERN_NEOPIXELS_TX_YELLOW_GPIO);
   USB_SERIAL_PRINTF("UART1 configured: RX=GPIO%d, TX=GPIO%d, Baud=%d\n",
-                    LANTERN_NEOPIXELS_RX_GPIO, LANTERN_NEOPIXELS_TX_GPIO, LANTERN_NEOPIXELS_ARDUINO_BAUD_RATE);
+                    LANTERN_NEOPIXELS_RX_ORANGE_GPIO, LANTERN_NEOPIXELS_TX_YELLOW_GPIO, LANTERN_NEOPIXELS_ARDUINO_BAUD_RATE);
 
   sendLemonStatus(LC_STARTUP);
 
