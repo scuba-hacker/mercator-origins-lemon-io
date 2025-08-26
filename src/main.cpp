@@ -66,6 +66,21 @@ HardwareSerial serial_lantern_neopixels(UART_NUMBER_LANTERN_NEOPIXELS);
 #define GPS_TX_GREY_GPIO   39
 #define GPS_RX_WHITE_GPIO  38
 
+static constexpr int GPS_RX_BUFFER_SIZE = 1024;
+static constexpr size_t GPS_RX_READ_CHUNK = 256;
+static constexpr int GPS_QUEUE_SIZE = 10;
+static constexpr TickType_t GPS_RX_TIMEOUT = pdMS_TO_TICKS(100);
+
+QueueHandle_t gpsQueue = nullptr;
+int gpsBytesReceived = 0;
+
+// Data structure to send via queue
+struct GPSDataPacket
+{
+  uint8_t data[GPS_RX_READ_CHUNK];
+  int length;
+};
+
 HardwareSerial serial_gps(UART_NUMBER_GPS);
 
 // ******** Tx = GPIO2 Max Speed Tests ********
@@ -169,11 +184,30 @@ const bool publishMQTTTestMessages = true;
 uint8_t statusLED = STATUS_LED_OFF;
 
 // ################## START LANTERN NEO-PIXEL CONFIGURATION
-enum e_display_brightness {OFF_DISPLAY = 0, DIM_DISPLAY = 25, HALF_BRIGHT_DISPLAY = 50, BRIGHTEST_DISPLAY = 100};
+enum e_display_brightness
+{
+  OFF_DISPLAY = 0,
+  DIM_DISPLAY = 25,
+  HALF_BRIGHT_DISPLAY = 50,
+  BRIGHTEST_DISPLAY = 100
+};
 const e_display_brightness ScreenBrightness = BRIGHTEST_DISPLAY;
 
-enum e_lemon_status{LC_NONE=0, LC_STARTUP=1, LC_SEARCH_WIFI=2, LC_FOUND_WIFI=3, LC_NO_WIFI=4, LC_NO_GPS=5, 
-                    LC_NO_FIX=6, LC_GOOD_FIX=7, LC_ALL_OFF=8, LC_DIVE_IN_PROGRESS=64, LC_NO_STATUS_UPDATE=127, LC_NO_INTERNET=128};
+enum e_lemon_status
+{
+  LC_NONE = 0,
+  LC_STARTUP = 1,
+  LC_SEARCH_WIFI = 2,
+  LC_FOUND_WIFI = 3,
+  LC_NO_WIFI = 4,
+  LC_NO_GPS = 5,
+  LC_NO_FIX = 6,
+  LC_GOOD_FIX = 7,
+  LC_ALL_OFF = 8,
+  LC_DIVE_IN_PROGRESS = 64,
+  LC_NO_STATUS_UPDATE = 127,
+  LC_NO_INTERNET = 128
+};
 
 e_lemon_status lemonStatus = LC_STARTUP;
 // ################## END LANTERN NEO-PIXEL CONFIGURATION
@@ -242,13 +276,27 @@ const uint32_t maxTimeBeforeAlertNoGPSByte = 2000;
 uint32_t timeNextGoodFixExpectedBy = 0;
 uint32_t timeNextGPSByteExpectedBy = 0;
 
-enum e_user_action{NO_USER_ACTION=0x0000, HIGHLIGHT_USER_ACTION=0x0001,RECORD_BREADCRUMB_TRAIL_USER_ACTION=0x0002,LEAK_DETECTED_USER_ACTION=0x0004};
+enum e_user_action
+{
+  NO_USER_ACTION = 0x0000,
+  HIGHLIGHT_USER_ACTION = 0x0001,
+  RECORD_BREADCRUMB_TRAIL_USER_ACTION = 0x0002,
+  LEAK_DETECTED_USER_ACTION = 0x0004
+};
 
 // Mask with 0x01 to see if successful
-enum e_q_upload_status {Q_SUCCESS=1, Q_SUCCESS_SEND=3, Q_SUCCESS_NO_SEND=5, Q_SUCCESS_NOT_ENABLED=7, 
-                        Q_NO_WIFI_CONNECTION=8, Q_SERVER_CONNECT_ERROR=10,
-                        Q_MQTT_CLIENT_CONNECT_ERROR=12, Q_MQTT_CLIENT_SEND_ERROR=14, 
-                        Q_UNDEFINED_ERROR=254};
+enum e_q_upload_status
+{
+  Q_SUCCESS = 1,
+  Q_SUCCESS_SEND = 3,
+  Q_SUCCESS_NO_SEND = 5,
+  Q_SUCCESS_NOT_ENABLED = 7,
+  Q_NO_WIFI_CONNECTION = 8,
+  Q_SERVER_CONNECT_ERROR = 10,
+  Q_MQTT_CLIENT_CONNECT_ERROR = 12,
+  Q_MQTT_CLIENT_SEND_ERROR = 14,
+  Q_UNDEFINED_ERROR = 254
+};
 
 uint32_t fixCount = 0;
 uint32_t passedChecksumCount = 0;
@@ -520,6 +568,24 @@ bool testLgfxAdafruitDisplay = false;
 bool useGsDisplayManager = true;
 bool useLxDisplayManager = false;
 
+void gpsRxTask(void *arg)
+{
+  GPSDataPacket packet;
+  for (;;)
+  {
+    int bytesRead = uart_read_bytes(UART_NUMBER_GPS, packet.data, sizeof(packet.data), GPS_RX_TIMEOUT);
+    if (bytesRead > 0)
+    {
+      packet.length = bytesRead;
+      // Send packet to main loop via FreeRTOS queue (don't block if queue is full)
+      if (xQueueSend(gpsQueue, &packet, 0) != pdTRUE)
+      {
+        // Queue full - could increment a dropped packet counter here
+      }
+    }
+  }
+}
+
 void initialiseUARTS()
 {
   // Prevent UART0 interference from bootloader / panic handler
@@ -538,7 +604,16 @@ void initialiseUARTS()
   uart_set_pin(UART_NUM_0, LANTERN_NEOPIXELS_TX_YELLOW_GPIO, LANTERN_NEOPIXELS_RX_ORANGE_GPIO, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
 
   // UART1 for receiving data from GPS
+  serial_gps.setRxBufferSize(GPS_RX_BUFFER_SIZE); // must set before begin
   serial_gps.begin(GPS_BAUD_RATE, SERIAL_8N1, GPS_RX_WHITE_GPIO, GPS_TX_GREY_GPIO);
+
+  xTaskCreatePinnedToCore(gpsRxTask,
+                          "gpsRxTask",
+                          4096,    // stack size
+                          nullptr, // user parameters to pass to task
+                          6,       // Priority
+                          nullptr, // task handle
+                          0);      // core id
 
   // UART2 for sending/receiving data to/from GoPro
   serial_mako_gopro.setRxBufferSize(1024); // was 256 - must set before begin
@@ -612,6 +687,12 @@ void prepareSystemForOTA()
   writeLogToSerial = false;
   writeTelemetryLogToSerial = false;
 
+  if (gpsQueue != nullptr)
+  {
+    vQueueDelete(gpsQueue);
+    gpsQueue = nullptr;
+  }
+
   serial_gps.end();
   serial_mako_gopro.end();
   serial_lantern_neopixels.end();
@@ -639,6 +720,18 @@ void setup()
   USB_SERIAL_PRINTF("=== MAIN SETUP START ===\n");
   statusLEDColourYellow();
   statusLEDOn();
+
+  // Initialize GPS queue - 10 packets deep should be sufficient
+  gpsQueue = xQueueCreate(GPS_QUEUE_SIZE, sizeof(GPSDataPacket));
+  if (gpsQueue == nullptr)
+  {
+    USB_SERIAL_PRINTLN("Failed to create GPS queue!");
+    // Handle error appropriately
+  }
+  else
+  {
+    USB_SERIAL_PRINTLN("GPS queue created successfully");
+  }
 
   if (useLxDisplayManager)
   {
@@ -1061,99 +1154,97 @@ void loop()
   }
   
   // *************  START CODE FOR RECEIVING GPS MESSAGE
-  // Process GPS data - limit bytes per loop iteration to avoid blocking WebSocket updates
-  const int maxGPSBytesPerLoop = 1000; // Process max 50 bytes per loop iteration
-  int gpsDataBytesProcessed = 0;
-  
-  while (enableGPSRead && serial_gps.available() > 0 && gpsDataBytesProcessed < maxGPSBytesPerLoop)
+  GPSDataPacket gpsPacket;
+
+  if (enableGPSRead && xQueueReceive(gpsQueue, &gpsPacket, 0) == pdTRUE)
   {
-    char nextByte = serial_gps.read();
-    gpsDataBytesProcessed++; // Count processed bytes to limit loop iterations
-    
     // Update GPS device detection
     lastGPSByteTime = millis();
     hasGPSDevice = true;
 
-    if (gps.encode(nextByte))
+    uint32_t now = millis();
+    timeNextGPSByteExpectedBy = now + maxTimeBeforeAlertNoGPSByte;
+
+    for (int i = 0; i < gpsPacket.length; i++)
     {
-      uint32_t now = millis();
-      timeNextGPSByteExpectedBy = now + maxTimeBeforeAlertNoGPSByte;
-
-      // Must extract longitude and latitude for the updated flag to be set on next location update.
-      if (gps.location.isValid() && gps.location.isUpdated() && gps.isSentenceFix())
+      if (gps.encode(gpsPacket.data[i]))
       {
-        if (now > timeOfNextLemonStatus)
+        // Must extract longitude and latitude for the updated flag to be set on next location update.
+        if (gps.location.isValid() && gps.location.isUpdated() && gps.isSentenceFix())
         {
-          sendLemonStatus(LC_GOOD_FIX);
-          timeOfNextLemonStatus = now + lemonStatusDutyCycle;
-        }
+          if (now > timeOfNextLemonStatus)
+          {
+            sendLemonStatus(LC_GOOD_FIX);
+            timeOfNextLemonStatus = now + lemonStatusDutyCycle;
+          }
 
-        timeNextGoodFixExpectedBy = now + maxTimeBeforeAlertNoFix;
+          timeNextGoodFixExpectedBy = now + maxTimeBeforeAlertNoFix;
 
-        // only enter here on GPRMC and GPGGA msgs with M5 GPS unit, 0.5 sec between each message.
-        // GNRMC followed by GNGGA messages for NEO-6M, no perceptible gap between GNRMC and GNGGA.
-        // 1 second between updates on the same message type for M5.
-        // Only require uplink message for GGA.
+          // only enter here on GPRMC and GPGGA msgs with M5 GPS unit, 0.5 sec between each message.
+          // GNRMC followed by GNGGA messages for NEO-6M, no perceptible gap between GNRMC and GNGGA.
+          // 1 second between updates on the same message type for M5.
+          // Only require uplink message for GGA.
 
-        //////////////////////////////////////////////////////////
-        // send message to outgoing serial connection to mako gopro
-        serial_mako_gopro.write(customiseNMEASentence(gps.getSentence(), networkManager.getShowOnMapRequestIndex()));
-        consoleDownlinkMsgCount++;
+          //////////////////////////////////////////////////////////
+          // send message to outgoing serial connection to mako gopro
+          serial_mako_gopro.write(customiseNMEASentence(gps.getSentence(), networkManager.getShowOnMapRequestIndex()));
+          consoleDownlinkMsgCount++;
 
-        if (gps.isSentenceGGA())
-        {
-          processUplinkMessage = true;  // triggers listen for uplink msg
-          uplinkMessageListenTimer = millis();
-          downlinkSendMessageDurationMicroSeconds = micros();
-        }
-        
-        uint32_t newFixCount = gps.sentencesWithFix();
-        uint32_t newPassedChecksum = gps.passedChecksum();
-        uint32_t newFailedChecksum = gps.failedChecksum();
-        
-        // Update comprehensive GPS statistics
-        gpsMessagesReceived = newPassedChecksum + newFailedChecksum;
-        gpsFailedChecksumCount = newFailedChecksum;
-        
-        if (newFixCount > fixCount)
-        {
-          fixCount = newFixCount;
-          USB_SERIAL_PRINTF("\nFix: %lu Good GPS Msg: %lu Bad GPS Msg: %lu\n", fixCount, newPassedChecksum, gps.failedChecksum());
-        }
+          if (gps.isSentenceGGA())
+          {
+            processUplinkMessage = true; // triggers listen for uplink msg
+            uplinkMessageListenTimer = millis();
+            downlinkSendMessageDurationMicroSeconds = micros();
+          }
 
-        if (nofix_byte_loop_count > -1)
-        {
-          nofix_byte_loop_count = -1;
-        }
+          uint32_t newFixCount = gps.sentencesWithFix();
+          uint32_t newPassedChecksum = gps.passedChecksum();
+          uint32_t newFailedChecksum = gps.failedChecksum();
 
-        updateButtonsAndBuzzer();
+          // Update comprehensive GPS statistics
+          gpsMessagesReceived = newPassedChecksum + newFailedChecksum;
+          gpsFailedChecksumCount = newFailedChecksum;
 
-        if (newPassedChecksum <= passedChecksumCount)
-        {
-          // incomplete message received
-          return;
+          if (newFixCount > fixCount)
+          {
+            fixCount = newFixCount;
+            USB_SERIAL_PRINTF("\nFix: %lu Good GPS Msg: %lu Bad GPS Msg: %lu\n", fixCount, newPassedChecksum, gps.failedChecksum());
+          }
+
+          if (nofix_byte_loop_count > -1)
+          {
+            nofix_byte_loop_count = -1;
+          }
+
+          updateButtonsAndBuzzer();
+
+          if (newPassedChecksum <= passedChecksumCount)
+          {
+            // incomplete message received
+            return;
+          }
+          else
+          {
+            passedChecksumCount = newPassedChecksum;
+          }
+
+          populateCurrentLemonTelemetry(latestLemonTelemetry, gps);
         }
         else
         {
-          passedChecksumCount = newPassedChecksum;
+          if (nofix_byte_loop_count > -1)
+          {
+            // Bytes are being received but no valid location fix has been seen since startup
+            // Increment byte count shown until first fix received.
+            nofix_byte_loop_count++;
+            USB_SERIAL_PRINTLN("NO GPS FIX - BYTES BEING RECEIVED");
+          }
         }
-
-        populateCurrentLemonTelemetry(latestLemonTelemetry, gps);
       }
       else
       {
-        if (nofix_byte_loop_count > -1)
-        {
-          // Bytes are being received but no valid location fix has been seen since startup
-          // Increment byte count shown until first fix received.
-          nofix_byte_loop_count++;
-          USB_SERIAL_PRINTLN("NO GPS FIX - BYTES BEING RECEIVED");
-        }
+        // no byte received.
       }
-    }
-    else
-    {
-      // no byte received.
     }
   }
   // *************  END CODE FOR RECEIVING GPS MESSAGE
