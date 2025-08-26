@@ -1,3 +1,17 @@
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+bool writeLogToSerial = false;
+bool writeTelemetryLogToSerial = false; // writeLogToSerial must also be true if this is set to true
+
+// make sure this is disabled if writeLogToSerial is false
+// Uncomment to enable
+//#define USE_WEBSERIAL
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
 #include <Arduino.h>
 
 // rename the git file "mercator_secrets_template.c" to the filename below, filling in your wifi credentials etc.
@@ -130,13 +144,7 @@ Button redButton = Button(RED_BUTTON_GPIO, true, DEBOUNCE_MS);
 #define MERCATOR_ELEGANTOTA_LEMON_BANNER
 #define MERCATOR_OTA_DEVICE_LABEL "LEMON-IO" 
 
-// make sure this is disabled if writeLogToSerial is false
-//#define USE_WEBSERIAL
-
 // START FEATURE ENABLE FLAGS
-bool writeLogToSerial = true;
-bool writeTelemetryLogToSerial = false; // writeLogToSerial must also be true
-
 bool enableMQTTEncryption = true; // Set to true to use encrypted MQTT connections (port 8883, otherwise port 8887)
 
 bool enableReadUplinkComms = true;
@@ -284,7 +292,8 @@ float KBToPrivateMQTT = 0.0;
 float KBFromMako = 0.0;
 
 bool accumulateMissedMessageCount = false;    // start-up
-const uint32_t delayBeforeCountingMissedMessages = 60000; // Allow 60 second start-up before counting lost/missed messages
+// const uint32_t delayBeforeCountingMissedMessages = 60000; // Allow 60 second start-up before counting lost/missed messages
+const uint32_t delayBeforeCountingMissedMessages = 0; // Startup of Mako now so fast we shouldn't miss any messages at all
 
 const uint32_t uplinkMessageLingerPeriodMs = 30;   // max milliseconds to wait for Mako pre-amble to reply
 uint32_t uplinkLingerTimeoutAt = 0;
