@@ -2,7 +2,7 @@
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-bool writeLogToSerial = false;
+bool writeLogToSerial = true;
 bool writeTelemetryLogToSerial = false; // writeLogToSerial must also be true if this is set to true
 
 // make sure this is disabled if writeLogToSerial is false
@@ -97,6 +97,20 @@ HardwareSerial serial_gps(UART_NUMBER_GPS);
 #define MAKO_UPLINK_BAUD_RATE    57600    // max working test so far: 2,100,000
 #define MAKO_GOPRO_TX_BLUE_GPIO  43       // marked TX on board
 #define MAKO_GOPRO_RX_GREEN_GPIO 44       // marked RX on board
+
+static constexpr int MAKO_RX_BUFFER_SIZE = 1024;
+static constexpr size_t MAKO_RX_READ_CHUNK = 256;
+static constexpr int MAKO_QUEUE_SIZE = 10;            
+static constexpr TickType_t MAKO_RX_TIMEOUT = pdMS_TO_TICKS(100);
+
+QueueHandle_t makoQueue = nullptr;
+struct MakoDataPacket
+{
+    uint8_t data[MAKO_RX_READ_CHUNK];
+    int length;
+    uint32_t timestamp;  // Add timestamp for latency tracking
+};
+
 HardwareSerial serial_mako_gopro(UART_NUMBER_MAKO_GOPRO);
 
 // ################### END UART SERIAL CONFIGURATION ############################
@@ -158,6 +172,8 @@ Button redButton = Button(RED_BUTTON_GPIO, true, DEBOUNCE_MS);
 // Override ElegantOTA web page to have the Lemon banner graphic and Lemon-IO device label
 #define MERCATOR_ELEGANTOTA_LEMON_BANNER
 #define MERCATOR_OTA_DEVICE_LABEL "LEMON-IO" 
+
+bool haltAllProcessingDuringOTAUpload = false;
 
 // START FEATURE ENABLE FLAGS
 bool enableMQTTEncryption = true; // Set to true to use encrypted MQTT connections (port 8883, otherwise port 8887)
@@ -535,6 +551,8 @@ void statusLEDColourRed() { ProS3.setPixelColor(255,0,0); }
 
 TaskHandle_t mainTaskHandle = nullptr;
 BaseType_t mainTaskCoreId = 0;
+TaskHandle_t gpsTaskHandle = nullptr;
+TaskHandle_t makoTaskHandle = nullptr;
 
 uint32_t getSizeOfLemonTelemetryForStorage();
 class mqttConnectionTest
@@ -573,15 +591,50 @@ void gpsRxTask(void *arg)
   GPSDataPacket packet;
   for (;;)
   {
-    int bytesRead = uart_read_bytes(UART_NUMBER_GPS, packet.data, sizeof(packet.data), GPS_RX_TIMEOUT);
-    if (bytesRead > 0)
+    if (!haltAllProcessingDuringOTAUpload)
     {
-      packet.length = bytesRead;
-      // Send packet to main loop via FreeRTOS queue (don't block if queue is full)
-      if (xQueueSend(gpsQueue, &packet, 0) != pdTRUE)
+      int bytesRead = uart_read_bytes(UART_NUMBER_GPS, packet.data, sizeof(packet.data), GPS_RX_TIMEOUT);
+      if (bytesRead > 0)
       {
-        // Queue full - could increment a dropped packet counter here
+        packet.length = bytesRead;
+        // Send packet to main loop via FreeRTOS queue (don't block if queue is full)
+        if (xQueueSend(gpsQueue, &packet, 0) != pdTRUE)
+        {
+          // Queue full - could increment a dropped packet counter here
+        }
       }
+    }
+    else
+    {
+      delay(100);
+    }
+  }
+}
+
+void makoRxTask(void *arg)
+{
+  MakoDataPacket packet;
+  for (;;)
+  {
+    if (!haltAllProcessingDuringOTAUpload)
+    {
+      int bytesRead = uart_read_bytes(UART_NUMBER_MAKO_GOPRO, packet.data, sizeof(packet.data), MAKO_RX_TIMEOUT);
+      if (bytesRead > 0)
+      {
+        packet.length = bytesRead;
+        packet.timestamp = millis();  // Capture receive timestamp
+
+        // Send packet to main loop via FreeRTOS queue (don't block if queue is full)
+        if (xQueueSend(makoQueue, &packet, 0) != pdTRUE)
+        {
+            // Queue full - increment dropped packet counter
+            // Could add statistics tracking here
+        }
+      }
+    }
+    else
+    {
+      delay(100);
     }
   }
 }
@@ -612,12 +665,21 @@ void initialiseUARTS()
                           4096,    // stack size
                           nullptr, // user parameters to pass to task
                           6,       // Priority
-                          nullptr, // task handle
+                          &gpsTaskHandle, // task handle
                           0);      // core id
 
   // UART2 for sending/receiving data to/from GoPro
   serial_mako_gopro.setRxBufferSize(1024); // was 256 - must set before begin
   serial_mako_gopro.begin(MAKO_UPLINK_BAUD_RATE, SERIAL_8N2, MAKO_GOPRO_RX_GREEN_GPIO, MAKO_GOPRO_TX_BLUE_GPIO);
+
+  // Create Mako RS485 receive task on Core 1 (opposite core from GPS)
+  xTaskCreatePinnedToCore(makoRxTask,
+                          "makoRxTask",
+                          4096,    // stack size
+                          nullptr, // user parameters to pass to task
+                          7,       // Higher priority than GPS (more time-critical)
+                          &makoTaskHandle, // task handle
+                          1);      // core id (different from GPS task)
 
   // NOTES FOR UPGRADING RS485 Interface linking Mako <--> Lemon
   // If using a MAX485 board which exposes driver enable control DE / RE then can use this mode which would be better than now
@@ -671,11 +733,19 @@ int neopixelSerialByteRead = initNeopixelSerialByteRead;
 
 uint8_t latestLanternReedState = 0;
 
-bool haltAllProcessingDuringOTAUpload = false;
-
 void prepareSystemForOTA()
 {
   haltAllProcessingDuringOTAUpload = true;
+
+  // Suspend UART tasks immediately to prevent race conditions
+  if (gpsTaskHandle != nullptr)
+    vTaskSuspend(gpsTaskHandle);
+  
+  if (makoTaskHandle != nullptr) 
+    vTaskSuspend(makoTaskHandle);
+  
+  // Small delay to ensure tasks are fully suspended
+  delay(50);
 
   enableConnectToPrivateMQTT = false;
   enableUploadToPrivateMQTT = false;
@@ -686,12 +756,6 @@ void prepareSystemForOTA()
   enableGPSRead = false;
   writeLogToSerial = false;
   writeTelemetryLogToSerial = false;
-
-  if (gpsQueue != nullptr)
-  {
-    vQueueDelete(gpsQueue);
-    gpsQueue = nullptr;
-  }
 
   serial_gps.end();
   serial_mako_gopro.end();
@@ -731,6 +795,17 @@ void setup()
   else
   {
     USB_SERIAL_PRINTLN("GPS queue created successfully");
+  }
+
+  // Initialize Mako RS485 queue
+  makoQueue = xQueueCreate(MAKO_QUEUE_SIZE, sizeof(MakoDataPacket));
+  if (makoQueue == nullptr) 
+  {
+    USB_SERIAL_PRINTLN("Failed to create Mako RS485 queue!");
+  } 
+  else 
+  {
+    USB_SERIAL_PRINTLN("Mako RS485 queue created successfully");
   }
 
   if (useLxDisplayManager)
@@ -1102,7 +1177,7 @@ void loop()
   updateButtonsAndBuzzer();
 
   if (enableUploadToPrivateMQTT)
-      privateMQTT.loop();
+    privateMQTT.loop();
 
   if (publishMQTTTestMessages)
     networkManager.publishMQTTTestMessageOnDutyCycle();
@@ -1120,13 +1195,15 @@ void loop()
   }
   
   // GPS device timeout detection (10 seconds)
-  if (millis() - lastGPSByteTime > 10000) {
+  if (millis() - lastGPSByteTime > 10000) 
+  {
     hasGPSDevice = false;
   }
   
   // Update status display every 2 seconds
   static uint32_t lastStatusUpdate = 0;
-  if (millis() > lastStatusUpdate + 2000) {
+  if (millis() > lastStatusUpdate + 2000) 
+  {
     // Calculate GPS statistics
     uint32_t gpsNoFixCount = gpsMessagesReceived - fixCount;
     bool hasGPSFix = gps.location.isValid();
@@ -1270,80 +1347,104 @@ void loop()
   }
   else
   {
-    if (processUplinkMessage)
+    if (processUplinkMessage && enableReadUplinkComms)
     {
-      // 1. Skip past any trash characters due to half-duplex and read pre-amble
-      // If uplink messages to be ignored this returns false, which will zero out the Mako telemetry in upload message.
-      bool validPreambleFound = checkForValidPreambleOnUplink();
-      if (validPreambleFound)      
-        uplinkMessageListenTimer = millis() - uplinkMessageListenTimer;
-      else
-        uplinkMessageListenTimer = 0;
+      MakoDataPacket makoPacket;
+      bool packetReceived = false;
 
-      // 2. Get the next free head block to populate in the telemetry pipeline
-      uint16_t blockMaxPayload=0;
-      BlockHeader headBlock = telemetryPipeline.getHeadBlockForPopulating();
-
-      // 3. Populate the head block with the binary telemetry data received from Mako (or zero's if no data)
-      bool messageValidatedOk = populateHeadWithMakoTelemetry(headBlock, validPreambleFound);
-
-      float tempDenominator = float(goodUplinkMessageCount+badUplinkMessageCount+uplinkMessageMissingCount);
-
-      if (tempDenominator > 0)
-        uplinkBadMessagePercentage = 100.0*float(badUplinkMessageCount+uplinkMessageMissingCount)/tempDenominator;
-      
-      // vars to consider for Front End
-      //   g_offlineStorageThrottleApplied
-      //   telemetryPipeline.isPipelineDraining()
-      //   telemetryPipeline.getPipelineLength(), uplinkMessageMissingCount, badLengthUplinkMsgCount, badChkSumUplinkMsgCount (needs implementing), uplinkMessageMissingCount
-      //   WiFi.status() != WL_CONNECTED
-      //   privateMQTTUploadCount, uplinkMessageListenTimer, uplinkBadMessagePercentage
-      //   WiFi.localIP().toString() or "No WiFi"
-      //   messageValidatedOk, showOnMapRequestIndex, setTargetRequestIndex, setTargetRequest.c_str(), showOnMapRequest.c_str()
-      //   newFixCount, newPassedChecksum, gps.failedChecksum()
-      //   Any temperature sensors?
-      
-      uplinkMessageListenTimer = 0;
-      
-      if (!messageValidatedOk)
+      // Check for received RS485 data from queue
+      if (xQueueReceive(makoQueue, &makoPacket, 0) == pdTRUE)
       {
-        processUplinkMessage = false;
-        return;
+        packetReceived = true;
+
+        // Calculate communication latency
+        uint32_t receiveLatency = millis() - makoPacket.timestamp;
+
+        // Process the received data - look for preamble and valid message
+        bool validPreambleFound = false;
+        int preambleStart = -1;
+
+        // Search for "MBJ\0AEJ\0" preamble in received data
+        for (int i = 0; i < makoPacket.length - 6; i++) 
+        {
+            if (memcmp(&makoPacket.data[i], "MBJ", 3) == 0 &&
+                makoPacket.data[i+3] == 0 &&
+                memcmp(&makoPacket.data[i+4], "AEJ", 3) == 0 &&
+                makoPacket.data[i+7] == 0) {
+                validPreambleFound = true;
+                preambleStart = i + 8;  // Start of actual telemetry data
+                break;
+            }
+        }
+
+        if (validPreambleFound && (makoPacket.length - preambleStart) >= makoHardcodedUplinkMessageLength)
+        {
+          uplinkMessageListenTimer = millis() - uplinkMessageListenTimer;
+
+          // 2. Get the next free head block to populate in the telemetry pipeline
+          uint16_t blockMaxPayload=0;
+          BlockHeader headBlock = telemetryPipeline.getHeadBlockForPopulating();
+
+          // 3. Populate the head block with the binary telemetry data received from Mako (or zero's if no data)
+          bool messageValidatedOk = populateHeadWithMakoTelemetry(headBlock, validPreambleFound);
+
+          float tempDenominator = float(goodUplinkMessageCount+badUplinkMessageCount+uplinkMessageMissingCount);
+
+          if (tempDenominator > 0)
+            uplinkBadMessagePercentage = 100.0*float(badUplinkMessageCount+uplinkMessageMissingCount)/tempDenominator;
+          
+          // vars to consider for Front End
+          //   g_offlineStorageThrottleApplied
+          //   telemetryPipeline.isPipelineDraining()
+          //   telemetryPipeline.getPipelineLength(), uplinkMessageMissingCount, badLengthUplinkMsgCount, badChkSumUplinkMsgCount (needs implementing), uplinkMessageMissingCount
+          //   WiFi.status() != WL_CONNECTED
+          //   privateMQTTUploadCount, uplinkMessageListenTimer, uplinkBadMessagePercentage
+          //   WiFi.localIP().toString() or "No WiFi"
+          //   messageValidatedOk, showOnMapRequestIndex, setTargetRequestIndex, setTargetRequest.c_str(), showOnMapRequest.c_str()
+          //   newFixCount, newPassedChecksum, gps.failedChecksum()
+          //   Any temperature sensors?
+          
+          uplinkMessageListenTimer = 0;
+          
+          if (!messageValidatedOk)
+          {
+            processUplinkMessage = false;
+            return;
+          }
+
+          // 4.1 Throttle committing to head - check mako message to see if useraction != 0, otherwise only every 10 seconds
+          bool forceHeadCommit = doesHeadCommitRequireForce(headBlock);
+
+          uint32_t timeNow = millis();
+
+          // Head will be committed if forced by result of user action, is more than 2 seconds passed when online, or more than 10 seconds passed when offline 
+          if (forceHeadCommit || 
+              (g_offlineStorageThrottleApplied == false && timeNow >= last_head_committed_at + telemetry_online_head_commit_duty_ms) ||
+              (g_offlineStorageThrottleApplied == true && timeNow >= last_head_committed_at + telemetry_offline_head_commit_duty_ms))
+          {
+            last_head_committed_at = timeNow;
+      
+            populateFinalLemonTelemetry(latestLemonTelemetry);
+
+            // 4.2 Populate the head block with the binary Lemon telemetry data and commit to the telemetry pipeline.
+            populateHeadWithLemonTelemetryAndCommit(headBlock);
+          }
+          else
+          {
+            // do not commit the head block - throw away the entire message
+          }
+
+          // 5. Send the next message(s) from pipeline to private MQTT
+          getNextTelemetryMessagesUploadedToPrivateMQTT();
+        }
       }
-
-      // 4.1 Throttle committing to head - check mako message to see if useraction != 0, otherwise only every 10 seconds
-      bool forceHeadCommit = doesHeadCommitRequireForce(headBlock);
-
-      uint32_t timeNow = millis();
-
-      // Head will be committed if forced by result of user action, is more than 2 seconds passed when online, or more than 10 seconds passed when offline 
-      if (forceHeadCommit || 
-          (g_offlineStorageThrottleApplied == false && timeNow >= last_head_committed_at + telemetry_online_head_commit_duty_ms) ||
-          (g_offlineStorageThrottleApplied == true && timeNow >= last_head_committed_at + telemetry_offline_head_commit_duty_ms))
-      {
-        last_head_committed_at = timeNow;
-  
-        populateFinalLemonTelemetry(latestLemonTelemetry);
-
-        // 4.2 Populate the head block with the binary Lemon telemetry data and commit to the telemetry pipeline.
-        populateHeadWithLemonTelemetryAndCommit(headBlock);
-      }
-      else
-      {
-        // do not commit the head block - throw away the entire message
-      }
-
-      // 5. Send the next message(s) from pipeline to private MQTT
-      getNextTelemetryMessagesUploadedToPrivateMQTT();
-
-      processUplinkMessage = false; // finished processing the uplink message  
     }
     else
     {
-      uplinkMessageListenTimer = 0;
+      // No valid preamble found or insufficient data
+      uplinkMessageMissingCount++;
     }
   }
-
   // *************  END CODE FOR TELEMETRY PROCESSING FOR GPS MESSAGE RECEIVED
 
 
@@ -1367,9 +1468,8 @@ void loop()
     }
 
     timeOfNextLemonStatus = millis() + lemonStatusDutyCycle;
-    // *************  END CODE FOR SEND LEMON STATUS TO THE ARDUINO CALLED LANTERN
-
   }
+  // *************  END CODE FOR SEND LEMON STATUS TO THE ARDUINO CALLED LANTERN
 
   // This is for test - shows value on display, good to make sure reed switches are being read ok.
   latestLanternReedState = checkForLanternLatestReedEvent();
