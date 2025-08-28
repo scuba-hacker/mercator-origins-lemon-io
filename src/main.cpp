@@ -1437,6 +1437,13 @@ void loop()
           // 5. Send the next message(s) from pipeline to private MQTT
           getNextTelemetryMessagesUploadedToPrivateMQTT();
         }
+        else if (packetReceived)
+        {
+          // Packet was received but preamble invalid or message too short
+          uplinkMessageMissingCount++;
+        }
+
+        processUplinkMessage = false; // finished processing the uplink message
       }
     }
     else
