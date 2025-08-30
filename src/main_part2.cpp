@@ -369,7 +369,7 @@ bool checkForValidPreambleOnUplink()
     }
     else
     {
-      if (accumulateMissedMessageCount && nofix_byte_loop_count == -1)  // (must be at least 10 seconds since power on and first fix received)
+      if (accumulateMissedMessageCount && nofix_msg_loop_count == -1)  // (must be at least 10 seconds since power on and first fix received)
         uplinkMessageMissingCount++;
     }
   }
@@ -393,7 +393,7 @@ bool checkForValidPreambleOnUplink()
   return validPreambleFound;
 }
 
-bool populateHeadWithMakoTelemetry(BlockHeader& headBlock, const bool validPreambleFound)
+bool populateHeadWithMakoTelemetry(BlockHeader& headBlock, const bool validPreambleFound, const uint8_t* packetData, int dataLength)
 {
   bool messageValidatedOk = false;
 
@@ -403,25 +403,14 @@ bool populateHeadWithMakoTelemetry(BlockHeader& headBlock, const bool validPream
   uint16_t headMaxPayloadSize = headBlock.getMaxPayloadSize();
 
   // 3. Populate the head block buffer with mako telemetry (or nullptr if no pre-amble found)
-  if (validPreambleFound)
+  if (validPreambleFound && packetData != nullptr && dataLength > 0)
   {
     uplinkRxMicroSeconds = micros();
 
-    // Allow max of 2ms to get a byte
-    const uint32_t maxWaitOneByteMS = 2;
-    uint32_t endWait = millis() + maxWaitOneByteMS;
-
-    // 3.1a Read the uplink message from Serial into the blockBuffer
-    while ((nextBlockByte-blockBuffer) < headMaxPayloadSize && (serial_mako_gopro.available() || millis() < endWait))
-    {
-      // must only listen for data when not sending gps data.
-      // after send of gps must flush rx buffer
-      if (serial_mako_gopro.available())
-      {
-        *(nextBlockByte++) = serial_mako_gopro.read();
-        endWait = millis() + maxWaitOneByteMS;
-      }
-    }
+    // 3.1a Copy packet data into blockBuffer
+    int bytesToCopy = (dataLength < headMaxPayloadSize) ? dataLength : headMaxPayloadSize;
+    memcpy(nextBlockByte, packetData, bytesToCopy);
+    nextBlockByte += bytesToCopy;
 
     uint32_t nowUS = micros();
     uplinkRxMicroSeconds = (nowUS >= uplinkRxMicroSeconds ? nowUS - uplinkRxMicroSeconds : 0xFFFFFFFF - uplinkRxMicroSeconds + nowUS);
@@ -1078,12 +1067,14 @@ enum e_q_upload_status uploadTelemetryToPrivateMQTT(MakoUplinkTelemetryForJson* 
             toggleStatusLED();
             uploadStatus = Q_SUCCESS_SEND;
             privateMQTTUploadCount++;
+            USB_SERIAL_PRINTF("Private MQTT Client SEND MESSAGE SUCCESS.\n");
             break;
           case MQTTConnectionResult::SEND_ERROR:
             uploadStatus = Q_MQTT_CLIENT_SEND_ERROR;
-            USB_SERIAL_PRINTF("Private MQTT Client failed to send message. Publish returned false.\n");
+            USB_SERIAL_PRINTF("Private MQTT Client failed to send message.\n");
             break;
           default:
+            USB_SERIAL_PRINTF("Private MQTT Client failed - error unknown.\n");
             uploadStatus = Q_MQTT_CLIENT_SEND_ERROR;
             break;
         }

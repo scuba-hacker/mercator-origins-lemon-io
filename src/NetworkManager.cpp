@@ -349,8 +349,6 @@ bool NetworkManager::connectToWiFiAndInitOTA(const bool wifiOnly, int repeatScan
         if (!network) {
             // Append retry status to scrolling line
             displayManager.updateScrollingStatusLine("No networks found, retrying");
-            
-            delay(1000);
             continue;
         }
         
@@ -770,20 +768,16 @@ void NetworkManager::webSerialReceiveMessage(uint8_t *data, size_t len) {
     }
 }
 
-void NetworkManager::checkConnectivity() {
-    if (!telemetryPipeline)
-        return;
-        
-    // Maximum of one connectivity check per duty cycle
-    if (millis() < lastCheckForInternetConnectivityAt + checkInternetConnectivityDutyCycle)
-        return;
-
+void NetworkManager::checkConnectivity() {        
     // Check connectivity if pipeline is backed up OR if forced for display testing
     const uint16_t pipelineBackedUpLength = 10;
     bool shouldCheckConnectivity = forceConnectivityCheckForDisplay || 
         (telemetryPipeline->getPipelineLength() > pipelineBackedUpLength && 
-         telemetryPipeline->isPipelineDraining() == false);
+         telemetryPipeline->isPipelineDraining() == false &&
+         millis() > lastCheckForInternetConnectivityAt + checkInternetConnectivityDutyCycle);
     
+    forceConnectivityCheckForDisplay = false;
+
     if (shouldCheckConnectivity) {
         lastCheckForInternetConnectivityAt = millis();
 

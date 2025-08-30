@@ -38,7 +38,8 @@ public:
         bool hasGPSFix, double gpsHdop, uint8_t gpsSatellites,
         // Network statistics  
         const String& ipAddress, uint32_t mqttUploads, bool wifiConnected,
-        const String& wifiSSID, bool dnsConnected, bool ipConnected, bool mqttConnected, uint8_t latestLanternReedState
+        const String& wifiSSID, bool dnsConnected, bool ipConnected, bool mqttConnected, uint8_t latestLanternReedState,
+        double temperatureFloat, double humidityFloat
     );
     void setStatusDisplayMode(bool enabled);
     bool isInStatusDisplayMode() const { return statusDisplayModeActive; }

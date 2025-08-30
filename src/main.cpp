@@ -124,7 +124,7 @@ Adafruit_SSD1327 adafruitDisplay(128, 128, &Wire, OLED_RST_ADA_BROWN, 1000000);
 LGFX_I2C_Adafruit_SSD1327_128x128_Grey_OLE lgfxAdafruitDisplay;
 
 // Create display manager instance (256px wide, 4 lines max)
-OLEDWideDisplayManager   displayManager(wideOLEDDisplay, 256, 4);
+OLEDWideDisplayManager   wideDisplayManager(wideOLEDDisplay, 256, 4);
 OLEDGSDisplayManager GSdisplayManager(adafruitDisplay);
 OLEDLXDisplayManager LXdisplayManager(lgfxAdafruitDisplay);
 
@@ -192,6 +192,9 @@ const bool publishMQTTTestMessages = true;
   const bool enableTelegram = false;          // requires 35KB heap to send message (open/close secure connection)
 #endif
 // END FEATURE ENABLE FLAGS
+
+bool readTempHumidityCJMCU_1080_Sensor(double* temperature, double* humidity);
+void initializeTempHumiditySensor();
 
 
 #define STATUS_LED_ON HIGH
@@ -268,7 +271,7 @@ NetworkConfig networkConfig = {
     MERCATOR_OTA_DEVICE_LABEL
 };
 
-NetworkManager networkManager(networkConfig, displayManager, privateMQTT);
+NetworkManager networkManager(networkConfig, wideDisplayManager, privateMQTT);
 // ################## END NETWORK MANAGER Configuration
 
 // Json document for sending statistics to web page (used by getStats() in main_part2.cpp)
@@ -322,7 +325,7 @@ bool processUplinkMessage = true;
 uint32_t gpsMessagesReceived = 0;
 uint32_t gpsFailedChecksumCount = 0;
 uint32_t gpsBadLengthCount = 0;
-uint32_t lastGPSByteTime = 0;
+uint32_t lastGPSMessageTime = 0;
 bool hasGPSDevice = true;  // Assume GPS device present until proven otherwise
 
 TinyGPSPlus gps;
@@ -331,7 +334,7 @@ bool diveInProgress = false;
 
 String getStats();
 
-int nofix_byte_loop_count = 0;
+int nofix_msg_loop_count = 0;
 template <typename T> struct vector
 {
   T x, y, z;
@@ -355,10 +358,13 @@ uint16_t privateMQTTMessageLength = 0;
 float KBToPrivateMQTT = 0.0;
 float KBFromMako = 0.0;
 
+uint32_t startAccumulatingMissedMessagesAt = 0;
+uint32_t setupCompletedAt = 0;
 bool accumulateMissedMessageCount = false;    // start-up
-// const uint32_t delayBeforeCountingMissedMessages = 60000; // Allow 60 second start-up before counting lost/missed messages
-const uint32_t delayBeforeCountingMissedMessages = 0; // Startup of Mako now so fast we shouldn't miss any messages at all
+const uint32_t delayBeforeCountingMissedMessages = 5000;
+void incrementUplinkMessageMissedCount();
 
+// was 30 - using m5 gps temporarily 
 const uint32_t uplinkMessageLingerPeriodMs = 30;   // max milliseconds to wait for Mako pre-amble to reply
 uint32_t uplinkLingerTimeoutAt = 0;
 uint32_t downlinkSendMessageDurationMicroSeconds = 0;   // Latency processing GPS message and downlink msg send to Mako complete.
@@ -488,7 +494,7 @@ char* customiseNMEASentence(char* sentence, int showOnMapIndex);
 char* getMQTTPayloadBuffer();
 bool doesHeadCommitRequireForce(BlockHeader& block);
 bool checkForValidPreambleOnUplink();
-bool populateHeadWithMakoTelemetry(BlockHeader& headBlock, const bool validPreambleFound);
+bool populateHeadWithMakoTelemetry(BlockHeader& headBlock, const bool validPreambleFound, const uint8_t* packetData = nullptr, int dataLength = 0);
 void populateHeadWithLemonTelemetryAndCommit(BlockHeader& headBlock);
 void getNextTelemetryMessagesUploadedToPrivateMQTT();
 void populateCurrentLemonTelemetry(LemonTelemetryForJson& l, TinyGPSPlus& g);
@@ -737,16 +743,7 @@ void prepareSystemForOTA()
 {
   haltAllProcessingDuringOTAUpload = true;
 
-  // Suspend UART tasks immediately to prevent race conditions
-  if (gpsTaskHandle != nullptr)
-    vTaskSuspend(gpsTaskHandle);
-  
-  if (makoTaskHandle != nullptr) 
-    vTaskSuspend(makoTaskHandle);
-  
-  // Small delay to ensure tasks are fully suspended
-  delay(50);
-
+  // Disable processing flags first
   enableConnectToPrivateMQTT = false;
   enableUploadToPrivateMQTT = false;
   privateMQTT.setEnabled(false, false);
@@ -757,6 +754,32 @@ void prepareSystemForOTA()
   writeLogToSerial = false;
   writeTelemetryLogToSerial = false;
 
+  // Delete UART tasks to prevent interference with OTA
+  if (gpsTaskHandle != nullptr) {
+    vTaskDelete(gpsTaskHandle);
+    gpsTaskHandle = nullptr;
+  }
+  
+  if (makoTaskHandle != nullptr) {
+    vTaskDelete(makoTaskHandle);
+    makoTaskHandle = nullptr;
+  }
+  
+  // Clean up queues
+  if (gpsQueue != nullptr) {
+    vQueueDelete(gpsQueue);
+    gpsQueue = nullptr;
+  }
+  
+  if (makoQueue != nullptr) {
+    vQueueDelete(makoQueue);
+    makoQueue = nullptr;
+  }
+
+  // Small delay to ensure cleanup is complete
+  delay(100);
+
+  // End serial communications
   serial_gps.end();
   serial_mako_gopro.end();
   serial_lantern_neopixels.end();
@@ -833,7 +856,9 @@ void setup()
   // Display startup status
   wideOLEDDisplay.begin();
   wideOLEDDisplay.setFont(u8g2_font_ncenB08_tr);
-  displayManager.addDisplayLine("Lemon-IO Starting...");
+  wideDisplayManager.addDisplayLine("Lemon-IO Starting...");
+
+  initializeTempHumiditySensor();
 
   privateMQTT.setConnectionCallbacks(
     [&] { USB_SERIAL_PRINTF("Local MQTT connected (%s)\n", privateMQTT.getEncryptionStatus()); },
@@ -847,13 +872,7 @@ void setup()
 
   USB_SERIAL_PRINTLN("Unexpected Maker Pro S3 Initialised...");
 
-  if (!SPIFFS.begin(true)) {
-    USB_SERIAL_PRINTLN("SPIFFS mount failed");
-    displayManager.addDisplayLine("SPIFFS Mount Failed");
-  } else {
-    USB_SERIAL_PRINTLN("SPIFFS mounted OK");
-    displayManager.addDisplayLine("SPIFFS OK");
-  }
+  SPIFFS.begin(true);
 
   // Initialize NetworkManager
   networkManager.setTelemetryPipeline(&telemetryPipeline);
@@ -873,8 +892,6 @@ void setup()
 
   dumpHeapUsage("main: after Telemetry Pipeline creation  ");
   
-  displayManager.addDisplayLine("Telemetry Pipeline OK");
-
   statusLEDOff();
 
   serial_lantern_neopixels.begin(LANTERN_NEOPIXELS_ARDUINO_BAUD_RATE, SERIAL_8N1, LANTERN_NEOPIXELS_RX_ORANGE_GPIO, LANTERN_NEOPIXELS_TX_YELLOW_GPIO);
@@ -899,36 +916,29 @@ void setup()
     // WiFi connection result already added by connectToWiFiAndInitOTA
     if (!connected)
       delay(5000);    // wait 5 seconds before proceeding - lantern will show no wifi state for 5 seconds
-    else
-      delay(2000);    // show state for 2 seconds
   }
-
-
-  displayManager.addDisplayLine("GPS Ready");
-  delay(500);
-
-  // cannot use Pin 0 for receive of GPS (resets on startup), can use Pin 36, can use 26
-  // cannot use Pin 0 for transmit of GPS (resets on startup), only Pin 26 can be used for transmit.
 
   if (enableUploadToPrivateMQTT)
-  {
     privateMQTT.begin();
-    displayManager.addDisplayLine("MQTT Ready");
-    delay(500);
-  }
   
-  // Final setup completion status - add to scrolling display
-  displayManager.addDisplayLine("Lemon-IO Online @ " + networkManager.getLocalIP());
-  delay(2000);  // Show final status for 2 seconds
+  wideDisplayManager.addDisplayLine("Lemon-IO Online @ " + networkManager.getLocalIP());
+  delay(1000);
 
-  // Force connectivity check to update DNS/IP status for display
-  networkManager.setForceConnectivityCheckForDisplay(true);
-  networkManager.getMQTTConnectionTest().resetCheckTrigger(1500);
+  wideDisplayManager.clearDisplay();
 
   if (useGsDisplayManager)
     GSdisplayManager.clearDisplay();
   else if (useLxDisplayManager)
     LXdisplayManager.clearDisplay();
+
+  // Force connectivity check to update DNS/IP status for display
+  networkManager.setForceConnectivityCheckForDisplay(true);
+  networkManager.getMQTTConnectionTest().resetCheckTrigger(1500);
+
+  setupCompletedAt = millis();
+  startAccumulatingMissedMessagesAt = setupCompletedAt + delayBeforeCountingMissedMessages;
+
+  USB_SERIAL_PRINTLN("Setup() completed");
 }
 
 char* customiseNMEASentence(char* sentence, int showOnMapIndex)
@@ -1161,18 +1171,27 @@ char* customiseNMEASentence(char* sentence, int showOnMapIndex)
   return sentence;
 }
 
+double tempFloat=0.0;
+double humidFloat=0.0;
+bool newTempHumidRead=false;
+
+uint32_t sendNextFakeGPSMessageAt = 0;
+
+
 void loop()
-{
+{  
   // Handle NetworkManager processing (includes MQTT testing, OTA restart, etc.)
   networkManager.loop();
   
-  // Check if we should halt processing during OTA upload
+  // Cut short event loop when halting processing during OTA upload
   if (networkManager.isHaltingForOTA())
   {  
     delay(100);
     toggleStatusLED();
     return;
   }
+  
+  newTempHumidRead = readTempHumidityCJMCU_1080_Sensor(&tempFloat, &humidFloat);
 
   updateButtonsAndBuzzer();
 
@@ -1182,52 +1201,21 @@ void loop()
   if (publishMQTTTestMessages)
     networkManager.publishMQTTTestMessageOnDutyCycle();
 
-  if (!accumulateMissedMessageCount && millis() > delayBeforeCountingMissedMessages)
-    accumulateMissedMessageCount = true;
-  
+  uint32_t now = millis();
+
   static uint32_t lastWebSocketUpdate = 0;  
 
   const int webSocketTick = 1000;
-  if (networkManager.getWebSocketClientCount() > 0 && millis() > lastWebSocketUpdate + webSocketTick)
+  if (networkManager.getWebSocketClientCount() > 0 && now > lastWebSocketUpdate + webSocketTick)
   {
     networkManager.sendStatsWebSocketNotification();
-    lastWebSocketUpdate = millis();
+    lastWebSocketUpdate = now;
   }
   
   // GPS device timeout detection (10 seconds)
-  if (millis() - lastGPSByteTime > 10000) 
+  if (now - lastGPSMessageTime > 10000) 
   {
     hasGPSDevice = false;
-  }
-  
-  // Update status display every 2 seconds
-  static uint32_t lastStatusUpdate = 0;
-  if (millis() > lastStatusUpdate + 2000) 
-  {
-    // Calculate GPS statistics
-    uint32_t gpsNoFixCount = gpsMessagesReceived - fixCount;
-    bool hasGPSFix = gps.location.isValid();
-    double gpsHdop = gps.hdop.hdop();
-    uint8_t gpsSatellites = gps.satellites.value();
-    
-    // Get network status
-    String ipAddress = networkManager.getLocalIP();
-    bool wifiConnected = networkManager.isWiFiConnected();
-    String wifiSSID = networkManager.getConnectedSSID();
-    bool dnsConnected = networkManager.getLastDNSConnectivityStatus();
-    bool ipConnected = networkManager.getLastIPConnectivityStatus();
-    bool mqttConnected = privateMQTT.isConnected();
-    
-    displayManager.displayStatusScreen(
-      gpsMessagesReceived, fixCount, gpsNoFixCount,
-      gpsFailedChecksumCount, gpsBadLengthCount, hasGPSDevice,
-      hasGPSFix, gpsHdop, gpsSatellites,
-      ipAddress, privateMQTTUploadCount, wifiConnected,
-      wifiSSID, dnsConnected, ipConnected, mqttConnected,
-      latestLanternReedState
-    );
-    
-    lastStatusUpdate = millis();
   }
   
   // *************  START CODE FOR RECEIVING GPS MESSAGE
@@ -1236,10 +1224,9 @@ void loop()
   if (enableGPSRead && xQueueReceive(gpsQueue, &gpsPacket, 0) == pdTRUE)
   {
     // Update GPS device detection
-    lastGPSByteTime = millis();
+    lastGPSMessageTime = now;
     hasGPSDevice = true;
 
-    uint32_t now = millis();
     timeNextGPSByteExpectedBy = now + maxTimeBeforeAlertNoGPSByte;
 
     for (int i = 0; i < gpsPacket.length; i++)
@@ -1288,9 +1275,9 @@ void loop()
             USB_SERIAL_PRINTF("\nFix: %lu Good GPS Msg: %lu Bad GPS Msg: %lu\n", fixCount, newPassedChecksum, gps.failedChecksum());
           }
 
-          if (nofix_byte_loop_count > -1)
+          if (nofix_msg_loop_count > -1)
           {
-            nofix_byte_loop_count = -1;
+            nofix_msg_loop_count = -1;
           }
 
           updateButtonsAndBuzzer();
@@ -1309,12 +1296,16 @@ void loop()
         }
         else
         {
-          if (nofix_byte_loop_count > -1)
+          if (nofix_msg_loop_count > -1)
           {
-            // Bytes are being received but no valid location fix has been seen since startup
-            // Increment byte count shown until first fix received.
-            nofix_byte_loop_count++;
-            USB_SERIAL_PRINTLN("NO GPS FIX - BYTES BEING RECEIVED");
+            // Mesages are being received but no valid location fix has been seen since startup
+            // Increment message count until first fix received.
+            nofix_msg_loop_count++;
+            static char msgType[10];
+            strncpy(msgType,gps.getSentence(),8);
+
+            // first byte in getSentence() is currently always newline
+            USB_SERIAL_PRINTF("NO GPS FIX - MESSAGE RECEIVED: %s\n",msgType + (msgType[0] == '\n' ? 1 : 0));
           }
         }
       }
@@ -1327,23 +1318,23 @@ void loop()
   // *************  END CODE FOR RECEIVING GPS MESSAGE
 
   // *************  START CODE FOR TELEMETRY PROCESSING FOR GPS MESSAGE RECEIVED
-  if (nofix_byte_loop_count > 0)
+  if (nofix_msg_loop_count > 0)
   {
-    sendLemonStatus(LC_NO_FIX);
-
-    sendFakeGPSData_No_Fix();
-
-    delay(250); // no fix wait
+    if (now > sendNextFakeGPSMessageAt)
+    {
+      sendLemonStatus(LC_NO_FIX);
+      sendFakeGPSData_No_Fix();               // only sent at startup before any GPS FIX has been received
+      sendNextFakeGPSMessageAt = now + 250;
+    }
   }
-  else if (nofix_byte_loop_count != -1)
+  else if (nofix_msg_loop_count != -1)
   {
-    sendLemonStatus(LC_NO_GPS);
-
-    sendFakeGPSData_No_GPS();
-
-    USB_SERIAL_PRINTLN("NO GPS - NO BYTES RECEIVED FROM GPS FROM STARTUP");
-
-    delay(250); // no fix wait
+    if (now > sendNextFakeGPSMessageAt)
+    {
+      sendLemonStatus(LC_NO_GPS);
+      sendFakeGPSData_No_GPS();               // only sent at startup before any GPS data has been received
+      sendNextFakeGPSMessageAt = now + 250;
+    }
   }
   else
   {
@@ -1351,10 +1342,13 @@ void loop()
     {
       MakoDataPacket makoPacket;
       bool packetReceived = false;
+      bool validMessageProcessed = false;
 
       // Check for received RS485 data from queue
       if (xQueueReceive(makoQueue, &makoPacket, 0) == pdTRUE)
       {
+        USB_SERIAL_PRINTLN("1.0 xQueueMessage: Mako Message Received");
+        
         packetReceived = true;
 
         // Calculate communication latency
@@ -1364,21 +1358,37 @@ void loop()
         bool validPreambleFound = false;
         int preambleStart = -1;
 
-        // Search for "MBJ\0AEJ\0" preamble in received data
-        for (int i = 0; i < makoPacket.length - 6; i++) 
+        // State machine preamble detection - minimum pattern is "MBJAEJ"
+        // Look for the essential ending sequence "MBJAEJ" using state machine
+        const char minPattern[] = "MBJAEJ";  // Minimum required pattern
+        int patternIndex = 0;  // Current position in minimum pattern
+        
+        for (int i = 0; i < makoPacket.length; i++) 
         {
-            if (memcmp(&makoPacket.data[i], "MBJ", 3) == 0 &&
-                makoPacket.data[i+3] == 0 &&
-                memcmp(&makoPacket.data[i+4], "AEJ", 3) == 0 &&
-                makoPacket.data[i+7] == 0) {
-                validPreambleFound = true;
-                preambleStart = i + 8;  // Start of actual telemetry data
-                break;
+            if (makoPacket.data[i] == minPattern[patternIndex]) {
+                patternIndex++;  // Found expected character, advance
+                if (patternIndex == 6) {  // Complete minimum pattern "MBJAEJ" found
+                    validPreambleFound = true;
+                    preambleStart = i + 1;  // Start of telemetry data after preamble
+                    USB_SERIAL_PRINTF("2.0 preamble: Found MBJAEJ ending at position %d\n", i);
+                    break;
+                }
+            } else if (makoPacket.data[i] == 'M') {
+                patternIndex = 1;  // Found 'M', start over from position 1
+            } else {
+                patternIndex = 0;  // Reset to beginning, look for 'M'
             }
         }
 
+        if (validPreambleFound)
+          USB_SERIAL_PRINTLN("3.0 preamble: Found");
+        else
+          USB_SERIAL_PRINTLN("3.1 preamble: ******** MISSING *********");
+
         if (validPreambleFound && (makoPacket.length - preambleStart) >= makoHardcodedUplinkMessageLength)
         {
+          USB_SERIAL_PRINTLN("4.0 Decoding Mako Message");
+
           uplinkMessageListenTimer = millis() - uplinkMessageListenTimer;
 
           // 2. Get the next free head block to populate in the telemetry pipeline
@@ -1386,7 +1396,9 @@ void loop()
           BlockHeader headBlock = telemetryPipeline.getHeadBlockForPopulating();
 
           // 3. Populate the head block with the binary telemetry data received from Mako (or zero's if no data)
-          bool messageValidatedOk = populateHeadWithMakoTelemetry(headBlock, validPreambleFound);
+          bool messageValidatedOk = populateHeadWithMakoTelemetry(headBlock, validPreambleFound, 
+                                                                  &makoPacket.data[preambleStart], 
+                                                                  makoPacket.length - preambleStart);
 
           float tempDenominator = float(goodUplinkMessageCount+badUplinkMessageCount+uplinkMessageMissingCount);
 
@@ -1408,9 +1420,15 @@ void loop()
           
           if (!messageValidatedOk)
           {
+            USB_SERIAL_PRINTLN("5.0 Message Not Validated ok");
             processUplinkMessage = false;
             return;
           }
+          else
+          {
+            USB_SERIAL_PRINTLN("5.1 Message IS Validated ok");
+          }
+
 
           // 4.1 Throttle committing to head - check mako message to see if useraction != 0, otherwise only every 10 seconds
           bool forceHeadCommit = doesHeadCommitRequireForce(headBlock);
@@ -1425,38 +1443,50 @@ void loop()
             last_head_committed_at = timeNow;
       
             populateFinalLemonTelemetry(latestLemonTelemetry);
+            USB_SERIAL_PRINTLN("6.1 Populated final lemon telemetry");
 
             // 4.2 Populate the head block with the binary Lemon telemetry data and commit to the telemetry pipeline.
             populateHeadWithLemonTelemetryAndCommit(headBlock);
+            USB_SERIAL_PRINTLN("6.2 Populated Head with lemon Telemetry and Commit");
           }
           else
           {
             // do not commit the head block - throw away the entire message
           }
 
+          USB_SERIAL_PRINTLN("7.1 Sending next msg to mqtt");
           // 5. Send the next message(s) from pipeline to private MQTT
           getNextTelemetryMessagesUploadedToPrivateMQTT();
+          
+          USB_SERIAL_PRINTLN("8.1 Sent next msg to mqtt");
+          validMessageProcessed = true;
         }
         else if (packetReceived)
         {
+          USB_SERIAL_PRINTLN("9.1 Uplink msg missed count incremented - place 1");
           // Packet was received but preamble invalid or message too short
-          uplinkMessageMissingCount++;
+          incrementUplinkMessageMissedCount();
         }
 
         processUplinkMessage = false; // finished processing the uplink message
       }
-    }
-    else
-    {
-      // No valid preamble found or insufficient data
-      uplinkMessageMissingCount++;
+      else if (accumulateMissedMessageCount && (millis() - uplinkMessageListenTimer) > uplinkMessageLingerPeriodMs)
+      {
+        // Timeout waiting for Mako response - only count as missed if we were actually waiting
+        if (processUplinkMessage)
+        {
+          USB_SERIAL_PRINTLN("10.1 Uplink msg missed count incremented - place 2");
+          incrementUplinkMessageMissedCount();
+        }
+        processUplinkMessage = false; // stop waiting
+      }
     }
   }
   // *************  END CODE FOR TELEMETRY PROCESSING FOR GPS MESSAGE RECEIVED
 
 
   // *************  START CODE FOR SEND LEMON STATUS TO THE ARDUINO CALLED LANTERN
-  uint32_t now = millis();
+  now = millis();
   if (now > timeOfNextLemonStatus)
   {
     if (now > timeNextGoodFixExpectedBy)
@@ -1481,7 +1511,38 @@ void loop()
   // This is for test - shows value on display, good to make sure reed switches are being read ok.
   latestLanternReedState = checkForLanternLatestReedEvent();
 
-#ifdef ENABLE_TELEGRAM_BOT_AT_COMPILE_TIME
+  // Update status display every 500 ms
+  static uint32_t lastStatusUpdate = 0;
+  const uint32_t wideScreenOLEDUpdatePeriod = 500;
+  if (now > lastStatusUpdate + wideScreenOLEDUpdatePeriod)
+  {
+    // Calculate GPS statistics
+    uint32_t gpsNoFixCount = gpsMessagesReceived - fixCount;
+    bool hasGPSFix = gps.location.isValid();
+    double gpsHdop = gps.hdop.hdop();
+    uint8_t gpsSatellites = gps.satellites.value();
+    
+    // Get network status
+    String ipAddress = networkManager.getLocalIP();
+    bool wifiConnected = networkManager.isWiFiConnected();
+    String wifiSSID = networkManager.getConnectedSSID();
+    bool dnsConnected = networkManager.getLastDNSConnectivityStatus();
+    bool ipConnected = networkManager.getLastIPConnectivityStatus();
+    bool mqttConnected = privateMQTT.isConnected();
+    
+    wideDisplayManager.displayStatusScreen(
+      gpsMessagesReceived, fixCount, gpsNoFixCount,
+      gpsFailedChecksumCount, gpsBadLengthCount, hasGPSDevice,
+      hasGPSFix, gpsHdop, gpsSatellites,
+      ipAddress, privateMQTTUploadCount, wifiConnected,
+      wifiSSID, dnsConnected, ipConnected, mqttConnected,
+      latestLanternReedState, tempFloat, humidFloat
+    );
+    
+    lastStatusUpdate = now;
+  }
+  
+  #ifdef ENABLE_TELEGRAM_BOT_AT_COMPILE_TIME
   if (enableTelegram && now > timeOfNextTelegramBotUpdateSendMsg)
   {
     bool result = telegramBot.sendSimpleMessage(TELEGRAM_USER_ID, "Heartbeat", "");
@@ -1490,6 +1551,108 @@ void loop()
     dumpHeapUsage("loop() - after send telegram");
   }
 #endif
+}
+
+void incrementUplinkMessageMissedCount()
+{
+  if (accumulateMissedMessageCount)
+  {
+    uplinkMessageMissingCount++;
+  }
+  else
+  {
+    if (millis() > startAccumulatingMissedMessagesAt)
+    {
+      uplinkMessageMissingCount++;
+      accumulateMissedMessageCount = true;
+    }
+  }
+}
+
+void initializeTempHumiditySensor()
+{
+  Wire.begin();
+
+  //Configure HDC1080
+  Wire.beginTransmission(0x40);
+  Wire.write(0x02);
+  Wire.write(0x90);
+  Wire.write(0x00);
+  Wire.endTransmission();
+
+  delay(20);
+}
+
+// Have to call three times to get the first value to avoid synchronous waits
+// This can go in a task later
+bool readTempHumidityCJMCU_1080_Sensor(double* temperature, double* humidity)
+{
+  # define TEMP_TIME_FOR_CONVERSION 20
+  # define TEMP_TIME_TO_GET_REQUEST 1
+  # define MIN_TIME_BETWEEN_SAMPLES 1000
+
+  bool newReadingsAvailable = false;
+
+  static int state = 0;
+  static uint32_t nextStateAt = 0;
+
+  if (millis() > nextStateAt)
+  {
+    if (state == 0)
+    {
+      //holds 2 bytes of data from I2C Line
+      uint8_t Byte[4];
+
+      uint16_t temp;
+      uint16_t humid;
+
+      //Point to device 0x40 (Address for HDC1080)
+      Wire.beginTransmission(0x40);
+
+      //Point to register 0x00 (Temperature Register)
+      Wire.write(0x00);
+
+      //Relinquish master control of I2C line
+      //Pointing to the temp register triggers a conversion
+      Wire.endTransmission();
+
+      nextStateAt = millis() + TEMP_TIME_FOR_CONVERSION;
+      state++;
+    }
+    else if (state == 1)
+    {
+      Wire.requestFrom(0x40, 4);  // Request four bytes from registers  
+      nextStateAt = millis() + TEMP_TIME_TO_GET_REQUEST;
+      state++;
+    }
+    else if (state == 2)
+    {
+      //If the 4 bytes were returned sucessfully
+      if (4 <= Wire.available())
+      {
+        uint8_t Byte[5];
+        Byte[0] = Wire.read();    // upper byte of temp reading
+        Byte[1] = Wire.read();    // lower byte of temp reading
+        Byte[3] = Wire.read();    // upper byte of humidity reading
+        Byte[4] = Wire.read();    // lower byte of humidity reading
+
+        uint16_t temp = (((unsigned int)Byte[0] <<8 | Byte[1]));
+        *temperature = (double)(temp)/(65536)*165-40;
+
+        uint16_t humid = (((unsigned int)Byte[3] <<8 | Byte[4]));
+        *humidity = (double)(humid)/(65536)*100;
+        state = 0;
+        newReadingsAvailable = true;
+        nextStateAt = millis() + MIN_TIME_BETWEEN_SAMPLES;
+      }
+      else
+      {
+        nextStateAt = millis() + TEMP_TIME_TO_GET_REQUEST;
+        // stay in state 2, try getting again in 1ms
+      }
+    }
+  }
+  return newReadingsAvailable;
 }
 
 #define BUILD_INCLUDE_MAIN_PART2

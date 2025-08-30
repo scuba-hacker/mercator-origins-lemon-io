@@ -177,7 +177,8 @@ void OLEDWideDisplayManager::updateScrollingStatusLine(const String& newText, bo
         return;
     }
     
-    int pixelScrollDelay = 2;
+    int pixelScrollDelay = 1;           // was 2
+    int pixelsScrolledPerFrame = 10;            // was 1
     
     // Stop any progress animation when updating text
     if (showingProgress) {
@@ -216,7 +217,7 @@ void OLEDWideDisplayManager::updateScrollingStatusLine(const String& newText, bo
             safeDrawStr(-scrollOffset, yPosition, scrollingStatusLine.c_str());
             display.sendBuffer();
             
-            scrollOffset += 1;  // Scroll by 1 pixel at a time
+            scrollOffset += pixelsScrolledPerFrame;  // Scroll by 1 pixel at a time
             delay(pixelScrollDelay);
         }
     } else {
@@ -246,7 +247,7 @@ void OLEDWideDisplayManager::updateScrollingStatusLine(const String& newText, bo
                 safeDrawStr(-scrollOffset, yPosition, scrollingStatusLine.c_str());
                 display.sendBuffer();
                 
-                scrollOffset += 1;  // Scroll by 1 pixel at a time
+                scrollOffset += pixelsScrolledPerFrame;  // Scroll by 1 pixel at a time
                 delay(pixelScrollDelay);
             }
         }
@@ -326,7 +327,8 @@ void OLEDWideDisplayManager::displayStatusScreen(
     uint32_t gpsBadChecksum, uint32_t gpsBadLength, bool hasGPSDevice,
     bool hasGPSFix, double gpsHdop, uint8_t gpsSatellites,
     const String& ipAddress, uint32_t mqttUploads, bool wifiConnected,
-    const String& wifiSSID, bool dnsConnected, bool ipConnected, bool mqttConnected, uint8_t latestLanternReedState) {
+    const String& wifiSSID, bool dnsConnected, bool ipConnected, bool mqttConnected, uint8_t latestLanternReedState,
+    double temperatureFloat, double humidityFloat) {
     
     char lineBuffer[128];
 
@@ -407,7 +409,11 @@ void OLEDWideDisplayManager::displayStatusScreen(
     y += lineHeight;
 
     // should change any other string concatenation to snprintf above
-    snprintf(lineBuffer, sizeof(lineBuffer), "Reed:%u", latestLanternReedState);
+//    snprintf(lineBuffer, sizeof(lineBuffer), "Reed:%u", latestLanternReedState);
+//    safeDrawStr(rightX, y, lineBuffer);
+//    y += lineHeight;
+    
+    snprintf(lineBuffer, sizeof(lineBuffer), "Temp: %.1fC Humidity: %.1f%%", temperatureFloat, humidityFloat);
     safeDrawStr(rightX, y, lineBuffer);
     y += lineHeight;
     
