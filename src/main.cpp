@@ -72,7 +72,6 @@ static constexpr int GPS_QUEUE_SIZE = 10;
 static constexpr TickType_t GPS_RX_TIMEOUT = pdMS_TO_TICKS(100);
 
 QueueHandle_t gpsQueue = nullptr;
-int gpsBytesReceived = 0;
 
 // Data structure to send via queue
 struct GPSDataPacket
@@ -361,7 +360,7 @@ float KBFromMako = 0.0;
 uint32_t startAccumulatingMissedMessagesAt = 0;
 uint32_t setupCompletedAt = 0;
 bool accumulateMissedMessageCount = false;    // start-up
-const uint32_t delayBeforeCountingMissedMessages = 5000;
+const uint32_t delayBeforeCountingMissedMessages = 10000;
 void incrementUplinkMessageMissedCount();
 
 // was 30 - using m5 gps temporarily 
@@ -672,7 +671,7 @@ void initialiseUARTS()
                           nullptr, // user parameters to pass to task
                           6,       // Priority
                           &gpsTaskHandle, // task handle
-                          0);      // core id
+                          1);      // core id
 
   // UART2 for sending/receiving data to/from GoPro
   serial_mako_gopro.setRxBufferSize(1024); // was 256 - must set before begin
