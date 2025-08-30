@@ -247,6 +247,72 @@ enum e_user_action{NO_USER_ACTION=0x0000, HIGHLIGHT_USER_ACTION=0x0001,RECORD_BR
   return forceHeadCommit;
 }
 
+bool checkForValidPreambleInReceiveBuffer(MakoDataPacket& makoPacket, int& preambleStart)
+{
+  // Process the received data - look for preamble and valid message
+  bool validPreambleFound = false;
+  preambleStart = -1;
+
+  // State machine preamble detection - full pattern is "MBJMBJAEJ"
+  // Look for "MBJ" first, then "AEJ" (allowing MBJAEJ, JMBJAEJ, BJMBJAEJ, MBJMBJAEJ)
+  char uplink_preamble_first_segment[] = "MBJ";
+  char uplink_preamble_second_segment[] = "AEJ";
+  
+  const char* nextByteToFind = uplink_preamble_first_segment;
+  const char* nextSecondSegmentByteToFind = uplink_preamble_second_segment;
+  
+  // First pass: look for MBJ pattern
+  for (int i = 0; i < makoPacket.length && *nextByteToFind != 0; i++) 
+  {
+      char next = makoPacket.data[i];
+      if (next == *nextByteToFind) {
+          nextByteToFind++;
+      } else {
+          nextByteToFind = uplink_preamble_first_segment;  // Reset search for first char of preamble
+          if (next == *nextByteToFind) {  // Check if current char starts new pattern
+              nextByteToFind++;
+          }
+      }
+  }
+  
+  // Second pass: if MBJ found, look for AEJ pattern in remaining data
+  if (*nextByteToFind == 0) { // MBJ pattern found
+      for (int i = 0; i < makoPacket.length && *nextSecondSegmentByteToFind != 0; i++) 
+      {
+          char next = makoPacket.data[i];
+          if (next == *nextSecondSegmentByteToFind) {
+              nextSecondSegmentByteToFind++;
+          } else {
+              nextSecondSegmentByteToFind = uplink_preamble_second_segment;  // Reset search
+              if (next == *nextSecondSegmentByteToFind) {  // Check if current char starts new pattern
+                  nextSecondSegmentByteToFind++;
+              }
+          }
+      }
+      
+      if (*nextSecondSegmentByteToFind == 0) { // AEJ pattern also found
+          validPreambleFound = true;
+          // Find the end of AEJ pattern to determine preamble start
+          int segmentLen = strlen(uplink_preamble_second_segment);
+          for (int i = makoPacket.length - 1; i >= segmentLen - 1; i--) {
+              bool patternMatch = true;
+              for (int j = 0; j < segmentLen; j++) {
+                  if (makoPacket.data[i - segmentLen + 1 + j] != uplink_preamble_second_segment[j]) {
+                      patternMatch = false;
+                      break;
+                  }
+              }
+              if (patternMatch) {
+                  preambleStart = i + 1;
+                  break;
+              }
+          }
+          USB_SERIAL_PRINTF("2.0 preamble: Found MBJ...%s pattern, data starts at position %d\n", uplink_preamble_second_segment, preambleStart);
+      }
+  }
+  return validPreambleFound;
+}
+
 bool checkForValidPreambleOnUplink()
 {
   bool validPreambleFound = false;

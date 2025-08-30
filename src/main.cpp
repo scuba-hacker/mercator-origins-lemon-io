@@ -499,6 +499,7 @@ void dumpHeapUsage(const char* msg);
 char* customiseNMEASentence(char* sentence, int showOnMapIndex);
 char* getMQTTPayloadBuffer();
 bool doesHeadCommitRequireForce(BlockHeader& block);
+bool checkForValidPreambleInReceiveBuffer(MakoDataPacket& makoPacket, int& preambleStart);
 bool checkForValidPreambleOnUplink();
 bool populateHeadWithMakoTelemetry(BlockHeader& headBlock, const bool validPreambleFound, const uint8_t* packetData = nullptr, int dataLength = 0);
 void populateHeadWithLemonTelemetryAndCommit(BlockHeader& headBlock);
@@ -1375,31 +1376,9 @@ void loop()
         // Calculate communication latency
         uint32_t receiveLatency = millis() - makoPacket.timestamp;
 
-        // Process the received data - look for preamble and valid message
-        bool validPreambleFound = false;
         int preambleStart = -1;
 
-        // State machine preamble detection - minimum pattern is "MBJAEJ"
-        // Look for the essential ending sequence "MBJAEJ" using state machine
-        const char minPattern[] = "MBJAEJ";  // Minimum required pattern
-        int patternIndex = 0;  // Current position in minimum pattern
-        
-        for (int i = 0; i < makoPacket.length; i++) 
-        {
-            if (makoPacket.data[i] == minPattern[patternIndex]) {
-                patternIndex++;  // Found expected character, advance
-                if (patternIndex == 6) {  // Complete minimum pattern "MBJAEJ" found
-                    validPreambleFound = true;
-                    preambleStart = i + 1;  // Start of telemetry data after preamble
-                    USB_SERIAL_PRINTF("2.0 preamble: Found MBJAEJ ending at position %d\n", i);
-                    break;
-                }
-            } else if (makoPacket.data[i] == 'M') {
-                patternIndex = 1;  // Found 'M', start over from position 1
-            } else {
-                patternIndex = 0;  // Reset to beginning, look for 'M'
-            }
-        }
+        bool validPreambleFound = checkForValidPreambleInReceiveBuffer(makoPacket, preambleStart);
 
         if (validPreambleFound)
           USB_SERIAL_PRINTLN("3.0 preamble: Found");
