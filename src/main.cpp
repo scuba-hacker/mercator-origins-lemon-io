@@ -280,6 +280,13 @@ JsonDocument readings;
 int32_t lastCheckForInternetConnectivityAt = 0;
 uint32_t privateMQTTUploadCount = 0;
 
+// CLAUDE CODE IS TO REINSTATE AFTER VOBSTER 
+// 
+// CLAUDE // Serial command testing variables
+// CLAUDE Preferences testingPrefs;
+// CLAUDE bool wifiTestingBlocked = false;
+// CLAUDE bool flashBufferTestingEnabled = false;
+
 // #### START IN-MEMORY TELEMETRY-PIPELINE / MESSAGE BUFFER CONFIG
 TelemetryPipeline telemetryPipeline;
 
@@ -499,6 +506,11 @@ void getNextTelemetryMessagesUploadedToPrivateMQTT();
 void populateCurrentLemonTelemetry(LemonTelemetryForJson& l, TinyGPSPlus& g);
 void populateFinalLemonTelemetry(LemonTelemetryForJson& l);
 void constructLemonTelemetryForStorage(struct LemonTelemetryForStorage& s, const LemonTelemetryForJson l, const uint16_t uplinkMessageLength);
+
+// CLAUDE // Serial command processing
+// CLAUDE void processSerialCommands();
+// CLAUDE void loadTestingPreferences();
+// CLAUDE void saveTestingPreferences();
 uint8_t decode_uint8(uint8_t*& msg) ;
 uint16_t decode_uint16(uint8_t*& msg) ;
 uint32_t decode_uint32(uint8_t*& msg) ;
@@ -937,6 +949,9 @@ void setup()
   setupCompletedAt = millis();
   startAccumulatingMissedMessagesAt = setupCompletedAt + delayBeforeCountingMissedMessages;
 
+  // CLAUDE // Load testing preferences
+  // CLAUDE loadTestingPreferences();
+
   USB_SERIAL_PRINTLN("Setup() completed");
 }
 
@@ -1192,7 +1207,14 @@ void loop()
   
   newTempHumidRead = readTempHumidityCJMCU_1080_Sensor(&tempFloat, &humidFloat);
 
+// CLAUDE   // Process serial commands for testing
+// CLAUDE   processSerialCommands();
+
   updateButtonsAndBuzzer();
+
+// CLAUDE   // Skip MQTT if WiFi is blocked for testing
+// CLAUDE     if (enableUploadToPrivateMQTT && !wifiTestingBlocked)
+// CLAUDE       privateMQTT.loop();
 
   if (enableUploadToPrivateMQTT)
     privateMQTT.loop();
@@ -1653,6 +1675,111 @@ bool readTempHumidityCJMCU_1080_Sensor(double* temperature, double* humidity)
   }
   return newReadingsAvailable;
 }
+
+// BEGIN CLAUDE
+// // Serial command processing for testing
+// void loadTestingPreferences() {
+//   testingPrefs.begin("testing", false);
+//   wifiTestingBlocked = testingPrefs.getBool("wifi_blocked", false);
+//   flashBufferTestingEnabled = testingPrefs.getBool("flash_enabled", false);
+  
+//   USB_SERIAL_PRINTF("Testing preferences loaded: WiFi blocked=%s, Flash enabled=%s\n", 
+//             wifiTestingBlocked ? "YES" : "NO", flashBufferTestingEnabled ? "YES" : "NO");
+// }
+
+// void saveTestingPreferences() {
+//   testingPrefs.putBool("wifi_blocked", wifiTestingBlocked);
+//   testingPrefs.putBool("flash_enabled", flashBufferTestingEnabled);
+//   USB_SERIAL_PRINTF("Testing preferences saved: WiFi blocked=%s, Flash enabled=%s\n", 
+//             wifiTestingBlocked ? "YES" : "NO", flashBufferTestingEnabled ? "YES" : "NO");
+// }
+
+// void processSerialCommands() {
+//   // Only process if serial data is available
+//   if (!Serial.available()) {
+//     return;
+//   }
+  
+//   char command = Serial.read();
+  
+//   switch (command) {
+//     case 'D':
+//     case 'd':
+//       // Disconnect WiFi for testing
+//       if (!wifiTestingBlocked) {
+//         wifiTestingBlocked = true;
+//         WiFi.disconnect(true);  // Disconnect and disable auto-reconnect
+//         saveTestingPreferences();
+//         USB_SERIAL_PRINTLN(">>> TESTING: WiFi DISCONNECTED - Flash buffer should activate");
+//         sendLemonStatus(LC_NO_WIFI);
+//       } else {
+//         USB_SERIAL_PRINTLN(">>> TESTING: WiFi already disconnected");
+//       }
+//       break;
+      
+//     case 'C':
+//     case 'c':
+//       // Connect WiFi for testing  
+//       if (wifiTestingBlocked) {
+//         wifiTestingBlocked = false;
+//         saveTestingPreferences();
+//         // Trigger network manager to reconnect
+//         networkManager.setForceConnectivityCheckForDisplay(true);
+//         USB_SERIAL_PRINTLN(">>> TESTING: WiFi RECONNECT enabled - Should drain flash buffer to MQTT");
+//       } else {
+//         USB_SERIAL_PRINTLN(">>> TESTING: WiFi already connected");
+//       }
+//       break;
+      
+//     case 'F':
+//     case 'f':
+//       // Toggle flash buffer enable/disable
+//       flashBufferTestingEnabled = !flashBufferTestingEnabled;
+//       saveTestingPreferences();
+//       USB_SERIAL_PRINTF(">>> TESTING: Flash buffer %s (requires restart to take effect)\n", 
+//                 flashBufferTestingEnabled ? "ENABLED" : "DISABLED");
+//       break;
+      
+//     case 'R':
+//     case 'r':
+//       // Reset flash buffer (factory reset)
+//       USB_SERIAL_PRINTLN(">>> TESTING: Performing flash buffer factory reset...");
+//       // TODO: Call flash buffer factory reset when integrated
+//       break;
+      
+//     case 'S':
+//     case 's':
+//       // Show status
+//       USB_SERIAL_PRINTLN("=== TESTING STATUS ===");
+//       USB_SERIAL_PRINTF("WiFi Testing Blocked: %s\n", wifiTestingBlocked ? "YES" : "NO");
+//       USB_SERIAL_PRINTF("Flash Buffer Enabled: %s\n", flashBufferTestingEnabled ? "YES" : "NO");
+//       USB_SERIAL_PRINTF("WiFi Status: %s\n", WiFi.isConnected() ? "Connected" : "Disconnected");
+//       USB_SERIAL_PRINTF("MQTT Status: %s\n", privateMQTT.isConnected() ? "Connected" : "Disconnected");
+//       USB_SERIAL_PRINTF("Pipeline Length: %u\n", telemetryPipeline.getPipelineLength());
+//       USB_SERIAL_PRINTF("Pipeline Draining: %s\n", telemetryPipeline.isPipelineDraining() ? "YES" : "NO");
+//       USB_SERIAL_PRINTLN("=====================");
+//       break;
+      
+//     case 'H':
+//     case 'h':
+//     case '?':
+//       // Show help
+//       USB_SERIAL_PRINTLN("=== TESTING COMMANDS ===");
+//       USB_SERIAL_PRINTLN("D/d - Disconnect WiFi (simulate no internet)");
+//       USB_SERIAL_PRINTLN("C/c - Connect WiFi (simulate internet return)");  
+//       USB_SERIAL_PRINTLN("F/f - Toggle flash buffer enable/disable");
+//       USB_SERIAL_PRINTLN("R/r - Reset flash buffer (factory reset)");
+//       USB_SERIAL_PRINTLN("S/s - Show current status");
+//       USB_SERIAL_PRINTLN("H/h/? - Show this help");
+//       USB_SERIAL_PRINTLN("=======================");
+//       break;
+      
+//     default:
+//       // Ignore other characters (including newlines, spaces, etc.)
+//       break;
+//   }
+// }
+// END CLAUDE
 
 #define BUILD_INCLUDE_MAIN_PART2
 

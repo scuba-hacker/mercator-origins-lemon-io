@@ -1,0 +1,654 @@
+// FlashRingBuffer Part 2: Record Operations
+// This file contains the record append, read, delete, and statistics methods
+
+#include "FlashRingBuffer.h"
+#include "SerialConfig.h"
+#include <Arduino.h>
+#include <cstring>
+
+// Record operations
+bool FlashRingBuffer::appendRecord(const uint8_t* payload, uint16_t length) {
+    if (!m_initialized || !payload) {
+        USB_SERIAL_PRINTLN("FlashRingBuffer::appendRecord() - Not initialized or null payload");
+        return false;
+    }
+    
+    if (length < MIN_MESSAGE_SIZE || length > MAX_MESSAGE_SIZE) {
+        USB_SERIAL_PRINTF("FlashRingBuffer::appendRecord() - Invalid length: %u (must be %u-%u)\n", 
+                  length, MIN_MESSAGE_SIZE, MAX_MESSAGE_SIZE);
+        return false;
+    }
+    
+    uint32_t total_record_size = RECORD_HEADER_SIZE + length;
+    
+    // Check if RAM buffer has space for this record
+    if (m_buffer_used + total_record_size > USABLE_SECTOR_SIZE) {
+        USB_SERIAL_PRINTF("FlashRingBuffer::appendRecord() - RAM buffer full, flushing to flash (need %u bytes, have %u free)\n", 
+                  total_record_size, USABLE_SECTOR_SIZE - m_buffer_used);
+        
+        // Flush current RAM buffer to flash
+        if (!flushRAMBufferToFlash()) {
+            USB_SERIAL_PRINTLN("FlashRingBuffer::appendRecord() - Failed to flush RAM buffer");
+            return false;
+        }
+    }
+    
+    // Add record to RAM buffer with power-safe pattern
+    uint32_t buffer_offset = m_buffer_used;
+    
+    // Prepare record header (mark as invalid initially for power-safe pattern)
+    RecordHeader record_header;
+    record_header.len = length;
+    record_header.crc16 = calculateCRC16(payload, length);
+    record_header.valid = 0xFF; // Mark as invalid initially for power-safe pattern
+    record_header.reserved[0] = record_header.reserved[1] = record_header.reserved[2] = 0;
+    
+    // Copy record to RAM buffer
+    memcpy(m_sector_assembly_buffer + buffer_offset, &record_header, RECORD_HEADER_SIZE);
+    memcpy(m_sector_assembly_buffer + buffer_offset + RECORD_HEADER_SIZE, payload, length);
+    
+    // Mark record as valid (commit in RAM - will be power-safe when flushed)
+    record_header.valid = 0x00; // Mark as valid
+    memcpy(m_sector_assembly_buffer + buffer_offset + offsetof(RecordHeader, valid), &record_header.valid, 1);
+    
+    // Update buffer usage
+    m_buffer_used += total_record_size;
+    
+    USB_SERIAL_PRINTF("FlashRingBuffer::appendRecord() - Added %u byte record to RAM buffer (%u bytes used)\n", 
+              length, m_buffer_used);
+    
+    // Check if RAM buffer is getting full (>75% capacity) and flush proactively
+    // This ensures we don't wait too long between flash writes while still batching efficiently
+    if (m_buffer_used > (USABLE_SECTOR_SIZE * 3 / 4)) {
+        USB_SERIAL_PRINTF("FlashRingBuffer::appendRecord() - RAM buffer >75%% full (%u bytes), flushing proactively\n", 
+                  m_buffer_used);
+        
+        if (!flushRAMBufferToFlash()) {
+            USB_SERIAL_PRINTLN("FlashRingBuffer::appendRecord() - Failed to flush RAM buffer proactively");
+            // Not fatal - record is in RAM buffer, continue
+        }
+    }
+    
+    return true;
+}
+
+bool FlashRingBuffer::flushRAMBufferToFlash() {
+    if (!m_initialized || m_buffer_used == 0) {
+        return true; // Nothing to flush
+    }
+    
+    USB_SERIAL_PRINTF("FlashRingBuffer::flushRAMBufferToFlash() - Flushing %u bytes to sector %u\n", 
+              m_buffer_used, m_state.head_sector);
+    
+    // Check if we need to advance to next sector
+    uint32_t required_space = SECTOR_HEADER_SIZE + m_buffer_used;
+    if (required_space > SECTOR_SIZE) {
+        USB_SERIAL_PRINTLN("FlashRingBuffer::flushRAMBufferToFlash() - Buffer too large for single sector");
+        return false;
+    }
+    
+    // Check if current sector has space for this buffer
+    if (SECTOR_HEADER_SIZE + m_state.head_sector_used + m_buffer_used > SECTOR_SIZE) {
+        USB_SERIAL_PRINTF("FlashRingBuffer::flushRAMBufferToFlash() - Current sector full, advancing (need %u bytes)\n", 
+                  m_buffer_used);
+        
+        if (!advanceSector()) {
+            USB_SERIAL_PRINTLN("FlashRingBuffer::flushRAMBufferToFlash() - Failed to advance sector");
+            return false;
+        }
+    }
+    
+    // Prepare complete sector with header
+    memset(m_sector_buffer, 0xFF, SECTOR_SIZE);
+    
+    // Create sector header
+    SectorHeader sector_header;
+    sector_header.magic = SECTOR_MAGIC;
+    sector_header.seq = m_state.next_seq_number;
+    sector_header.used = m_state.head_sector_used + m_buffer_used;
+    sector_header.reserved = 0;
+    sector_header.rsvd2 = 0;
+    sector_header.crc32 = calculateCRC32((const uint8_t*)&sector_header, 
+                                       sizeof(SectorHeader) - sizeof(sector_header.crc32));
+    
+    // Copy header to sector buffer
+    memcpy(m_sector_buffer, &sector_header, SECTOR_HEADER_SIZE);
+    
+    // If there's existing data in the sector, read it first
+    if (m_state.head_sector_used > 0) {
+        esp_err_t err = esp_partition_read(m_partition, 
+                                         m_state.head_sector * SECTOR_SIZE + SECTOR_HEADER_SIZE,
+                                         m_sector_buffer + SECTOR_HEADER_SIZE,
+                                         m_state.head_sector_used);
+        if (err != ESP_OK) {
+            USB_SERIAL_PRINTF("FlashRingBuffer::flushRAMBufferToFlash() - Failed to read existing data: %s\n", 
+                      esp_err_to_name(err));
+            return false;
+        }
+    }
+    
+    // Copy assembly buffer data after existing data
+    memcpy(m_sector_buffer + SECTOR_HEADER_SIZE + m_state.head_sector_used, 
+           m_sector_assembly_buffer, m_buffer_used);
+    
+    // Erase and write the complete sector (power-safe pattern)
+    esp_err_t err = eraseSector(m_state.head_sector);
+    if (err != ESP_OK) {
+        USB_SERIAL_PRINTF("FlashRingBuffer::flushRAMBufferToFlash() - Failed to erase sector %u: %s\n", 
+                  m_state.head_sector, esp_err_to_name(err));
+        return false;
+    }
+    
+    err = writeSector(m_state.head_sector, m_sector_buffer, SECTOR_SIZE);
+    if (err != ESP_OK) {
+        USB_SERIAL_PRINTF("FlashRingBuffer::flushRAMBufferToFlash() - Failed to write sector %u: %s\n", 
+                  m_state.head_sector, esp_err_to_name(err));
+        return false;
+    }
+    
+    // Update state
+    m_state.head_sector_used += m_buffer_used;
+    m_state.write_count++;
+    
+    // Clear assembly buffer
+    memset(m_sector_assembly_buffer, 0xFF, SECTOR_SIZE);
+    m_buffer_used = 0;
+    
+    // Save persistent state
+    savePersistedState();
+    
+    USB_SERIAL_PRINTF("FlashRingBuffer::flushRAMBufferToFlash() - Successfully flushed buffer to sector %u\n", 
+              m_state.head_sector);
+    
+    return true;
+}
+
+bool FlashRingBuffer::readOldestRecord(uint8_t* payload, uint16_t max_length, uint16_t& actual_length) {
+    if (!m_initialized || !payload) {
+        USB_SERIAL_PRINTLN("FlashRingBuffer::readOldestRecord() - Not initialized or null payload");
+        return false;
+    }
+    
+    if (isEmpty()) {
+        USB_SERIAL_PRINTLN("FlashRingBuffer::readOldestRecord() - Ring buffer is empty");
+        return false;
+    }
+    
+    // Read tail sector to find oldest record
+    esp_err_t err = readSector(m_state.tail_sector, m_sector_buffer, SECTOR_SIZE);
+    if (err != ESP_OK) {
+        USB_SERIAL_PRINTF("FlashRingBuffer::readOldestRecord() - Failed to read tail sector %u: %s\n", 
+                  m_state.tail_sector, esp_err_to_name(err));
+        return false;
+    }
+    
+    // Look for first valid record in tail sector
+    uint32_t offset = SECTOR_HEADER_SIZE;
+    while (offset + RECORD_HEADER_SIZE <= SECTOR_SIZE) {
+        RecordHeader* record = (RecordHeader*)(m_sector_buffer + offset);
+        
+        // Check if we have a valid record
+        if (record->valid != 0x00) {
+            USB_SERIAL_PRINTF("FlashRingBuffer::readOldestRecord() - Skipping invalid record at offset %u\n", offset);
+            break; // No more valid records in this sector
+        }
+        
+        if (record->len < MIN_MESSAGE_SIZE || record->len > MAX_MESSAGE_SIZE) {
+            USB_SERIAL_PRINTF("FlashRingBuffer::readOldestRecord() - Invalid record length %u at offset %u\n", 
+                      record->len, offset);
+            break;
+        }
+        
+        if (record->len > max_length) {
+            USB_SERIAL_PRINTF("FlashRingBuffer::readOldestRecord() - Record too large: %u > %u\n", 
+                      record->len, max_length);
+            return false;
+        }
+        
+        // Verify record CRC
+        uint8_t* record_payload = m_sector_buffer + offset + RECORD_HEADER_SIZE;
+        uint16_t calculated_crc = calculateCRC16(record_payload, record->len);
+        if (calculated_crc != record->crc16) {
+            USB_SERIAL_PRINTF("FlashRingBuffer::readOldestRecord() - CRC mismatch at offset %u\n", offset);
+            break;
+        }
+        
+        // Copy payload to output buffer
+        memcpy(payload, record_payload, record->len);
+        actual_length = record->len;
+        
+        USB_SERIAL_PRINTF("FlashRingBuffer::readOldestRecord() - Read %u byte record from sector %u\n", 
+                  record->len, m_state.tail_sector);
+        
+        return true;
+    }
+    
+    USB_SERIAL_PRINTF("FlashRingBuffer::readOldestRecord() - No valid records found in tail sector %u\n", 
+              m_state.tail_sector);
+    return false;
+}
+
+bool FlashRingBuffer::deleteOldestRecord() {
+    if (!m_initialized) {
+        USB_SERIAL_PRINTLN("FlashRingBuffer::deleteOldestRecord() - Not initialized");
+        return false;
+    }
+    
+    if (isEmpty()) {
+        USB_SERIAL_PRINTLN("FlashRingBuffer::deleteOldestRecord() - Ring buffer is empty");
+        return false;
+    }
+    
+    // Read tail sector
+    esp_err_t err = readSector(m_state.tail_sector, m_sector_buffer, SECTOR_SIZE);
+    if (err != ESP_OK) {
+        USB_SERIAL_PRINTF("FlashRingBuffer::deleteOldestRecord() - Failed to read tail sector %u: %s\n", 
+                  m_state.tail_sector, esp_err_to_name(err));
+        return false;
+    }
+    
+    SectorHeader* sector_header = (SectorHeader*)m_sector_buffer;
+    bool found_record = false;
+    
+    // Find and mark first valid record as deleted by shifting remaining records
+    uint32_t offset = SECTOR_HEADER_SIZE;
+    while (offset + RECORD_HEADER_SIZE <= SECTOR_SIZE) {
+        RecordHeader* record = (RecordHeader*)(m_sector_buffer + offset);
+        
+        if (record->valid == 0x00 && record->len >= MIN_MESSAGE_SIZE && record->len <= MAX_MESSAGE_SIZE) {
+            uint32_t total_record_size = RECORD_HEADER_SIZE + record->len;
+            uint32_t remaining_data_size = sector_header->used - (offset + total_record_size - SECTOR_HEADER_SIZE);
+            
+            // Shift remaining records forward
+            if (remaining_data_size > 0) {
+                memmove(m_sector_buffer + offset, 
+                       m_sector_buffer + offset + total_record_size,
+                       remaining_data_size);
+            }
+            
+            // Update sector header
+            sector_header->used -= total_record_size;
+            sector_header->crc32 = calculateCRC32((const uint8_t*)sector_header, 
+                                                 sizeof(SectorHeader) - sizeof(sector_header->crc32));
+            
+            // Write updated sector back to flash
+            esp_err_t write_err = writeSector(m_state.tail_sector, m_sector_buffer, SECTOR_SIZE);
+            if (write_err != ESP_OK) {
+                USB_SERIAL_PRINTF("FlashRingBuffer::deleteOldestRecord() - Failed to update sector: %s\n", 
+                          esp_err_to_name(write_err));
+                return false;
+            }
+            
+            USB_SERIAL_PRINTF("FlashRingBuffer::deleteOldestRecord() - Deleted %u byte record from sector %u\n", 
+                      record->len, m_state.tail_sector);
+            
+            found_record = true;
+            break;
+        }
+        
+        offset += RECORD_HEADER_SIZE + record->len;
+    }
+    
+    if (!found_record) {
+        USB_SERIAL_PRINTF("FlashRingBuffer::deleteOldestRecord() - No valid records in tail sector %u\n", 
+                  m_state.tail_sector);
+        
+        // Advance tail sector if current one is empty
+        m_state.tail_sector = (m_state.tail_sector + 1) % TOTAL_SECTORS;
+        USB_SERIAL_PRINTF("FlashRingBuffer::deleteOldestRecord() - Advanced tail to sector %u\n", 
+                  m_state.tail_sector);
+        
+        savePersistedState();
+        return deleteOldestRecord(); // Try again with next sector
+    }
+    
+    return true;
+}
+
+// Statistics and status methods
+uint32_t FlashRingBuffer::getRecordCount() const {
+    if (!m_initialized || isEmpty()) {
+        return 0;
+    }
+    
+    uint32_t count = 0;
+    uint32_t current_sector = m_state.tail_sector;
+    
+    do {
+        // This is a simplified count - full implementation would scan each sector
+        // For now, estimate based on sector usage and average record size
+        count += 10; // Rough estimate - should be implemented properly
+        
+        current_sector = (current_sector + 1) % TOTAL_SECTORS;
+    } while (current_sector != m_state.head_sector);
+    
+    return count;
+}
+
+uint32_t FlashRingBuffer::getUsedSpace() const {
+    if (!m_initialized) {
+        return 0;
+    }
+    
+    uint32_t used_sectors = getRingDistance();
+    return (used_sectors * SECTOR_SIZE) + m_state.head_sector_used;
+}
+
+uint32_t FlashRingBuffer::getFreeSpace() const {
+    return RING_BUFFER_SIZE - getUsedSpace();
+}
+
+bool FlashRingBuffer::isEmpty() const {
+    return (m_state.head_sector == m_state.tail_sector && m_state.head_sector_used == 0);
+}
+
+bool FlashRingBuffer::isFull() const {
+    uint32_t next_head = (m_state.head_sector + 1) % TOTAL_SECTORS;
+    return (next_head == m_state.tail_sector && m_state.head_sector_used >= USABLE_SECTOR_SIZE);
+}
+
+bool FlashRingBuffer::performSelfTest() {
+    USB_SERIAL_PRINTLN("FlashRingBuffer::performSelfTest() - Running self-test");
+    
+    if (!m_initialized) {
+        USB_SERIAL_PRINTLN("FlashRingBuffer::performSelfTest() - Not initialized");
+        return false;
+    }
+    
+    // Test 1: Write a small test record
+    const char* test_data = "FlashRingBuffer Self-Test Record";
+    uint16_t test_len = strlen(test_data);
+    
+    // Append test record
+    if (!appendRecord((const uint8_t*)test_data, test_len)) {
+        if (!appendRecord((const uint8_t*)test_data, test_len)) {
+            USB_SERIAL_PRINTLN("FlashRingBuffer::performSelfTest() - Failed to write test record");
+            return false;
+        }
+    } else {
+        if (!appendRecord((const uint8_t*)test_data, test_len)) {
+            USB_SERIAL_PRINTLN("FlashRingBuffer::performSelfTest() - Failed to write test record");
+            return false;
+        }
+    }
+    
+    // Test 2: Read back the test record
+    uint8_t read_buffer[256];
+    uint16_t read_len;
+    
+    if (!readOldestRecord(read_buffer, sizeof(read_buffer), read_len)) {
+        USB_SERIAL_PRINTLN("FlashRingBuffer::performSelfTest() - Failed to read test record");
+        return false;
+    }
+    
+    if (read_len != test_len || memcmp(read_buffer, test_data, test_len) != 0) {
+        USB_SERIAL_PRINTF("FlashRingBuffer::performSelfTest() - Length mismatch: %u != %u\n", read_len, test_len);
+        return false;
+    }
+    
+    // Test 3: Delete the test record
+    if (!deleteOldestRecord()) {
+        USB_SERIAL_PRINTLN("FlashRingBuffer::performSelfTest() - Failed to delete test record");
+        return false;
+    }
+    
+    USB_SERIAL_PRINTLN("FlashRingBuffer::performSelfTest() - Self-test passed");
+    return true;
+}
+
+bool FlashRingBuffer::validateSectorHeader(const SectorHeader& header) {
+    return (header.magic == SECTOR_MAGIC && header.used <= USABLE_SECTOR_SIZE);
+}
+
+bool FlashRingBuffer::advanceSector() {
+    USB_SERIAL_PRINTF("FlashRingBuffer::advanceSector() - Advancing from sector %u\n", m_state.head_sector);
+    
+    uint32_t next_head = (m_state.head_sector + 1) % TOTAL_SECTORS;
+    
+    // Check if we're about to overwrite the tail sector (buffer full condition)
+    if (next_head == m_state.tail_sector) {
+        USB_SERIAL_PRINTLN("FlashRingBuffer::advanceSector() - Ring buffer full, advancing tail");
+        // Advance tail to make room
+        m_state.tail_sector = (m_state.tail_sector + 1) % TOTAL_SECTORS;
+        
+        USB_SERIAL_PRINTF("FlashRingBuffer::advanceSector() - Advanced tail to sector %u\n", m_state.tail_sector);
+    }
+    
+    // Erase the new head sector
+    esp_err_t err = eraseSector(next_head);
+    if (err != ESP_OK) {
+        USB_SERIAL_PRINTF("FlashRingBuffer::advanceSector() - Failed to erase sector %u: %s\n", 
+                  next_head, esp_err_to_name(err));
+        return false;
+    }
+    
+    // Create and write new sector header
+    SectorHeader new_header;
+    new_header.magic = SECTOR_MAGIC;
+    new_header.seq = m_state.next_seq_number++;
+    new_header.used = 0;
+    new_header.reserved = 0;
+    new_header.rsvd2 = 0;
+    new_header.crc32 = calculateCRC32((const uint8_t*)&new_header, 
+                                     sizeof(new_header) - sizeof(new_header.crc32));
+    
+    err = writeSector(next_head, &new_header, sizeof(new_header));
+    if (err != ESP_OK) {
+        USB_SERIAL_PRINTF("FlashRingBuffer::advanceSector() - Failed to write sector header %u: %s\n", 
+                  next_head, esp_err_to_name(err));
+        return false;
+    }
+    
+    // Update state
+    m_state.head_sector = next_head;
+    m_state.head_sector_used = 0;
+    
+    USB_SERIAL_PRINTF("FlashRingBuffer::advanceSector() - Advanced to sector %u, seq=%u\n", 
+              m_state.head_sector, new_header.seq);
+    
+    savePersistedState();
+    
+    return true;
+}
+
+bool FlashRingBuffer::sectorHasSpace(uint32_t required_bytes) const {
+    return (m_state.head_sector_used + required_bytes <= USABLE_SECTOR_SIZE);
+}
+
+uint32_t FlashRingBuffer::getRingDistance() const {
+    if (m_state.head_sector >= m_state.tail_sector) {
+        return m_state.head_sector - m_state.tail_sector;
+    } else {
+        return TOTAL_SECTORS - m_state.tail_sector + m_state.head_sector;
+    }
+}
+
+// Comprehensive record counting implementation
+uint32_t FlashRingBuffer::getRecordCount() const {
+    if (!m_initialized || isEmpty()) {
+        return 0;
+    }
+    
+    uint32_t total_count = 0;
+    uint32_t current_sector = m_state.tail_sector;
+    
+    // Scan all sectors from tail to head to count records
+    do {
+        SectorHeader header;
+        esp_err_t err = readSector(current_sector, &header, sizeof(header));
+        
+        if (err == ESP_OK && header.magic == SECTOR_MAGIC) {
+            // Scan records in this sector
+            uint8_t* sector_data = m_sector_buffer;
+            err = readSector(current_sector, sector_data, SECTOR_SIZE);
+            
+            if (err == ESP_OK) {
+                uint32_t offset = SECTOR_HEADER_SIZE;
+                while (offset + RECORD_HEADER_SIZE <= SECTOR_SIZE && 
+                       offset < SECTOR_HEADER_SIZE + header.used) {
+                    RecordHeader* record = (RecordHeader*)(sector_data + offset);
+                    
+                    if (record->valid == 0x00 && 
+                        record->len >= MIN_MESSAGE_SIZE && 
+                        record->len <= MAX_MESSAGE_SIZE) {
+                        total_count++;
+                        offset += RECORD_HEADER_SIZE + record->len;
+                    } else {
+                        break; // Invalid record, stop scanning this sector
+                    }
+                }
+            }
+        }
+        
+        current_sector = (current_sector + 1) % TOTAL_SECTORS;
+    } while (current_sector != m_state.head_sector);
+    
+    return total_count;
+}
+
+// Enhanced sector space validation
+bool FlashRingBuffer::sectorHasSpace(uint32_t required_bytes) const {
+    if (!m_initialized) {
+        return false;
+    }
+    
+    uint32_t available = USABLE_SECTOR_SIZE - m_state.head_sector_used;
+    return (required_bytes <= available);
+}
+
+// Ring buffer distance calculation with overflow protection
+uint32_t FlashRingBuffer::getRingDistance() const {
+    if (m_state.head_sector >= m_state.tail_sector) {
+        return m_state.head_sector - m_state.tail_sector;
+    } else {
+        return TOTAL_SECTORS - m_state.tail_sector + m_state.head_sector;
+    }
+}
+
+// Enhanced sector header validation
+bool FlashRingBuffer::validateSectorHeader(const SectorHeader& header) {
+    // Basic magic and usage validation
+    if (header.magic != SECTOR_MAGIC) {
+        return false;
+    }
+    
+    if (header.used > USABLE_SECTOR_SIZE) {
+        return false;
+    }
+    
+    // CRC validation
+    uint32_t calculated_crc = calculateCRC32((const uint8_t*)&header, 
+                                            sizeof(SectorHeader) - sizeof(header.crc32));
+    return (calculated_crc == header.crc32);
+}
+
+// Complete self-test implementation
+bool FlashRingBuffer::performSelfTest() {
+    USB_SERIAL_PRINTLN("FlashRingBuffer::performSelfTest() - Running comprehensive self-test");
+    
+    if (!m_initialized) {
+        USB_SERIAL_PRINTLN("FlashRingBuffer::performSelfTest() - Not initialized");
+        return false;
+    }
+    
+    bool all_tests_passed = true;
+    
+    // Test 1: Multiple record size write/read/delete cycle
+    const uint16_t test_sizes[] = {MIN_MESSAGE_SIZE, 32, 64, 128, 256, 512, MAX_MESSAGE_SIZE};
+    const uint8_t num_sizes = sizeof(test_sizes) / sizeof(test_sizes[0]);
+    
+    for (uint8_t i = 0; i < num_sizes; i++) {
+        uint16_t size = test_sizes[i];
+        uint8_t* test_data = (uint8_t*)malloc(size);
+        uint8_t* read_data = (uint8_t*)malloc(size);
+        
+        if (!test_data || !read_data) {
+            USB_SERIAL_PRINTLN("FlashRingBuffer::performSelfTest() - Memory allocation failed");
+            if (test_data) free(test_data);
+            if (read_data) free(read_data);
+            all_tests_passed = false;
+            break;
+        }
+        
+        // Generate test pattern
+        for (uint16_t j = 0; j < size; j++) {
+            test_data[j] = (uint8_t)(j ^ 0x5A ^ (i << 3));
+        }
+        
+        // Write test
+        if (!appendRecord(test_data, size)) {
+            USB_SERIAL_PRINTF("FlashRingBuffer::performSelfTest() - Failed to write %u byte record\n", size);
+            all_tests_passed = false;
+            free(test_data);
+            free(read_data);
+            break;
+        }
+        
+        // Read test
+        uint16_t actual_len;
+        if (!readOldestRecord(read_data, size, actual_len)) {
+            USB_SERIAL_PRINTF("FlashRingBuffer::performSelfTest() - Failed to read %u byte record\n", size);
+            all_tests_passed = false;
+            free(test_data);
+            free(read_data);
+            break;
+        }
+        
+        // Verify data
+        if (actual_len != size || memcmp(test_data, read_data, size) != 0) {
+            USB_SERIAL_PRINTF("FlashRingBuffer::performSelfTest() - Data mismatch for %u byte record\n", size);
+            all_tests_passed = false;
+            free(test_data);
+            free(read_data);
+            break;
+        }
+        
+        // Delete test
+        if (!deleteOldestRecord()) {
+            USB_SERIAL_PRINTF("FlashRingBuffer::performSelfTest() - Failed to delete %u byte record\n", size);
+            all_tests_passed = false;
+            free(test_data);
+            free(read_data);
+            break;
+        }
+        
+        free(test_data);
+        free(read_data);
+        
+        USB_SERIAL_PRINTF("FlashRingBuffer::performSelfTest() - %u byte test passed\n", size);
+    }
+    
+    // Test 2: Buffer overflow protection
+    USB_SERIAL_PRINTLN("FlashRingBuffer::performSelfTest() - Testing buffer overflow protection");
+    
+    // Try to write an oversized record
+    uint8_t oversized_data[MAX_MESSAGE_SIZE + 100];
+    if (appendRecord(oversized_data, sizeof(oversized_data))) {
+        USB_SERIAL_PRINTLN("FlashRingBuffer::performSelfTest() - FAILED: Oversized record was accepted");
+        all_tests_passed = false;
+    }
+    
+    // Test 3: Empty buffer behavior
+    USB_SERIAL_PRINTLN("FlashRingBuffer::performSelfTest() - Testing empty buffer behavior");
+    uint8_t dummy_buffer[64];
+    uint16_t dummy_len;
+    
+    if (isEmpty()) {
+        if (readOldestRecord(dummy_buffer, sizeof(dummy_buffer), dummy_len)) {
+            USB_SERIAL_PRINTLN("FlashRingBuffer::performSelfTest() - FAILED: Read succeeded on empty buffer");
+            all_tests_passed = false;
+        }
+        
+        if (deleteOldestRecord()) {
+            USB_SERIAL_PRINTLN("FlashRingBuffer::performSelfTest() - FAILED: Delete succeeded on empty buffer");
+            all_tests_passed = false;
+        }
+    }
+    
+    USB_SERIAL_PRINTF("FlashRingBuffer::performSelfTest() - Self-test %s\n", 
+              all_tests_passed ? "PASSED" : "FAILED");
+    
+    return all_tests_passed;
+}
+
+// NOTE: This file continues in FlashRingBuffer_part3.cpp for reset/recovery operations
