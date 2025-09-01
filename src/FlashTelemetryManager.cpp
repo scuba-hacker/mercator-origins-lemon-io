@@ -423,3 +423,60 @@ bool FlashTelemetryManager::repairFlashCorruption() {
     
     return m_flash_buffer.repairCorruption();
 }
+
+// Extended diagnostic methods - delegate to FlashRingBuffer
+bool FlashTelemetryManager::performPowerOnSelfTest(bool auto_repair) {
+    if (m_storage_mode != FLASH_ONLY) {
+        USB_SERIAL_PRINTF("FlashTelemetryManager::performPowerOnSelfTest() - Not in flash mode (mode: %d)\n", (int)m_storage_mode);
+        return false;
+    }
+    
+    if (!m_flash_buffer.isInitialized()) {
+        USB_SERIAL_PRINTLN("FlashTelemetryManager::performPowerOnSelfTest() - Flash buffer not initialized");
+        return false;
+    }
+    
+    return m_flash_buffer.performPowerOnSelfTest(auto_repair);
+}
+
+bool FlashTelemetryManager::performDeepSectorValidation() {
+    if (m_storage_mode != FLASH_ONLY) {
+        USB_SERIAL_PRINTF("FlashTelemetryManager::performDeepSectorValidation() - Not in flash mode (mode: %d)\n", (int)m_storage_mode);
+        return false;
+    }
+    
+    if (!m_flash_buffer.isInitialized()) {
+        USB_SERIAL_PRINTLN("FlashTelemetryManager::performDeepSectorValidation() - Flash buffer not initialized");
+        return false;
+    }
+    
+    return m_flash_buffer.performDeepSectorValidation();
+}
+
+bool FlashTelemetryManager::performPowerLossRecoveryTest() {
+    if (m_storage_mode != FLASH_ONLY) {
+        USB_SERIAL_PRINTF("FlashTelemetryManager::performPowerLossRecoveryTest() - Not in flash mode (mode: %d)\n", (int)m_storage_mode);
+        return false;
+    }
+    
+    if (!m_flash_buffer.isInitialized()) {
+        USB_SERIAL_PRINTLN("FlashTelemetryManager::performPowerLossRecoveryTest() - Flash buffer not initialized");
+        return false;
+    }
+    
+    return m_flash_buffer.performPowerLossRecoveryTest();
+}
+
+bool FlashTelemetryManager::performStressTest(uint32_t num_records) {
+    if (m_storage_mode != FLASH_ONLY) {
+        USB_SERIAL_PRINTF("FlashTelemetryManager::performStressTest() - Not in flash mode (mode: %d)\n", (int)m_storage_mode);
+        return false;
+    }
+    
+    if (!m_flash_buffer.isInitialized()) {
+        USB_SERIAL_PRINTLN("FlashTelemetryManager::performStressTest() - Flash buffer not initialized");
+        return false;
+    }
+    
+    return m_flash_buffer.performStressTest(num_records);
+}

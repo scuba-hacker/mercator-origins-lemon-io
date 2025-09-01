@@ -75,6 +75,12 @@ public:
     bool performSelfTest();
     void prepareForShutdown();
     
+    // Extended diagnostic methods
+    bool performPowerOnSelfTest(bool auto_repair = true);
+    bool performDeepSectorValidation();
+    bool performPowerLossRecoveryTest();
+    bool performStressTest(uint32_t num_records = 1000);
+    
     // Reset and recovery functions
     bool factoryReset();
     bool clearAllFlashData();

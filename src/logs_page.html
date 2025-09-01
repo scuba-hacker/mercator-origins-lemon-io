@@ -125,12 +125,18 @@
             <button onclick="sendInputMessage()">Write Bytes</button>
             <select id="commandDropdown" class="command-dropdown">
                 <option value="">-- Select Command --</option>
-                <option value="Cycle">Cycle Display</option>
-                <option value="ZoomMap">Zoom Map</option>
+                <option value="S">Show System Status</option>
+                <option value="F">Toggle Flash Buffer Enable/Disable</option>
+                <option value="R">Factory Reset Flash Buffer</option>
+                <option value="D">Disconnect WiFi (Simulate Offline)</option>
+                <option value="C">Connect WiFi (Simulate Online)</option>
+                <option value="H">Show Help</option>
+                <option value="POST">Run Power-On Self Test</option>
+                <option value="DEEP">Run Deep Sector Validation</option>
+                <option value="STRESS">Run Stress Test (100 records)</option>
+                <option value="RECOVERY">Run Power-Loss Recovery Test</option>
                 <option value="ota-off">OTA Off</option>
                 <option value="reboot">Reboot</option>
-                <option value="force-reeds-primary">Force Reed Switches Primary Controls</option>
-                <option value="ota-only-mode">OTA Only Mode</option>
             </select>
             <button onclick="sendDropdownMessage()">Send</button>
         </div>

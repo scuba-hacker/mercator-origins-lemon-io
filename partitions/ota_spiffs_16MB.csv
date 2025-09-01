@@ -1,6 +1,14 @@
-# Name,     Type, SubType, Offset,   Size
-nvs,        data, nvs,     0x9000,   0x5000
-otadata,    data, ota,     0xe000,   0x2000
-app0,       app,  ota_0,   0x10000,  0x700000
-app1,       app,  ota_1,   0x710000, 0x700000
-spiffs,     data, spiffs,  0xe10000, 0x1F0000
+# Name,     Type, SubType, Offset,     Size
+nvs,        data, nvs,     0x9000,     0x5000
+otadata,    data, ota,     0xe000,     0x2000
+app0,       app,  ota_0,   0x10000,    0x200000
+app1,       app,  ota_1,   0x210000,   0x200000
+spiffs,     data, spiffs,  0x410000,   0x1F0000
+flashbuf,   data, 0x40,    0x600000,   0xA00000
+
+# nvs 20KB - Non-volatile storage
+# otadata 8KB - OTA partition info
+# app0 2MB - Primary app partition
+# app1 2MB - Secondary app (OTA)
+# spiffs 1.97MB - File system storage
+# flashbuf 10MB - Flash ring 

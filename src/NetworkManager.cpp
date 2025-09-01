@@ -756,22 +756,59 @@ void NetworkManager::sendStatsWebSocketNotification() {
 }
 
 void NetworkManager::webSerialReceiveMessage(uint8_t *data, size_t len) {
-    WebSerial.println("Received Data...");
-    String d = "";
+    WebSerial.println(">>> Web Command Received");
+    String command = "";
     for(int i = 0; i < len; i++) {
-        d += char(data[i]);
+        command += char(data[i]);
     }
+    command.trim();
 
-    WebSerial.println(d);
+    WebSerial.printf(">>> Processing: '%s'\n", command.c_str());
 
-    if (d == "ON") {
+    // Handle legacy commands
+    if (command == "ON") {
         // Note: LED control would need to be done via callback
         // statusLEDOn();
-    } else if (d == "OFF") {
+    } else if (command == "OFF") {
         // statusLEDOff();
-    } else if (d == "serial-off") {
+    } else if (command == "serial-off") {
         // writeLogToSerial = false;
         WebSerial.closeAll();
+        return;
+    }
+    
+    // Handle single-character commands (existing serial commands)
+    else if (command.length() == 1) {
+        char singleChar = command.charAt(0);
+        WebSerial.printf(">>> Single char command: '%c'\n", singleChar);
+        if (webSerialCommandCallback) {
+            webSerialCommandCallback(singleChar);
+        }
+    }
+    
+    // Handle multi-character commands (extended flash test commands)
+    else if (command == "POST") {
+        WebSerial.println(">>> Running Power-On Self Test...");
+        if (webSerialExtendedCommandCallback) {
+            webSerialExtendedCommandCallback("POST");
+        }
+    } else if (command == "DEEP") {
+        WebSerial.println(">>> Running Deep Sector Validation...");
+        if (webSerialExtendedCommandCallback) {
+            webSerialExtendedCommandCallback("DEEP");
+        }
+    } else if (command == "STRESS") {
+        WebSerial.println(">>> Running Stress Test (100 records)...");
+        if (webSerialExtendedCommandCallback) {
+            webSerialExtendedCommandCallback("STRESS");
+        }
+    } else if (command == "RECOVERY") {
+        WebSerial.println(">>> Running Power-Loss Recovery Test...");
+        if (webSerialExtendedCommandCallback) {
+            webSerialExtendedCommandCallback("RECOVERY");
+        }
+    } else {
+        WebSerial.printf(">>> Unknown command: '%s'\n", command.c_str());
     }
 }
 

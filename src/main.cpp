@@ -8,6 +8,9 @@ bool writeTelemetryLogToSerial = false; // writeLogToSerial must also be true if
 // make sure this is disabled if writeLogToSerial is false
 // Uncomment to enable
 #define USE_WEBSERIAL
+
+// Uncomment to use Flash persistence instead of PSRAM telemetry pipeline
+// #define USE_FLASH_TELEMETRY
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -147,6 +150,7 @@ OLEDLXDisplayManager LXdisplayManager(lgfxAdafruitDisplay);
 #include "TinyGPSPlus.h"
 #include <NavigationWaypoints.h>
 #include <TelemetryPipeline.h>
+#include "FlashTelemetryManager.h"
 #define PICOMQTT_MAX_MESSAGE_SIZE 4096
 #include "MercatorMQTT.h"
 
@@ -281,13 +285,16 @@ JsonDocument readings;
 int32_t lastCheckForInternetConnectivityAt = 0;
 uint32_t privateMQTTUploadCount = 0;
 
-// Serial command testing variables
+// System configuration and testing variables
 Preferences testingPrefs;
 bool wifiTestingBlocked = false;
-bool flashBufferTestingEnabled = false;
 
 // #### START IN-MEMORY TELEMETRY-PIPELINE / MESSAGE BUFFER CONFIG
-TelemetryPipeline telemetryPipeline;
+#ifdef USE_FLASH_TELEMETRY
+FlashTelemetryManager telemetryPipeline;    // Flash-based persistent pipeline
+#else
+TelemetryPipeline telemetryPipeline;        // Original PSRAM-based pipeline  
+#endif
 
 const uint32_t telemetry_online_head_commit_duty_ms = 1000;
 const uint32_t telemetry_offline_head_commit_duty_ms = telemetry_online_head_commit_duty_ms;
@@ -509,6 +516,9 @@ void constructLemonTelemetryForStorage(struct LemonTelemetryForStorage& s, const
 
 // Serial command processing
 void processSerialCommands();
+void processSerialCommand(char command);
+void processExtendedCommand(const String& command);
+void initializeTelemetrySystem();
 void loadTestingPreferences();
 void saveTestingPreferences();
 uint8_t decode_uint8(uint8_t*& msg) ;
@@ -890,6 +900,15 @@ void setup()
   networkManager.setGetStatsCallback([]() { return getStats(); });
   networkManager.setIsDevNetworkCallback([]() { return devNetworkInUse(); });
   networkManager.setPrepareEntireSystemForOTA([]() { prepareSystemForOTA(); });
+  
+  // Set up WebSerial command callbacks
+  networkManager.setWebSerialCommandCallback([](char command) {
+    processSerialCommand(command);
+  });
+  networkManager.setWebSerialExtendedCommandCallback([](const String& command) {
+    processExtendedCommand(command);
+  });
+  
   networkManager.begin();
 
   USB_SERIAL_PRINTF("sizeof LemonTelemetry: %lu\n",getSizeOfLemonTelemetryForStorage());
@@ -899,7 +918,8 @@ void setup()
   const uint16_t maxPipelineBufferKB = 2048;
   const uint16_t maxPipelineBlockPayloadSize = 256; // was 224 - Assuming 120 byte Mako Telemetry Msg and 104 byte Lemon Telemetry Msg
   BlockHeader::s_overrideMaxPayloadSize(maxPipelineBlockPayloadSize);  // 400 messages with 256 byte max payload. 
-  telemetryPipeline.init(&millis,maxPipelineBufferKB);
+  
+  initializeTelemetrySystem();
 
   dumpHeapUsage("main: after Telemetry Pipeline creation  ");
   
@@ -1655,31 +1675,44 @@ bool readTempHumidityCJMCU_1080_Sensor(double* temperature, double* humidity)
   return newReadingsAvailable;
 }
 
-// Serial command processing for testing flash persistence by blocking/unblocking wifi.
+// System configuration and preferences management
 void loadTestingPreferences() {
    testingPrefs.begin("testing", false);
    wifiTestingBlocked = testingPrefs.getBool("wifi_blocked", false);
-   flashBufferTestingEnabled = testingPrefs.getBool("flash_enabled", false);
   
-  USB_SERIAL_PRINTF("Testing preferences loaded: WiFi blocked=%s, Flash enabled=%s\n", 
-            wifiTestingBlocked ? "YES" : "NO", flashBufferTestingEnabled ? "YES" : "NO");
+  USB_SERIAL_PRINTF("Testing preferences loaded: WiFi blocked=%s\n", 
+            wifiTestingBlocked ? "YES" : "NO");
 }
 
 void saveTestingPreferences() {
   testingPrefs.putBool("wifi_blocked", wifiTestingBlocked);
-  testingPrefs.putBool("flash_enabled", flashBufferTestingEnabled);
-  USB_SERIAL_PRINTF("Testing preferences saved: WiFi blocked=%s, Flash enabled=%s\n", 
-            wifiTestingBlocked ? "YES" : "NO", flashBufferTestingEnabled ? "YES" : "NO");
+  USB_SERIAL_PRINTF("Testing preferences saved: WiFi blocked=%s\n", 
+            wifiTestingBlocked ? "YES" : "NO");
 }
 
-// These are commands to execute through USB serial to allow for testing of flash persistence/buffer
-void processSerialCommands() {
-  // Only process if serial data is available
-  if (!Serial.available()) {
-    return;
-  }
+void initializeTelemetrySystem() {
+  USB_SERIAL_PRINTLN(">>> Initializing telemetry system...");
+  telemetryPipeline.init(&millis, 2048);
   
-  char command = Serial.read();
+#ifdef USE_FLASH_TELEMETRY
+  USB_SERIAL_PRINTLN(">>> Telemetry System: Flash persistence ENABLED");
+#else
+  USB_SERIAL_PRINTLN(">>> Telemetry System: Using PSRAM (volatile) storage");
+#endif
+  
+  networkManager.setTelemetryPipeline(&telemetryPipeline);
+}
+
+const char* getCurrentPipelineType() {
+#ifdef USE_FLASH_TELEMETRY
+  return "FLASH (Persistent)";
+#else
+  return "PSRAM (Volatile)";
+#endif
+}
+
+// Process individual serial command character
+void processSerialCommand(char command) {
   
   switch (command) {
     case 'D':
@@ -1712,11 +1745,14 @@ void processSerialCommands() {
       
     case 'F':
     case 'f':
-      // Toggle flash buffer enable/disable
-      flashBufferTestingEnabled = !flashBufferTestingEnabled;
-      saveTestingPreferences();
-      USB_SERIAL_PRINTF(">>> TESTING: Flash buffer %s (requires restart to take effect)\n", 
-                flashBufferTestingEnabled ? "ENABLED" : "DISABLED");
+      // Show flash buffer compile-time setting
+#ifdef USE_FLASH_TELEMETRY
+      USB_SERIAL_PRINTLN(">>> Flash persistence is ENABLED (compile-time setting)");
+      USB_SERIAL_PRINTLN(">>> To disable, comment out #define USE_FLASH_TELEMETRY in main.cpp and recompile");
+#else
+      USB_SERIAL_PRINTLN(">>> Flash persistence is DISABLED (compile-time setting)");
+      USB_SERIAL_PRINTLN(">>> To enable, uncomment #define USE_FLASH_TELEMETRY in main.cpp and recompile");
+#endif
       break;
       
     case 'R':
@@ -1729,33 +1765,84 @@ void processSerialCommands() {
     case 'S':
     case 's':
       // Show status
-      USB_SERIAL_PRINTLN("=== TESTING STATUS ===");
-      USB_SERIAL_PRINTF("WiFi Testing Blocked: %s\n", wifiTestingBlocked ? "YES" : "NO");
-      USB_SERIAL_PRINTF("Flash Buffer Enabled: %s\n", flashBufferTestingEnabled ? "YES" : "NO");
+      USB_SERIAL_PRINTLN("=== LEMON-IO SYSTEM STATUS ===");
+      USB_SERIAL_PRINTF("Flash Persistence: %s\n", 
+#ifdef USE_FLASH_TELEMETRY
+                       "ENABLED");
+#else
+                       "DISABLED");
+#endif
+      USB_SERIAL_PRINTF("Active Pipeline: %s\n", getCurrentPipelineType());
       USB_SERIAL_PRINTF("WiFi Status: %s\n", WiFi.isConnected() ? "Connected" : "Disconnected");
       USB_SERIAL_PRINTF("MQTT Status: %s\n", privateMQTT.isConnected() ? "Connected" : "Disconnected");
-      USB_SERIAL_PRINTF("Pipeline Length: %u\n", telemetryPipeline.getPipelineLength());
+      USB_SERIAL_PRINTF("Pipeline Length: %u records\n", telemetryPipeline.getPipelineLength());
       USB_SERIAL_PRINTF("Pipeline Draining: %s\n", telemetryPipeline.isPipelineDraining() ? "YES" : "NO");
-      USB_SERIAL_PRINTLN("=====================");
+      USB_SERIAL_PRINTLN("");
+      USB_SERIAL_PRINTLN("Testing Simulation States:");
+      USB_SERIAL_PRINTF("WiFi Testing Blocked: %s\n", wifiTestingBlocked ? "YES" : "NO");
+      USB_SERIAL_PRINTLN("===============================");
       break;
       
     case 'H':
     case 'h':
     case '?':
       // Show help
-      USB_SERIAL_PRINTLN("=== TESTING COMMANDS ===");
-      USB_SERIAL_PRINTLN("D/d - Disconnect WiFi (simulate no internet)");
-      USB_SERIAL_PRINTLN("C/c - Connect WiFi (simulate internet return)");  
-      USB_SERIAL_PRINTLN("F/f - Toggle flash buffer enable/disable");
-      USB_SERIAL_PRINTLN("R/r - Reset flash buffer (factory reset)");
-      USB_SERIAL_PRINTLN("S/s - Show current status");
+      USB_SERIAL_PRINTLN("=== LEMON-IO COMMAND REFERENCE ===");
+      USB_SERIAL_PRINTLN("Production Commands:");
+      USB_SERIAL_PRINTLN("F/f - Toggle flash persistence on/off");
+      USB_SERIAL_PRINTLN("S/s - Show system status");
+      USB_SERIAL_PRINTLN("R/r - Factory reset flash storage");
       USB_SERIAL_PRINTLN("H/h/? - Show this help");
-      USB_SERIAL_PRINTLN("=======================");
+      USB_SERIAL_PRINTLN("");
+      USB_SERIAL_PRINTLN("Testing/Simulation Commands:");
+      USB_SERIAL_PRINTLN("D/d - Disconnect WiFi (simulate offline)");
+      USB_SERIAL_PRINTLN("C/c - Connect WiFi (simulate online)");
+      USB_SERIAL_PRINTLN("");
+      USB_SERIAL_PRINTLN("Flash Diagnostic Commands (Web Interface):");
+      USB_SERIAL_PRINTLN("POST - Power-On Self Test & Auto-Repair");
+      USB_SERIAL_PRINTLN("DEEP - Deep Sector Validation");
+      USB_SERIAL_PRINTLN("STRESS - High-Volume Stress Test");
+      USB_SERIAL_PRINTLN("RECOVERY - Power-Loss Recovery Test");
+      USB_SERIAL_PRINTLN("===================================");
       break;
       
     default:
       // Ignore other characters (including newlines, spaces, etc.)
       break;
+  }
+}
+
+// These are commands to execute through USB serial to allow for testing of flash persistence/buffer
+void processSerialCommands() {
+  // Only process if serial data is available
+  if (!Serial.available()) {
+    return;
+  }
+  
+  char command = Serial.read();
+  processSerialCommand(command);
+}
+
+// Process extended WebSerial commands (flash diagnostics)
+void processExtendedCommand(const String& command) {
+  if (command == "POST") {
+    USB_SERIAL_PRINTLN(">>> DIAGNOSTIC: Running Power-On Self Test...");
+    bool result = telemetryPipeline.performPowerOnSelfTest(true);
+    USB_SERIAL_PRINTF(">>> DIAGNOSTIC: Power-On Self Test %s\n", result ? "PASSED" : "FAILED");
+  } else if (command == "DEEP") {
+    USB_SERIAL_PRINTLN(">>> DIAGNOSTIC: Running Deep Sector Validation...");
+    bool result = telemetryPipeline.performDeepSectorValidation();
+    USB_SERIAL_PRINTF(">>> DIAGNOSTIC: Deep Sector Validation %s\n", result ? "PASSED" : "FAILED");
+  } else if (command == "STRESS") {
+    USB_SERIAL_PRINTLN(">>> DIAGNOSTIC: Running Stress Test (100 records)...");
+    bool result = telemetryPipeline.performStressTest(100);
+    USB_SERIAL_PRINTF(">>> DIAGNOSTIC: Stress Test %s\n", result ? "PASSED" : "FAILED");
+  } else if (command == "RECOVERY") {
+    USB_SERIAL_PRINTLN(">>> DIAGNOSTIC: Running Power-Loss Recovery Test...");
+    bool result = telemetryPipeline.performPowerLossRecoveryTest();
+    USB_SERIAL_PRINTF(">>> DIAGNOSTIC: Power-Loss Recovery Test %s\n", result ? "PASSED" : "FAILED");
+  } else {
+    USB_SERIAL_PRINTF(">>> DIAGNOSTIC: Unknown command: %s\n", command.c_str());
   }
 }
 

@@ -63,8 +63,8 @@ struct FlashDiagnostics {
 class FlashRingBuffer {
 public:
     static const uint32_t SECTOR_SIZE = 4096;
-    static const uint32_t RING_BUFFER_SIZE = 2 * 1024 * 1024; // 2MB
-    static const uint32_t TOTAL_SECTORS = RING_BUFFER_SIZE / SECTOR_SIZE; // 512 sectors
+    static const uint32_t RING_BUFFER_SIZE = 10 * 1024 * 1024; // 10MB
+    static const uint32_t TOTAL_SECTORS = RING_BUFFER_SIZE / SECTOR_SIZE; // 2560 sectors
     static const uint32_t SECTOR_HEADER_SIZE = sizeof(SectorHeader);
     static const uint32_t RECORD_HEADER_SIZE = sizeof(RecordHeader);
     static const uint32_t SECTOR_MAGIC = 0x42474F4C; // "LOGB"

@@ -155,6 +155,10 @@ private:
     void handleWebSocketMessage(void *arg, uint8_t *data, size_t len);
     void onWebSocketEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type, void *arg, uint8_t *data, size_t len);
     void webSerialReceiveMessage(uint8_t *data, size_t len);
+    
+    // WebSerial command callbacks
+    std::function<void(char)> webSerialCommandCallback;
+    std::function<void(const String&)> webSerialExtendedCommandCallback;
     void setupWebServerRoutes();
     void prepareNetworkForOTA();
     
@@ -190,6 +194,8 @@ public:
     void setGetStatsCallback(std::function<String()> callback);
     void setIsDevNetworkCallback(std::function<bool()> callback) { isDevNetworkCallback = callback; }
     void setPrepareEntireSystemForOTA(std::function<void()> callback) { prepareEntireSystemForOTA = callback; }
+    void setWebSerialCommandCallback(std::function<void(char)> callback) { webSerialCommandCallback = callback; }
+    void setWebSerialExtendedCommandCallback(std::function<void(const String&)> callback) { webSerialExtendedCommandCallback = callback; }
     
     // Main networking functions
     bool connectToWiFiAndInitOTA(const bool wifiOnly, int repeatScanAttempts);
