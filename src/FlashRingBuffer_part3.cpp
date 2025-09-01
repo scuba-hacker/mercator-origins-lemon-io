@@ -660,4 +660,307 @@ bool FlashRingBuffer::performStressTest(uint32_t num_records) {
     return test_passed;
 }
 
+//=============================================================================
+// FAILURE INJECTION METHODS FOR TESTING
+//=============================================================================
+
+#ifdef TESTING_MODE
+
+// Inject sector corruption by corrupting the sector header magic number
+bool FlashRingBuffer::injectSectorCorruption(uint32_t sector_index) {
+    if (!m_initialized) {
+        USB_SERIAL_PRINTLN("FlashRingBuffer::injectSectorCorruption() - Not initialized");
+        return false;
+    }
+    
+    if (sector_index >= TOTAL_SECTORS) {
+        USB_SERIAL_PRINTF("FlashRingBuffer::injectSectorCorruption() - Invalid sector %u\n", sector_index);
+        return false;
+    }
+    
+    USB_SERIAL_PRINTF("FlashRingBuffer::injectSectorCorruption() - Corrupting sector %u magic number\n", sector_index);
+    
+    // Corrupt the magic number in the sector header
+    uint32_t corrupt_magic = 0xDEADBEEF; // Invalid magic
+    uint32_t sector_offset = sector_index * SECTOR_SIZE;
+    
+    esp_err_t err = esp_partition_write(m_partition, sector_offset, &corrupt_magic, sizeof(corrupt_magic));
+    if (err != ESP_OK) {
+        USB_SERIAL_PRINTF("FlashRingBuffer::injectSectorCorruption() - Write failed: %s\n", esp_err_to_name(err));
+        return false;
+    }
+    
+    USB_SERIAL_PRINTLN("FlashRingBuffer::injectSectorCorruption() - Sector corruption injected successfully");
+    return true;
+}
+
+// Corrupt the persisted state in EEPROM
+bool FlashRingBuffer::corruptPersistedState() {
+    if (!m_initialized) {
+        USB_SERIAL_PRINTLN("FlashRingBuffer::corruptPersistedState() - Not initialized");
+        return false;
+    }
+    
+    USB_SERIAL_PRINTLN("FlashRingBuffer::corruptPersistedState() - Corrupting EEPROM state");
+    
+    // Save current state for logging
+    uint32_t original_head = m_state.head_sector;
+    uint32_t original_tail = m_state.tail_sector;
+    
+    // Create corrupted state
+    FlashRingBufferState corrupt_state;
+    corrupt_state.head_sector = 0xFFFFFFFF;  // Invalid sector
+    corrupt_state.tail_sector = 0xFFFFFFFF;  // Invalid sector
+    corrupt_state.head_sector_used = 0xFFFFFFFF;  // Invalid usage
+    corrupt_state.next_seq_number = 0xFFFFFFFF;  // Invalid sequence
+    corrupt_state.write_count = 0xFFFFFFFF;  // Invalid count
+    corrupt_state.state_crc = 0xDEADBEEF;  // Invalid CRC
+    
+    // Write corrupted state to EEPROM
+    m_preferences.putUInt("head_sector", corrupt_state.head_sector);
+    m_preferences.putUInt("tail_sector", corrupt_state.tail_sector);
+    m_preferences.putUInt("head_used", corrupt_state.head_sector_used);
+    m_preferences.putUInt("next_seq", corrupt_state.next_seq_number);
+    m_preferences.putUInt("write_count", corrupt_state.write_count);
+    m_preferences.putUInt("state_crc", corrupt_state.state_crc);
+    
+    USB_SERIAL_PRINTF("FlashRingBuffer::corruptPersistedState() - State corrupted (was head=%u, tail=%u)\n", 
+                      original_head, original_tail);
+    USB_SERIAL_PRINTLN("FlashRingBuffer::corruptPersistedState() - Restart required to test recovery");
+    
+    return true;
+}
+
+// Simulate incomplete write (power-loss during record write)
+bool FlashRingBuffer::simulateIncompleteWrite() {
+    if (!m_initialized) {
+        USB_SERIAL_PRINTLN("FlashRingBuffer::simulateIncompleteWrite() - Not initialized");
+        return false;
+    }
+    
+    USB_SERIAL_PRINTLN("FlashRingBuffer::simulateIncompleteWrite() - Simulating power-loss during write");
+    
+    // Flush any pending RAM buffer first
+    flushRAMBufferToFlash();
+    
+    // Calculate where the next record would go
+    uint32_t sector_offset = m_state.head_sector * SECTOR_SIZE;
+    uint32_t record_offset = SECTOR_HEADER_SIZE + m_state.head_sector_used;
+    
+    // Create a test payload
+    uint8_t test_payload[224];
+    for (int i = 0; i < 224; i++) {
+        test_payload[i] = (uint8_t)(i % 256);
+    }
+    
+    // Create record header with correct CRC but leave valid flag as 0xFF (incomplete)
+    RecordHeader header;
+    header.len = 224;
+    header.crc16 = calculateCRC16(test_payload, 224);
+    header.valid = 0xFF;  // Mark as incomplete (power-loss before commit)
+    header.reserved[0] = header.reserved[1] = header.reserved[2] = 0xFF;
+    
+    // Write incomplete record header
+    esp_err_t err = esp_partition_write(m_partition, sector_offset + record_offset, &header, sizeof(header));
+    if (err != ESP_OK) {
+        USB_SERIAL_PRINTF("FlashRingBuffer::simulateIncompleteWrite() - Header write failed: %s\n", esp_err_to_name(err));
+        return false;
+    }
+    
+    // Write payload
+    err = esp_partition_write(m_partition, sector_offset + record_offset + sizeof(header), test_payload, 224);
+    if (err != ESP_OK) {
+        USB_SERIAL_PRINTF("FlashRingBuffer::simulateIncompleteWrite() - Payload write failed: %s\n", esp_err_to_name(err));
+        return false;
+    }
+    
+    // Deliberately NOT setting valid flag to 0x00 (simulates power-loss)
+    
+    USB_SERIAL_PRINTLN("FlashRingBuffer::simulateIncompleteWrite() - Incomplete record injected");
+    USB_SERIAL_PRINTLN("FlashRingBuffer::simulateIncompleteWrite() - POST should detect and truncate this record");
+    
+    return true;
+}
+
+// Corrupt ring buffer pointers to invalid values
+bool FlashRingBuffer::corruptRingPointers() {
+    if (!m_initialized) {
+        USB_SERIAL_PRINTLN("FlashRingBuffer::corruptRingPointers() - Not initialized");
+        return false;
+    }
+    
+    USB_SERIAL_PRINTF("FlashRingBuffer::corruptRingPointers() - Original: head=%u, tail=%u\n", 
+                      m_state.head_sector, m_state.tail_sector);
+    
+    // Set pointers to invalid values
+    m_state.head_sector = TOTAL_SECTORS + 100;  // Beyond valid range
+    m_state.tail_sector = TOTAL_SECTORS + 200;  // Beyond valid range
+    m_state.head_sector_used = SECTOR_SIZE + 1000;  // Beyond sector size
+    
+    // Save corrupted state
+    savePersistedState();
+    
+    USB_SERIAL_PRINTF("FlashRingBuffer::corruptRingPointers() - Corrupted: head=%u, tail=%u, used=%u\n", 
+                      m_state.head_sector, m_state.tail_sector, m_state.head_sector_used);
+    USB_SERIAL_PRINTLN("FlashRingBuffer::corruptRingPointers() - POST should detect and correct these values");
+    
+    return true;
+}
+
+// Accelerated wear test - rapidly cycle through sectors
+bool FlashRingBuffer::acceleratedWearTest(uint32_t cycles) {
+    if (!m_initialized) {
+        USB_SERIAL_PRINTLN("FlashRingBuffer::acceleratedWearTest() - Not initialized");
+        return false;
+    }
+    
+    USB_SERIAL_PRINTF("FlashRingBuffer::acceleratedWearTest() - Starting %u cycle wear test\n", cycles);
+    
+    uint32_t start_time = m_fn_millis();
+    uint32_t original_write_count = m_state.write_count;
+    
+    for (uint32_t i = 0; i < cycles; i++) {
+        // Fill current sector to force advancement
+        uint8_t dummy_data[200];
+        for (int j = 0; j < 200; j++) {
+            dummy_data[j] = (uint8_t)(j + i);  // Varying data pattern
+        }
+        
+        // Keep adding records until sector needs to advance
+        while (sectorHasSpace(RECORD_HEADER_SIZE + 200 + 10)) {  // +10 for safety margin
+            if (!appendRecord(dummy_data, 200)) {
+                USB_SERIAL_PRINTF("FlashRingBuffer::acceleratedWearTest() - Write failed at cycle %u\n", i);
+                return false;
+            }
+        }
+        
+        // Force sector advancement
+        if (!advanceSector()) {
+            USB_SERIAL_PRINTF("FlashRingBuffer::acceleratedWearTest() - Sector advance failed at cycle %u\n", i);
+            return false;
+        }
+        
+        // Progress reporting
+        if (i % 100 == 0 && i > 0) {
+            uint32_t elapsed = m_fn_millis() - start_time;
+            USB_SERIAL_PRINTF("Wear test progress: %u/%u cycles (%.1f cycles/sec)\n", 
+                            i, cycles, elapsed > 0 ? (float)(i * 1000) / elapsed : 0.0);
+        }
+        
+        // Yield periodically to prevent watchdog issues
+        if (i % 10 == 0) {
+            delay(1);  // Brief yield
+        }
+    }
+    
+    uint32_t duration = m_fn_millis() - start_time;
+    uint32_t total_writes = m_state.write_count - original_write_count;
+    
+    USB_SERIAL_PRINTF("FlashRingBuffer::acceleratedWearTest() - Completed %u cycles in %u ms\n", cycles, duration);
+    USB_SERIAL_PRINTF("FlashRingBuffer::acceleratedWearTest() - Generated %u writes (%.1f writes/cycle)\n", 
+                      total_writes, cycles > 0 ? (float)total_writes / cycles : 0.0);
+    USB_SERIAL_PRINTF("FlashRingBuffer::acceleratedWearTest() - Total system writes: %u\n", m_state.write_count);
+    
+    return true;
+}
+
+// Inject random corruption across multiple sectors
+bool FlashRingBuffer::injectRandomCorruption(uint32_t num_sectors) {
+    if (!m_initialized) {
+        USB_SERIAL_PRINTLN("FlashRingBuffer::injectRandomCorruption() - Not initialized");
+        return false;
+    }
+    
+    if (num_sectors == 0 || num_sectors > TOTAL_SECTORS / 4) {  // Limit to 25% of sectors
+        USB_SERIAL_PRINTF("FlashRingBuffer::injectRandomCorruption() - Invalid sector count %u (max %u)\n", 
+                          num_sectors, TOTAL_SECTORS / 4);
+        return false;
+    }
+    
+    USB_SERIAL_PRINTF("FlashRingBuffer::injectRandomCorruption() - Corrupting %u random sectors\n", num_sectors);
+    
+    uint32_t corrupted = 0;
+    for (uint32_t i = 0; i < num_sectors; i++) {
+        // Pick a random sector (avoid current head/tail region)
+        uint32_t sector = (m_state.head_sector + 10 + (rand() % (TOTAL_SECTORS - 50))) % TOTAL_SECTORS;
+        
+        // Avoid corrupting sectors near head/tail
+        if (abs((int)sector - (int)m_state.head_sector) < 5 || 
+            abs((int)sector - (int)m_state.tail_sector) < 5) {
+            continue;  // Skip this sector
+        }
+        
+        // Randomly choose corruption type
+        int corruption_type = rand() % 3;
+        
+        if (corruption_type == 0) {
+            // Corrupt magic number
+            injectSectorCorruption(sector);
+        } else if (corruption_type == 1) {
+            // Corrupt CRC
+            injectCRCCorruption(sector);
+        } else {
+            // Corrupt used field
+            uint32_t corrupt_used = 0xFFFF;  // Invalid used value
+            uint32_t sector_offset = sector * SECTOR_SIZE + 8;  // Offset to 'used' field
+            esp_partition_write(m_partition, sector_offset, &corrupt_used, 2);
+        }
+        
+        corrupted++;
+    }
+    
+    USB_SERIAL_PRINTF("FlashRingBuffer::injectRandomCorruption() - Successfully corrupted %u sectors\n", corrupted);
+    return true;
+}
+
+// Simulate partition access failure (temporary)
+bool FlashRingBuffer::simulatePartitionFailure() {
+    if (!m_initialized) {
+        USB_SERIAL_PRINTLN("FlashRingBuffer::simulatePartitionFailure() - Not initialized");
+        return false;
+    }
+    
+    USB_SERIAL_PRINTLN("FlashRingBuffer::simulatePartitionFailure() - Simulating partition failure");
+    USB_SERIAL_PRINTLN("WARNING: This will temporarily disable flash operations");
+    
+    // Temporarily set partition to NULL to simulate failure
+    // (This is reversible by restarting the system)
+    m_partition = nullptr;
+    
+    USB_SERIAL_PRINTLN("FlashRingBuffer::simulatePartitionFailure() - Partition access disabled");
+    USB_SERIAL_PRINTLN("FlashRingBuffer::simulatePartitionFailure() - Restart required to restore partition access");
+    
+    return true;
+}
+
+// Inject CRC corruption in sector header
+bool FlashRingBuffer::injectCRCCorruption(uint32_t sector_index) {
+    if (!m_initialized) {
+        USB_SERIAL_PRINTLN("FlashRingBuffer::injectCRCCorruption() - Not initialized");
+        return false;
+    }
+    
+    if (sector_index >= TOTAL_SECTORS) {
+        USB_SERIAL_PRINTF("FlashRingBuffer::injectCRCCorruption() - Invalid sector %u\n", sector_index);
+        return false;
+    }
+    
+    USB_SERIAL_PRINTF("FlashRingBuffer::injectCRCCorruption() - Corrupting sector %u CRC\n", sector_index);
+    
+    // Corrupt the CRC32 field in the sector header
+    uint32_t corrupt_crc = 0xDEADBEEF;  // Invalid CRC
+    uint32_t sector_offset = sector_index * SECTOR_SIZE + 12;  // Offset to crc32 field
+    
+    esp_err_t err = esp_partition_write(m_partition, sector_offset, &corrupt_crc, sizeof(corrupt_crc));
+    if (err != ESP_OK) {
+        USB_SERIAL_PRINTF("FlashRingBuffer::injectCRCCorruption() - Write failed: %s\n", esp_err_to_name(err));
+        return false;
+    }
+    
+    USB_SERIAL_PRINTLN("FlashRingBuffer::injectCRCCorruption() - CRC corruption injected successfully");
+    return true;
+}
+
+#endif // TESTING_MODE
+
 #endif

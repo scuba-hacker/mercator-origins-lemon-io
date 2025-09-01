@@ -152,6 +152,19 @@ public:
     bool factoryReset();
     bool clearAllData();
     bool repairCorruption();
+    
+    // Failure injection methods for testing (only available in testing builds)
+    #ifdef TESTING_MODE
+    bool injectSectorCorruption(uint32_t sector_index);
+    bool corruptPersistedState();
+    bool simulateIncompleteWrite();
+    bool corruptRingPointers();
+    bool acceleratedWearTest(uint32_t cycles);
+    bool injectRandomCorruption(uint32_t num_sectors);
+    bool simulatePartitionFailure();
+    bool injectCRCCorruption(uint32_t sector_index);
+    void enableFailureInjection() { USB_SERIAL_PRINTLN("WARNING: Failure injection methods enabled for testing"); }
+    #endif
 };
 
 #endif // FLASH_RING_BUFFER_H

@@ -1803,6 +1803,19 @@ void processSerialCommand(char command) {
       USB_SERIAL_PRINTLN("DEEP - Deep Sector Validation");
       USB_SERIAL_PRINTLN("STRESS - High-Volume Stress Test");
       USB_SERIAL_PRINTLN("RECOVERY - Power-Loss Recovery Test");
+      #ifdef TESTING_MODE
+      USB_SERIAL_PRINTLN("");
+      USB_SERIAL_PRINTLN("Failure Injection Commands (TESTING_MODE builds):");
+      USB_SERIAL_PRINTLN("CORRUPT_SECTOR [num] - Corrupt sector magic number");
+      USB_SERIAL_PRINTLN("CORRUPT_STATE - Corrupt EEPROM state (requires restart)");
+      USB_SERIAL_PRINTLN("SIMULATE_POWER_LOSS - Simulate power-loss during write");
+      USB_SERIAL_PRINTLN("CORRUPT_POINTERS - Corrupt ring buffer pointers");
+      USB_SERIAL_PRINTLN("WEAR_TEST [cycles] - Accelerated wear testing");
+      USB_SERIAL_PRINTLN("RANDOM_CORRUPT [num] - Random sector corruption");
+      USB_SERIAL_PRINTLN("PARTITION_FAIL - Simulate partition failure");
+      USB_SERIAL_PRINTLN("CORRUPT_CRC [num] - Corrupt sector CRC");
+      USB_SERIAL_PRINTLN("ENABLE_FAIL_INJECT - Enable failure injection mode");
+      #endif
       USB_SERIAL_PRINTLN("===================================");
       break;
       
@@ -1841,7 +1854,77 @@ void processExtendedCommand(const String& command) {
     USB_SERIAL_PRINTLN(">>> DIAGNOSTIC: Running Power-Loss Recovery Test...");
     bool result = telemetryPipeline.performPowerLossRecoveryTest();
     USB_SERIAL_PRINTF(">>> DIAGNOSTIC: Power-Loss Recovery Test %s\n", result ? "PASSED" : "FAILED");
-  } else {
+  }
+  
+  // Failure injection commands (only available in TESTING_MODE builds)
+  #ifdef TESTING_MODE
+  else if (command.startsWith("CORRUPT_SECTOR")) {
+    int sector_num = 5; // Default sector
+    if (command.indexOf(' ') > 0) {
+      sector_num = command.substring(command.indexOf(' ') + 1).toInt();
+    }
+    USB_SERIAL_PRINTF(">>> FAILURE INJECTION: Corrupting sector %d...\n", sector_num);
+    bool result = telemetryPipeline.injectSectorCorruption(sector_num);
+    USB_SERIAL_PRINTF(">>> FAILURE INJECTION: Sector corruption %s\n", result ? "INJECTED" : "FAILED (not in flash mode or not supported)");
+  } else if (command == "CORRUPT_STATE") {
+    USB_SERIAL_PRINTLN(">>> FAILURE INJECTION: Corrupting EEPROM state...");
+    bool result = telemetryPipeline.corruptPersistedState();
+    if (result) {
+      USB_SERIAL_PRINTF(">>> FAILURE INJECTION: State corruption INJECTED\n");
+      USB_SERIAL_PRINTLN(">>> FAILURE INJECTION: Restart system to test recovery");
+    } else {
+      USB_SERIAL_PRINTF(">>> FAILURE INJECTION: State corruption FAILED (not in flash mode or not supported)\n");
+    }
+  } else if (command == "SIMULATE_POWER_LOSS") {
+    USB_SERIAL_PRINTLN(">>> FAILURE INJECTION: Simulating power-loss during write...");
+    bool result = telemetryPipeline.simulateIncompleteWrite();
+    USB_SERIAL_PRINTF(">>> FAILURE INJECTION: Power-loss simulation %s\n", result ? "INJECTED" : "FAILED (not in flash mode or not supported)");
+  } else if (command == "CORRUPT_POINTERS") {
+    USB_SERIAL_PRINTLN(">>> FAILURE INJECTION: Corrupting ring buffer pointers...");
+    bool result = telemetryPipeline.corruptRingPointers();
+    USB_SERIAL_PRINTF(">>> FAILURE INJECTION: Pointer corruption %s\n", result ? "INJECTED" : "FAILED (not in flash mode or not supported)");
+  } else if (command.startsWith("WEAR_TEST")) {
+    int cycles = 100; // Default cycles
+    if (command.indexOf(' ') > 0) {
+      cycles = command.substring(command.indexOf(' ') + 1).toInt();
+    }
+    USB_SERIAL_PRINTF(">>> FAILURE INJECTION: Running accelerated wear test (%d cycles)...\n", cycles);
+    bool result = telemetryPipeline.acceleratedWearTest(cycles);
+    USB_SERIAL_PRINTF(">>> FAILURE INJECTION: Wear test %s\n", result ? "COMPLETED" : "FAILED (not in flash mode or not supported)");
+  } else if (command.startsWith("RANDOM_CORRUPT")) {
+    int num_sectors = 3; // Default number of sectors
+    if (command.indexOf(' ') > 0) {
+      num_sectors = command.substring(command.indexOf(' ') + 1).toInt();
+    }
+    USB_SERIAL_PRINTF(">>> FAILURE INJECTION: Injecting random corruption (%d sectors)...\n", num_sectors);
+    bool result = telemetryPipeline.injectRandomCorruption(num_sectors);
+    USB_SERIAL_PRINTF(">>> FAILURE INJECTION: Random corruption %s\n", result ? "INJECTED" : "FAILED (not in flash mode or not supported)");
+  } else if (command == "PARTITION_FAIL") {
+    USB_SERIAL_PRINTLN(">>> FAILURE INJECTION: Simulating partition failure...");
+    bool result = telemetryPipeline.simulatePartitionFailure();
+    if (result) {
+      USB_SERIAL_PRINTF(">>> FAILURE INJECTION: Partition failure SIMULATED\n");
+      USB_SERIAL_PRINTLN(">>> FAILURE INJECTION: Restart system to restore partition access");
+    } else {
+      USB_SERIAL_PRINTF(">>> FAILURE INJECTION: Partition failure FAILED (not in flash mode or not supported)\n");
+    }
+  } else if (command.startsWith("CORRUPT_CRC")) {
+    int sector_num = 7; // Default sector
+    if (command.indexOf(' ') > 0) {
+      sector_num = command.substring(command.indexOf(' ') + 1).toInt();
+    }
+    USB_SERIAL_PRINTF(">>> FAILURE INJECTION: Corrupting sector %d CRC...\n", sector_num);
+    bool result = telemetryPipeline.injectCRCCorruption(sector_num);
+    USB_SERIAL_PRINTF(">>> FAILURE INJECTION: CRC corruption %s\n", result ? "INJECTED" : "FAILED (not in flash mode or not supported)");
+  } else if (command == "ENABLE_FAIL_INJECT") {
+    USB_SERIAL_PRINTLN(">>> FAILURE INJECTION: Checking failure injection mode...");
+    telemetryPipeline.enableFailureInjection();
+    USB_SERIAL_PRINTLN(">>> FAILURE INJECTION: If using FlashTelemetryManager in FLASH_ONLY mode, failure injection is available");
+    USB_SERIAL_PRINTLN(">>> FAILURE INJECTION: If using TelemetryPipeline (PSRAM mode), failure injection is not supported");
+  }
+  #endif
+  
+  else {
     USB_SERIAL_PRINTF(">>> DIAGNOSTIC: Unknown command: %s\n", command.c_str());
   }
 }

@@ -480,3 +480,138 @@ bool FlashTelemetryManager::performStressTest(uint32_t num_records) {
     
     return m_flash_buffer.performStressTest(num_records);
 }
+
+//=============================================================================
+// FAILURE INJECTION METHODS FOR TESTING
+//=============================================================================
+
+#ifdef TESTING_MODE
+
+bool FlashTelemetryManager::injectSectorCorruption(uint32_t sector_index) {
+    if (m_storage_mode != FLASH_ONLY) {
+        USB_SERIAL_PRINTF("FlashTelemetryManager::injectSectorCorruption() - Not in flash mode (mode: %d)\n", (int)m_storage_mode);
+        return false;
+    }
+    
+    if (!m_flash_buffer.isInitialized()) {
+        USB_SERIAL_PRINTLN("FlashTelemetryManager::injectSectorCorruption() - Flash buffer not initialized");
+        return false;
+    }
+    
+    return m_flash_buffer.injectSectorCorruption(sector_index);
+}
+
+bool FlashTelemetryManager::corruptPersistedState() {
+    if (m_storage_mode != FLASH_ONLY) {
+        USB_SERIAL_PRINTF("FlashTelemetryManager::corruptPersistedState() - Not in flash mode (mode: %d)\n", (int)m_storage_mode);
+        return false;
+    }
+    
+    if (!m_flash_buffer.isInitialized()) {
+        USB_SERIAL_PRINTLN("FlashTelemetryManager::corruptPersistedState() - Flash buffer not initialized");
+        return false;
+    }
+    
+    return m_flash_buffer.corruptPersistedState();
+}
+
+bool FlashTelemetryManager::simulateIncompleteWrite() {
+    if (m_storage_mode != FLASH_ONLY) {
+        USB_SERIAL_PRINTF("FlashTelemetryManager::simulateIncompleteWrite() - Not in flash mode (mode: %d)\n", (int)m_storage_mode);
+        return false;
+    }
+    
+    if (!m_flash_buffer.isInitialized()) {
+        USB_SERIAL_PRINTLN("FlashTelemetryManager::simulateIncompleteWrite() - Flash buffer not initialized");
+        return false;
+    }
+    
+    return m_flash_buffer.simulateIncompleteWrite();
+}
+
+bool FlashTelemetryManager::corruptRingPointers() {
+    if (m_storage_mode != FLASH_ONLY) {
+        USB_SERIAL_PRINTF("FlashTelemetryManager::corruptRingPointers() - Not in flash mode (mode: %d)\n", (int)m_storage_mode);
+        return false;
+    }
+    
+    if (!m_flash_buffer.isInitialized()) {
+        USB_SERIAL_PRINTLN("FlashTelemetryManager::corruptRingPointers() - Flash buffer not initialized");
+        return false;
+    }
+    
+    return m_flash_buffer.corruptRingPointers();
+}
+
+bool FlashTelemetryManager::acceleratedWearTest(uint32_t cycles) {
+    if (m_storage_mode != FLASH_ONLY) {
+        USB_SERIAL_PRINTF("FlashTelemetryManager::acceleratedWearTest() - Not in flash mode (mode: %d)\n", (int)m_storage_mode);
+        return false;
+    }
+    
+    if (!m_flash_buffer.isInitialized()) {
+        USB_SERIAL_PRINTLN("FlashTelemetryManager::acceleratedWearTest() - Flash buffer not initialized");
+        return false;
+    }
+    
+    return m_flash_buffer.acceleratedWearTest(cycles);
+}
+
+bool FlashTelemetryManager::injectRandomCorruption(uint32_t num_sectors) {
+    if (m_storage_mode != FLASH_ONLY) {
+        USB_SERIAL_PRINTF("FlashTelemetryManager::injectRandomCorruption() - Not in flash mode (mode: %d)\n", (int)m_storage_mode);
+        return false;
+    }
+    
+    if (!m_flash_buffer.isInitialized()) {
+        USB_SERIAL_PRINTLN("FlashTelemetryManager::injectRandomCorruption() - Flash buffer not initialized");
+        return false;
+    }
+    
+    return m_flash_buffer.injectRandomCorruption(num_sectors);
+}
+
+bool FlashTelemetryManager::simulatePartitionFailure() {
+    if (m_storage_mode != FLASH_ONLY) {
+        USB_SERIAL_PRINTF("FlashTelemetryManager::simulatePartitionFailure() - Not in flash mode (mode: %d)\n", (int)m_storage_mode);
+        return false;
+    }
+    
+    if (!m_flash_buffer.isInitialized()) {
+        USB_SERIAL_PRINTLN("FlashTelemetryManager::simulatePartitionFailure() - Flash buffer not initialized");
+        return false;
+    }
+    
+    return m_flash_buffer.simulatePartitionFailure();
+}
+
+bool FlashTelemetryManager::injectCRCCorruption(uint32_t sector_index) {
+    if (m_storage_mode != FLASH_ONLY) {
+        USB_SERIAL_PRINTF("FlashTelemetryManager::injectCRCCorruption() - Not in flash mode (mode: %d)\n", (int)m_storage_mode);
+        return false;
+    }
+    
+    if (!m_flash_buffer.isInitialized()) {
+        USB_SERIAL_PRINTLN("FlashTelemetryManager::injectCRCCorruption() - Flash buffer not initialized");
+        return false;
+    }
+    
+    return m_flash_buffer.injectCRCCorruption(sector_index);
+}
+
+void FlashTelemetryManager::enableFailureInjection() {
+    if (m_storage_mode != FLASH_ONLY) {
+        USB_SERIAL_PRINTF("FlashTelemetryManager::enableFailureInjection() - Not in flash mode (mode: %d)\n", (int)m_storage_mode);
+        USB_SERIAL_PRINTLN("FlashTelemetryManager::enableFailureInjection() - Failure injection only works in FLASH_ONLY mode");
+        return;
+    }
+    
+    if (!m_flash_buffer.isInitialized()) {
+        USB_SERIAL_PRINTLN("FlashTelemetryManager::enableFailureInjection() - Flash buffer not initialized");
+        return;
+    }
+    
+    m_flash_buffer.enableFailureInjection();
+}
+
+#endif // TESTING_MODE

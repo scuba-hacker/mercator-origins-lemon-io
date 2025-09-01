@@ -86,6 +86,19 @@ public:
     bool clearAllFlashData();
     bool repairFlashCorruption();
     
+    // Failure injection methods for testing (only available in testing builds)
+    #ifdef TESTING_MODE
+    bool injectSectorCorruption(uint32_t sector_index);
+    bool corruptPersistedState();
+    bool simulateIncompleteWrite();
+    bool corruptRingPointers();
+    bool acceleratedWearTest(uint32_t cycles);
+    bool injectRandomCorruption(uint32_t num_sectors);
+    bool simulatePartitionFailure();
+    bool injectCRCCorruption(uint32_t sector_index);
+    void enableFailureInjection();
+    #endif
+    
 private:
     // Helper methods
     bool convertBlockToFlashRecord(const BlockHeader& block);
