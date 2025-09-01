@@ -3,8 +3,591 @@
 #include "MercatorMQTT.h"
 #include "SerialConfig.h"
 
-// NOTE: SerialConfig.h now provides all serial macros and extern declarations
+char* customiseNMEASentence(char* sentence, int showOnMapIndex)
+{  
+  const int minimumSentenceLength = 48;
 
+  int startSentenceIndex = 0;
+  char* startSentence = sentence;
+  for (int i=0; i < minimumSentenceLength; i++)
+  {
+    if (sentence[i] == '$')
+    {
+      startSentence = sentence + i;
+      startSentenceIndex = i;
+      break;
+    }
+  }
+
+  USB_SERIAL_PRINTF("0. startSentence index = %i\n",startSentenceIndex);
+
+  const bool isGNGGA = ((strncmp(startSentence,"$GPGGA",6) == 0 ||
+                         strncmp(startSentence,"$GNGGA",6) == 0));
+
+  const bool isGNRMC = ((strncmp(startSentence,"$GPRMC",6) == 0 ||
+                         strncmp(startSentence,"$GNRMC",6) == 0));
+
+  bool overrideLocation = false;
+
+  USB_SERIAL_PRINTLN("0. checking for override location");
+  USB_SERIAL_PRINTF("0.0 showOnMapIndex=%i isGNGAA=%i isGNRMC=%i strlen(startSentence)=%zu\n",showOnMapIndex, (isGNGGA ? 1 : 0),(isGNRMC ? 1 : 0), strnlen(startSentence,minimumSentenceLength));
+  USB_SERIAL_PRINTF("0.1 %s\n",startSentence);
+
+  if (  showOnMapIndex >= 0 && 
+        (isGNGGA || isGNRMC) && 
+        strnlen(startSentence,minimumSentenceLength) >= minimumSentenceLength)
+  {
+    USB_SERIAL_PRINTLN("1. Entered override location");
+    
+    overrideLocation = true;
+    // spoof GPS to be reporting lat/long at selected feature
+    double longOverride = WraysburyWaypoints::waypoints[showOnMapIndex]._long;
+    double latOverride = WraysburyWaypoints::waypoints[showOnMapIndex]._lat;
+
+    char directionLong = 'E';
+    char directionLat = 'N';
+  
+    if (longOverride < 0.0)
+    {
+      directionLong = 'W';
+      longOverride = -longOverride;
+    }
+
+    if (latOverride < 0.0)
+    {
+      directionLat = 'S';
+      latOverride = -latOverride;
+    }
+
+    int longDegrees = (int)longOverride;
+    double longMinutesActual = (longOverride - (double)longDegrees) * 60.0;
+    int longMinutes = longMinutesActual;
+    int longMinuteFraction = (longMinutesActual - longMinutes) * 100000.0;
+
+    int latDegrees = (int)latOverride;
+    double latMinutesActual = (latOverride - (double)latDegrees) * 60.0;
+    int latMinutes = latMinutesActual;
+    int latMinuteFraction = (latMinutesActual - latMinutes) * 100000.0;
+
+    const int lengthNMEALocation = 24;
+    char newLocation[100];
+  
+    snprintf(newLocation, sizeof(newLocation), "%02d%02d.%05d,%c,%03d%02d.%05d,%c",
+                          latDegrees,latMinutes,latMinuteFraction, directionLat, 
+                          longDegrees,longMinutes, longMinuteFraction, directionLong);
+
+    USB_SERIAL_PRINTF("1.1 %.60s    <-- new location\n", newLocation);
+
+    int validDataRMCOffset = 16 + startSentenceIndex;
+    char validDataGoodFixOverride = 'A';
+    int copyOffset = -1;
+
+    if (isGNGGA)
+    {
+      copyOffset = 17 + startSentenceIndex;
+      validDataRMCOffset = -1;
+    }
+    else if (isGNRMC)
+    {
+      copyOffset = 19 + startSentenceIndex;
+      // always assume valid fix for a location override
+      startSentence[validDataRMCOffset] = validDataGoodFixOverride;
+    }
+
+    if (copyOffset >= 0)
+    {
+      USB_SERIAL_PRINTLN("2. Override Location");
+      USB_SERIAL_PRINTF("3.0 %s    <-- Old Sentence\n", startSentence);
+
+      memcpy(sentence+copyOffset,newLocation,lengthNMEALocation);
+ 
+      USB_SERIAL_PRINTF("4.0 %s    <-- New Location Sentence\n", startSentence);
+    }
+    else
+      USB_SERIAL_PRINTLN("2. Not Overriding Location");
+  }
+  
+  char overrideForNoInternetConnection = '\0';
+
+  if (telemetryPipeline.getPipelineLength() > 2)
+  {
+     overrideForNoInternetConnection = 'N';
+  }
+
+  if (overrideForNoInternetConnection && isGNGGA)
+  {
+    // Infiltrate internet upload status into
+    // the byte that is normally fixed at M representing Metres units
+    // for difference between sea level and geoid.
+
+    const uint32_t padding = 8;
+    char* next=sentence;
+    char* end=sentence+strlen(sentence)-padding;
+
+    while (*next++ != '$' && next < end);
+
+    if (next == end)
+      return sentence;
+  
+    next+=2;
+  
+    // sentences: GPGGA or GNGGA - search for 12th comma
+    if (*next++ == 'G' && *next++ == 'G' && *next++ == 'A')
+    {
+      char priorVal = 0, newVal = 0;
+      
+      uint8_t commas=0;
+      while (*next && next < end)
+      {
+        if (*next++ == ',')
+        {
+          commas++;
+  
+          if (commas == 12)
+          {
+            // next char change to be indicative of upload to internet status
+            if (telemetryPipeline.getPipelineLength() > 2)
+            {
+              // overwrite the character in the sentence which is normally 'M' for Unit of altitude
+              priorVal = *next;
+              newVal = *next = overrideForNoInternetConnection;
+            }
+            else
+            {
+              break;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  bool overrideForTarget = false;
+
+  if (networkManager.getSetTargetRequestIndex() >= 0 && isGNGGA)
+  {
+    overrideForTarget = true;
+    // Infiltrate internet upload status into
+    // the byte that is normally fixed at M representing Metres units
+    // for difference between sea level and geoid.
+
+    const uint32_t padding = 8;
+    char* next=sentence;
+    char* end=sentence+strlen(sentence)-padding;
+
+    while (*next++ != '$' && next < end);
+
+    if (next == end)
+      return sentence;
+  
+    next+=2;
+  
+    // sentences: GPGGA or GNGGA - search for 14th comma
+    if (*next++ == 'G' && *next++ == 'G' && *next++ == 'A')
+    {
+      uint8_t commas=0;
+      while (*next && next < end)
+      {
+        if (*next++ == ',')
+        {
+          commas++;
+  
+          if (commas == 10)
+          {
+            // overwrite the character in the sentence which is normally 'M' for Unit of geoid separation
+            *next = networkManager.getSetTargetRequestIndex()+33; // make sure visible char
+
+            if (*next == 'M')     // exception for target mapping to M as M means no set target
+              *next = -2;
+          }
+        }
+      }
+    }
+  }
+
+  // if change has been made, recalculate checksum and populate
+  if (overrideForNoInternetConnection || overrideLocation || overrideForTarget)
+  {
+    unsigned char checksum = 0;
+    // Start after the '$' character
+    char *p = startSentence + 1;
+
+    // XOR each character until '*' or end of string
+    while (*p && *p != '*') {
+        checksum ^= *p;
+        p++;
+    }
+
+    // Find the position of the '*' character (p already points to it after the loop)
+    if (*p == '*') {
+        // Advance pointer by 1 to move past '*'
+        p++;
+        // Update checksum in hex
+        *p++ = "0123456789ABCDEF"[checksum >> 4];  // High nibble
+        *p++ = "0123456789ABCDEF"[checksum & 0x0F]; // Low nibble
+    }
+
+    USB_SERIAL_PRINTF("5.0 %s    <-- All updates new  Location Sentence\n", startSentence);
+  }
+
+  return sentence;
+}
+
+void incrementUplinkMessageMissedCount()
+{
+  if (accumulateMissedMessageCount)
+  {
+    uplinkMessageMissingCount++;
+  }
+  else
+  {
+    if (millis() > startAccumulatingMissedMessagesAt)
+    {
+      uplinkMessageMissingCount++;
+      accumulateMissedMessageCount = true;
+    }
+  }
+}
+
+void initializeTempHumiditySensor()
+{
+  Wire.begin();
+
+  //Configure HDC1080
+  Wire.beginTransmission(0x40);
+  Wire.write(0x02);
+  Wire.write(0x90);
+  Wire.write(0x00);
+  Wire.endTransmission();
+
+  delay(20);
+}
+
+// Have to call three times to get the first value to avoid synchronous waits
+// This can go in a task later
+bool readTempHumidityCJMCU_1080_Sensor(double* temperature, double* humidity)
+{
+  # define TEMP_TIME_FOR_CONVERSION 20
+  # define TEMP_TIME_TO_GET_REQUEST 1
+  # define MIN_TIME_BETWEEN_SAMPLES 1000
+
+  bool newReadingsAvailable = false;
+
+  static int state = 0;
+  static uint32_t nextStateAt = 0;
+
+  if (millis() > nextStateAt)
+  {
+    if (state == 0)
+    {
+      //holds 2 bytes of data from I2C Line
+      uint8_t Byte[4];
+
+      uint16_t temp;
+      uint16_t humid;
+
+      //Point to device 0x40 (Address for HDC1080)
+      Wire.beginTransmission(0x40);
+
+      //Point to register 0x00 (Temperature Register)
+      Wire.write(0x00);
+
+      //Relinquish master control of I2C line
+      //Pointing to the temp register triggers a conversion
+      Wire.endTransmission();
+
+      nextStateAt = millis() + TEMP_TIME_FOR_CONVERSION;
+      state++;
+    }
+    else if (state == 1)
+    {
+      Wire.requestFrom(0x40, 4);  // Request four bytes from registers  
+      nextStateAt = millis() + TEMP_TIME_TO_GET_REQUEST;
+      state++;
+    }
+    else if (state == 2)
+    {
+      //If the 4 bytes were returned sucessfully
+      if (4 <= Wire.available())
+      {
+        uint8_t Byte[5];
+        Byte[0] = Wire.read();    // upper byte of temp reading
+        Byte[1] = Wire.read();    // lower byte of temp reading
+        Byte[3] = Wire.read();    // upper byte of humidity reading
+        Byte[4] = Wire.read();    // lower byte of humidity reading
+
+        uint16_t temp = (((unsigned int)Byte[0] <<8 | Byte[1]));
+        *temperature = (double)(temp)/(65536)*165-40;
+
+        uint16_t humid = (((unsigned int)Byte[3] <<8 | Byte[4]));
+        *humidity = (double)(humid)/(65536)*100;
+        state = 0;
+        newReadingsAvailable = true;
+        nextStateAt = millis() + MIN_TIME_BETWEEN_SAMPLES;
+      }
+      else
+      {
+        nextStateAt = millis() + TEMP_TIME_TO_GET_REQUEST;
+        // stay in state 2, try getting again in 1ms
+      }
+    }
+  }
+  return newReadingsAvailable;
+}
+
+// System configuration and preferences management
+void loadTestingPreferences() {
+   testingPrefs.begin("testing", false);
+   wifiTestingBlocked = testingPrefs.getBool("wifi_blocked", false);
+  
+  USB_SERIAL_PRINTF("Testing preferences loaded: WiFi blocked=%s\n", 
+            wifiTestingBlocked ? "YES" : "NO");
+}
+
+void saveTestingPreferences() {
+  testingPrefs.putBool("wifi_blocked", wifiTestingBlocked);
+  USB_SERIAL_PRINTF("Testing preferences saved: WiFi blocked=%s\n", 
+            wifiTestingBlocked ? "YES" : "NO");
+}
+
+void initializeTelemetrySystem() {
+  USB_SERIAL_PRINTLN(">>> Initializing telemetry system...");
+  telemetryPipeline.init(&millis, 2048);
+  
+#ifdef USE_FLASH_TELEMETRY
+  USB_SERIAL_PRINTLN(">>> Telemetry System: Flash persistence ENABLED");
+#else
+  USB_SERIAL_PRINTLN(">>> Telemetry System: Using PSRAM (volatile) storage");
+#endif
+  
+  networkManager.setTelemetryPipeline(&telemetryPipeline);
+}
+
+const char* getCurrentPipelineType() {
+#ifdef USE_FLASH_TELEMETRY
+  return "FLASH (Persistent)";
+#else
+  return "PSRAM (Volatile)";
+#endif
+}
+
+// Process individual serial command character
+void processSerialCommand(char command) {
+  
+  switch (command) {
+    case 'D':
+    case 'd':
+      // Disconnect WiFi for testing
+      if (!wifiTestingBlocked) {
+        wifiTestingBlocked = true;
+        WiFi.disconnect(true);  // Disconnect and disable auto-reconnect
+        saveTestingPreferences();
+        USB_SERIAL_PRINTLN(">>> TESTING: WiFi DISCONNECTED - Flash buffer should activate");
+        sendLemonStatus(LC_NO_WIFI);
+      } else {
+        USB_SERIAL_PRINTLN(">>> TESTING: WiFi already disconnected");
+      }
+      break;
+      
+    case 'C':
+    case 'c':
+      // Connect WiFi for testing  
+      if (wifiTestingBlocked) {
+        wifiTestingBlocked = false;
+        saveTestingPreferences();
+        // Trigger network manager to reconnect
+        networkManager.setForceConnectivityCheckForDisplay(true);
+        USB_SERIAL_PRINTLN(">>> TESTING: WiFi RECONNECT enabled - Should drain flash buffer to MQTT");
+      } else {
+        USB_SERIAL_PRINTLN(">>> TESTING: WiFi already connected");
+      }
+      break;
+      
+    case 'F':
+    case 'f':
+      // Show flash buffer compile-time setting
+#ifdef USE_FLASH_TELEMETRY
+      USB_SERIAL_PRINTLN(">>> Flash persistence is ENABLED (compile-time setting)");
+      USB_SERIAL_PRINTLN(">>> To disable, comment out #define USE_FLASH_TELEMETRY in main.cpp and recompile");
+#else
+      USB_SERIAL_PRINTLN(">>> Flash persistence is DISABLED (compile-time setting)");
+      USB_SERIAL_PRINTLN(">>> To enable, uncomment #define USE_FLASH_TELEMETRY in main.cpp and recompile");
+#endif
+      break;
+      
+    case 'R':
+    case 'r':
+      // Reset flash buffer (factory reset)
+      USB_SERIAL_PRINTLN(">>> TESTING: Performing flash buffer factory reset...");
+      // TODO: Call flash buffer factory reset when integrated
+      break;
+      
+    case 'S':
+    case 's':
+      // Show status
+      USB_SERIAL_PRINTLN("=== LEMON-IO SYSTEM STATUS ===");
+      USB_SERIAL_PRINTF("Flash Persistence: %s\n", 
+#ifdef USE_FLASH_TELEMETRY
+                       "ENABLED");
+#else
+                       "DISABLED");
+#endif
+      USB_SERIAL_PRINTF("Active Pipeline: %s\n", getCurrentPipelineType());
+      USB_SERIAL_PRINTF("WiFi Status: %s\n", WiFi.isConnected() ? "Connected" : "Disconnected");
+      USB_SERIAL_PRINTF("MQTT Status: %s\n", privateMQTT.isConnected() ? "Connected" : "Disconnected");
+      USB_SERIAL_PRINTF("Pipeline Length: %u records\n", telemetryPipeline.getPipelineLength());
+      USB_SERIAL_PRINTF("Pipeline Draining: %s\n", telemetryPipeline.isPipelineDraining() ? "YES" : "NO");
+      USB_SERIAL_PRINTLN("");
+      USB_SERIAL_PRINTLN("Testing Simulation States:");
+      USB_SERIAL_PRINTF("WiFi Testing Blocked: %s\n", wifiTestingBlocked ? "YES" : "NO");
+      USB_SERIAL_PRINTLN("===============================");
+      break;
+      
+    case 'H':
+    case 'h':
+    case '?':
+      // Show help
+      USB_SERIAL_PRINTLN("=== LEMON-IO COMMAND REFERENCE ===");
+      USB_SERIAL_PRINTLN("Production Commands:");
+      USB_SERIAL_PRINTLN("F/f - Toggle flash persistence on/off");
+      USB_SERIAL_PRINTLN("S/s - Show system status");
+      USB_SERIAL_PRINTLN("R/r - Factory reset flash storage");
+      USB_SERIAL_PRINTLN("H/h/? - Show this help");
+      USB_SERIAL_PRINTLN("");
+      USB_SERIAL_PRINTLN("Testing/Simulation Commands:");
+      USB_SERIAL_PRINTLN("D/d - Disconnect WiFi (simulate offline)");
+      USB_SERIAL_PRINTLN("C/c - Connect WiFi (simulate online)");
+      USB_SERIAL_PRINTLN("");
+      USB_SERIAL_PRINTLN("Flash Diagnostic Commands (Web Interface):");
+      USB_SERIAL_PRINTLN("POST - Power-On Self Test & Auto-Repair");
+      USB_SERIAL_PRINTLN("DEEP - Deep Sector Validation");
+      USB_SERIAL_PRINTLN("STRESS - High-Volume Stress Test");
+      USB_SERIAL_PRINTLN("RECOVERY - Power-Loss Recovery Test");
+      #ifdef TESTING_MODE
+      USB_SERIAL_PRINTLN("");
+      USB_SERIAL_PRINTLN("Failure Injection Commands (TESTING_MODE builds):");
+      USB_SERIAL_PRINTLN("CORRUPT_SECTOR [num] - Corrupt sector magic number");
+      USB_SERIAL_PRINTLN("CORRUPT_STATE - Corrupt EEPROM state (requires restart)");
+      USB_SERIAL_PRINTLN("SIMULATE_POWER_LOSS - Simulate power-loss during write");
+      USB_SERIAL_PRINTLN("CORRUPT_POINTERS - Corrupt ring buffer pointers");
+      USB_SERIAL_PRINTLN("WEAR_TEST [cycles] - Accelerated wear testing");
+      USB_SERIAL_PRINTLN("RANDOM_CORRUPT [num] - Random sector corruption");
+      USB_SERIAL_PRINTLN("PARTITION_FAIL - Simulate partition failure");
+      USB_SERIAL_PRINTLN("CORRUPT_CRC [num] - Corrupt sector CRC");
+      USB_SERIAL_PRINTLN("ENABLE_FAIL_INJECT - Enable failure injection mode");
+      #endif
+      USB_SERIAL_PRINTLN("===================================");
+      break;
+      
+    default:
+      // Ignore other characters (including newlines, spaces, etc.)
+      break;
+  }
+}
+
+// These are commands to execute through USB serial to allow for testing of flash persistence/buffer
+void processSerialCommands() {
+  // Only process if serial data is available
+  if (!Serial.available()) {
+    return;
+  }
+  
+  char command = Serial.read();
+  processSerialCommand(command);
+}
+
+// Process extended WebSerial commands (flash diagnostics)
+void processExtendedCommand(const String& command) {
+  if (command == "POST") {
+    USB_SERIAL_PRINTLN(">>> DIAGNOSTIC: Running Power-On Self Test...");
+    bool result = telemetryPipeline.performPowerOnSelfTest(true);
+    USB_SERIAL_PRINTF(">>> DIAGNOSTIC: Power-On Self Test %s\n", result ? "PASSED" : "FAILED");
+  } else if (command == "DEEP") {
+    USB_SERIAL_PRINTLN(">>> DIAGNOSTIC: Running Deep Sector Validation...");
+    bool result = telemetryPipeline.performDeepSectorValidation();
+    USB_SERIAL_PRINTF(">>> DIAGNOSTIC: Deep Sector Validation %s\n", result ? "PASSED" : "FAILED");
+  } else if (command == "STRESS") {
+    USB_SERIAL_PRINTLN(">>> DIAGNOSTIC: Running Stress Test (100 records)...");
+    bool result = telemetryPipeline.performStressTest(100);
+    USB_SERIAL_PRINTF(">>> DIAGNOSTIC: Stress Test %s\n", result ? "PASSED" : "FAILED");
+  } else if (command == "RECOVERY") {
+    USB_SERIAL_PRINTLN(">>> DIAGNOSTIC: Running Power-Loss Recovery Test...");
+    bool result = telemetryPipeline.performPowerLossRecoveryTest();
+    USB_SERIAL_PRINTF(">>> DIAGNOSTIC: Power-Loss Recovery Test %s\n", result ? "PASSED" : "FAILED");
+  }
+  
+  // Failure injection commands (only available in TESTING_MODE builds)
+  #ifdef TESTING_MODE
+  else if (command.startsWith("CORRUPT_SECTOR")) {
+    int sector_num = 5; // Default sector
+    if (command.indexOf(' ') > 0) {
+      sector_num = command.substring(command.indexOf(' ') + 1).toInt();
+    }
+    USB_SERIAL_PRINTF(">>> FAILURE INJECTION: Corrupting sector %d...\n", sector_num);
+    bool result = telemetryPipeline.injectSectorCorruption(sector_num);
+    USB_SERIAL_PRINTF(">>> FAILURE INJECTION: Sector corruption %s\n", result ? "INJECTED" : "FAILED (not in flash mode or not supported)");
+  } else if (command == "CORRUPT_STATE") {
+    USB_SERIAL_PRINTLN(">>> FAILURE INJECTION: Corrupting EEPROM state...");
+    bool result = telemetryPipeline.corruptPersistedState();
+    if (result) {
+      USB_SERIAL_PRINTF(">>> FAILURE INJECTION: State corruption INJECTED\n");
+      USB_SERIAL_PRINTLN(">>> FAILURE INJECTION: Restart system to test recovery");
+    } else {
+      USB_SERIAL_PRINTF(">>> FAILURE INJECTION: State corruption FAILED (not in flash mode or not supported)\n");
+    }
+  } else if (command == "SIMULATE_POWER_LOSS") {
+    USB_SERIAL_PRINTLN(">>> FAILURE INJECTION: Simulating power-loss during write...");
+    bool result = telemetryPipeline.simulateIncompleteWrite();
+    USB_SERIAL_PRINTF(">>> FAILURE INJECTION: Power-loss simulation %s\n", result ? "INJECTED" : "FAILED (not in flash mode or not supported)");
+  } else if (command == "CORRUPT_POINTERS") {
+    USB_SERIAL_PRINTLN(">>> FAILURE INJECTION: Corrupting ring buffer pointers...");
+    bool result = telemetryPipeline.corruptRingPointers();
+    USB_SERIAL_PRINTF(">>> FAILURE INJECTION: Pointer corruption %s\n", result ? "INJECTED" : "FAILED (not in flash mode or not supported)");
+  } else if (command.startsWith("WEAR_TEST")) {
+    int cycles = 100; // Default cycles
+    if (command.indexOf(' ') > 0) {
+      cycles = command.substring(command.indexOf(' ') + 1).toInt();
+    }
+    USB_SERIAL_PRINTF(">>> FAILURE INJECTION: Running accelerated wear test (%d cycles)...\n", cycles);
+    bool result = telemetryPipeline.acceleratedWearTest(cycles);
+    USB_SERIAL_PRINTF(">>> FAILURE INJECTION: Wear test %s\n", result ? "COMPLETED" : "FAILED (not in flash mode or not supported)");
+  } else if (command.startsWith("RANDOM_CORRUPT")) {
+    int num_sectors = 3; // Default number of sectors
+    if (command.indexOf(' ') > 0) {
+      num_sectors = command.substring(command.indexOf(' ') + 1).toInt();
+    }
+    USB_SERIAL_PRINTF(">>> FAILURE INJECTION: Injecting random corruption (%d sectors)...\n", num_sectors);
+    bool result = telemetryPipeline.injectRandomCorruption(num_sectors);
+    USB_SERIAL_PRINTF(">>> FAILURE INJECTION: Random corruption %s\n", result ? "INJECTED" : "FAILED (not in flash mode or not supported)");
+  } else if (command == "PARTITION_FAIL") {
+    USB_SERIAL_PRINTLN(">>> FAILURE INJECTION: Simulating partition failure...");
+    bool result = telemetryPipeline.simulatePartitionFailure();
+    if (result) {
+      USB_SERIAL_PRINTF(">>> FAILURE INJECTION: Partition failure SIMULATED\n");
+      USB_SERIAL_PRINTLN(">>> FAILURE INJECTION: Restart system to restore partition access");
+    } else {
+      USB_SERIAL_PRINTF(">>> FAILURE INJECTION: Partition failure FAILED (not in flash mode or not supported)\n");
+    }
+  } else if (command.startsWith("CORRUPT_CRC")) {
+    int sector_num = 7; // Default sector
+    if (command.indexOf(' ') > 0) {
+      sector_num = command.substring(command.indexOf(' ') + 1).toInt();
+    }
+    USB_SERIAL_PRINTF(">>> FAILURE INJECTION: Corrupting sector %d CRC...\n", sector_num);
+    bool result = telemetryPipeline.injectCRCCorruption(sector_num);
+    USB_SERIAL_PRINTF(">>> FAILURE INJECTION: CRC corruption %s\n", result ? "INJECTED" : "FAILED (not in flash mode or not supported)");
+  } else if (command == "ENABLE_FAIL_INJECT") {
+    USB_SERIAL_PRINTLN(">>> FAILURE INJECTION: Checking failure injection mode...");
+    telemetryPipeline.enableFailureInjection();
+    USB_SERIAL_PRINTLN(">>> FAILURE INJECTION: If using FlashTelemetryManager in FLASH_ONLY mode, failure injection is available");
+    USB_SERIAL_PRINTLN(">>> FAILURE INJECTION: If using TelemetryPipeline (PSRAM mode), failure injection is not supported");
+  }
+  #endif
+  
+  else {
+    USB_SERIAL_PRINTF(">>> DIAGNOSTIC: Unknown command: %s\n", command.c_str());
+  }
+}
 
 // sizeof is 108 rounded to 112 without badLengthUplinkMsgCount and badChkSumUplinkMsgCount
 // add these in and sizeof is 116 rounded to 120 to keep on 8 byte boundary
@@ -459,713 +1042,8 @@ bool checkForValidPreambleOnUplink()
   return validPreambleFound;
 }
 
-bool populateHeadWithMakoTelemetry(BlockHeader& headBlock, const bool validPreambleFound, const uint8_t* packetData, int dataLength)
-{
-  bool messageValidatedOk = false;
+#define BUILD_INCLUDE_MAIN_PART3
 
-  uint16_t blockMaxPayload = 0;
-  uint8_t* blockBuffer = headBlock.getBuffer(blockMaxPayload);
-  uint8_t* nextBlockByte = blockBuffer;
-  uint16_t headMaxPayloadSize = headBlock.getMaxPayloadSize();
-
-  // 3. Populate the head block buffer with mako telemetry (or nullptr if no pre-amble found)
-  if (validPreambleFound && packetData != nullptr && dataLength > 0)
-  {
-    uplinkRxMicroSeconds = micros();
-
-    // 3.1a Copy packet data into blockBuffer
-    int bytesToCopy = (dataLength < headMaxPayloadSize) ? dataLength : headMaxPayloadSize;
-    memcpy(nextBlockByte, packetData, bytesToCopy);
-    nextBlockByte += bytesToCopy;
-
-    uint32_t nowUS = micros();
-    uplinkRxMicroSeconds = (nowUS >= uplinkRxMicroSeconds ? nowUS - uplinkRxMicroSeconds : 0xFFFFFFFF - uplinkRxMicroSeconds + nowUS);
-
-    if (writeTelemetryLogToSerial)
-      USB_SERIAL_PRINTF("Rx Time: %lu\n",uplinkRxMicroSeconds);
- 
-    receivedUplinkMessageCount++;
-  }
-  else
-  {
-    // 3.1b uplink mako struct to Quibitro will be zero fields
-    memset(nextBlockByte,0,makoHardcodedUplinkMessageLength);
-    nextBlockByte+=makoHardcodedUplinkMessageLength;
-  }
-      
-  // entire message received and stored into blockBuffer (makoHardcodedUplinkMessageLength)
-  uint16_t uplinkMessageLength = nextBlockByte-blockBuffer;
-
-  if (writeTelemetryLogToSerial)
-  {
-    USB_SERIAL_PRINTF("Mako uplinkMessageLength == %hu    ",uplinkMessageLength);
-
-    char  firstLastBytes[512]="";
-    
-    char* nextIndex = firstLastBytes;
-
-    if (uplinkMessageLength > 10)
-    {
-      int bytesToDisplay=5;
-
-      for (int i=0; i<bytesToDisplay; i++)
-        *nextIndex++ = (isalnum(*(blockBuffer+i)) ? *(blockBuffer+i) : '?');
-
-      *nextIndex++=' ';
-      *nextIndex++=' ';
-      *nextIndex++=' ';
-
-      for (int i=uplinkMessageLength-bytesToDisplay; i<uplinkMessageLength; i++)
-        *nextIndex++ = (isalnum(*(blockBuffer+i)) ? *(blockBuffer+i) : '?');
-    }
-    *nextIndex++='\n';
-    *nextIndex++='\0';
-
-    USB_SERIAL_PRINTF("%s", firstLastBytes);
-  }
-
-  // check integrity of Mako message here - increment good count or bad count
-  if (validPreambleFound)
-  {
-    if (enableAllUplinkMessageIntegrityChecks)
-    {
-      uint16_t uplink_checksum = 0;
-      
-      if (uplinkMessageLength > 2 && (uplinkMessageLength % 2) == 0)
-        uplink_checksum = *((uint16_t*)(blockBuffer + uplinkMessageLength - 2));
-      else
-      {
-        USB_SERIAL_PRINTF("decodeUplink bad msg length %%2!=0 %hu  Rx Time: %lu\n", uplinkMessageLength, uplinkRxMicroSeconds);
-
-        headBlock.resetPayload();
-
-        badUplinkMessageCount++;
-
-        badLengthUplinkMsgCount++;
-        
-        messageValidatedOk = false;              
-        return messageValidatedOk;
-      }
-
-      bool uplink_checksum_bad = (uplink_checksum != calcUplinkChecksum((char*)blockBuffer,uplinkMessageLength-2));
-      bool uplinkMessageLengthBad = (uplinkMessageLength != makoHardcodedUplinkMessageLength);
-
-      // hardcoding needs to be removed and replaced with length check according to msgtype
-      if (uplinkMessageLengthBad || uplink_checksum_bad)
-      {
-        if (uplinkMessageLengthBad)
-          USB_SERIAL_PRINTF("decodeUplink bad msg length %hu && checksum bad %hu  Rx Time: %lu\n", uplinkMessageLength, uplink_checksum, uplinkRxMicroSeconds);
-        else if (uplinkMessageLengthBad)
-          USB_SERIAL_PRINTF("decodeUplink bad msg length only %hu  Rx Time: %lu\n", uplinkMessageLength, uplinkRxMicroSeconds);
-        else if (uplink_checksum_bad)
-          USB_SERIAL_PRINTF("decodeUplink bad msg checksum only %hu  Rx Time: %lu\n", uplink_checksum, uplinkRxMicroSeconds);
-        
-        // clear blockBuffer
-        headBlock.resetPayload();
-
-        badUplinkMessageCount++;
-
-        if (uplinkMessageLengthBad)
-          badLengthUplinkMsgCount++;
-        else if (uplink_checksum_bad)
-          badChkSumUplinkMsgCount++;
-
-        messageValidatedOk = false;              
-        return messageValidatedOk;  // this is going to stop any further messages to be uploaded if there are repeated checksum failures.
-        // for now live with this.
-      }
-      else
-      {
-        goodUplinkMessageCount++;
-      }
-    }
-    else
-    {
-      // no checksum validation, assume good uplink message
-      goodUplinkMessageCount++;
-    }
-  }
-  else
-  {
-    // No valid preamble found (or readuplinkcomms disabled)
-    // do not increment checksum counts good/bad.
-  }
-  
-  messageValidatedOk = true;
-
-  // finished processing the uplink Message
-
-  // round up nextBlockByte to 8 byte boundary if needed (120)
-  while ((nextBlockByte-blockBuffer) < blockMaxPayload && (nextBlockByte-blockBuffer)%8 != 0)
-    *(nextBlockByte++)=0;
-
-  headBlock.setRoundedUpPayloadSize(nextBlockByte-blockBuffer);
-
-  return messageValidatedOk;
-}
-
-void populateHeadWithLemonTelemetryAndCommit(BlockHeader& headBlock)
-{
-  uint16_t roundedUpLength = headBlock.getRoundedUpPayloadSize();
-  
-  uint16_t blockMaxPayload = 0;
-  uint8_t* blockBuffer = headBlock.getBuffer(blockMaxPayload);
-  uint8_t* nextBlockByte = blockBuffer+roundedUpLength;
-
-  if (writeTelemetryLogToSerial)
-    USB_SERIAL_PRINTF("Mako roundedUpLength == %hu\n",roundedUpLength);
-
-  uint16_t totalMakoAndLemonLength = roundedUpLength + sizeof(LemonTelemetryForStorage);
-
-  // populate basictelemetry
-
-  // construct lemon telemetry, append to the padded mako telemetry message and commit to the telemetry pipeline
-  if (totalMakoAndLemonLength <= blockMaxPayload)
-  {
-    LemonTelemetryForStorage lemon_telemetry_for_storage;
-    constructLemonTelemetryForStorage(lemon_telemetry_for_storage, latestLemonTelemetry, uplinkMessageLength);
-    
-    memcpy(nextBlockByte, (uint8_t*)&lemon_telemetry_for_storage,sizeof(LemonTelemetryForStorage));
-    
-    if (writeTelemetryLogToSerial)
-      USB_SERIAL_PRINTF("memcpy done LemonTelemetryForStorage == sizeof %i\n",sizeof(LemonTelemetryForStorage));
-
-    nextBlockByte+=sizeof(LemonTelemetryForStorage);
-
-    if (writeTelemetryLogToSerial)
-      USB_SERIAL_PRINTF("totalMakoAndLemonLength %hu\n",totalMakoAndLemonLength);
-
-    headBlock.setPayloadSize(totalMakoAndLemonLength);
-
-    bool isPipelineFull=false;
-    telemetryPipeline.commitPopulatedHeadBlock(headBlock, isPipelineFull);
-  
-    USB_SERIAL_PRINTF("Commit head block: maxpipeblocklength=%hu longestpipe=%hu pipelineLength=%hu TH=%hu,%hu\n",telemetryPipeline.getMaximumPipelineLength(),telemetryPipeline.getMaximumDepth(),telemetryPipeline.getPipelineLength(),telemetryPipeline.getTailBlockIndex(),telemetryPipeline.getHeadBlockIndex());
-  }
-  else
-  {
-    // payload too large to fit into block
-    USB_SERIAL_PRINTF("Combined Mako (%hu) and Lemon (%lu) payloads too large (%hu) to fit into telemetry block (%hu)\n",uplinkMessageLength,sizeof(LemonTelemetryForStorage),totalMakoAndLemonLength,blockMaxPayload);
-  }
-}
-
-void getNextTelemetryMessagesUploadedToPrivateMQTT()
-{
-  extern MercatorMQTT privateMQTT;
-  BlockHeader tailBlock;
-  const uint8_t maxTailPullsPerCycle = 10;   // allow up to 10 messages per cycle
-  uint8_t tailPulls = maxTailPullsPerCycle;
-
-  if (!privateMQTT.canUpload()) // upload throttle and connectivity check.
-    return;
-
-  while (telemetryPipeline.pullTailBlock(tailBlock) && tailPulls)
-  {
-    tailPulls--;
-    
-    if (writeTelemetryLogToSerial)
-      USB_SERIAL_PRINTF("tail block pulled\n");
-
-    uint16_t maxPayloadSize = 0;
-    uint8_t* makoPayloadBuffer = tailBlock.getBuffer(maxPayloadSize);
-    uint16_t combinedBufferSize = tailBlock.getPayloadSize();
-    const uint16_t roundedUpLength = tailBlock.getRoundedUpPayloadSize();
-
-    // 1. parse the mako payload into the mako json payload struct
-    MakoUplinkTelemetryForJson makoJSON;
-    const bool preventGlobalUpdate = false; // refactoring needed to remove this
-    decodeMakoUplinkMessageV5a(makoPayloadBuffer, makoJSON, preventGlobalUpdate);
-
-    checkMakoJSONForAlarms(makoJSON);
-
-    // 2. parse the lemon payload into the lemon json payload struct
-    LemonTelemetryForJson lemonForUpload;
-    decodeIntoLemonTelemetryForUpload(makoPayloadBuffer+roundedUpLength, combinedBufferSize - roundedUpLength, lemonForUpload);
-
-    // 3. construct the JSON message from the two structs and send MQTT to Private MQTT
-    e_q_upload_status uploadStatus=Q_SUCCESS;
-    e_q_upload_status uploadStatusPrivateMQTT=Q_SUCCESS;
-
-    if (enableConnectToPrivateMQTT && enableUploadToPrivateMQTT)
-        uploadStatus = uploadStatusPrivateMQTT = uploadTelemetryToPrivateMQTT(&makoJSON, &lemonForUpload);
-
-
-    // 5. If sent ok then commit (or no send to Qubitro required), otherwise do nothing
-    if (uploadStatus & 0x01 == Q_SUCCESS)
-    {
-      telemetryPipeline.tailBlockCommitted();
-      
-      g_offlineStorageThrottleApplied = false;
-      
-      USB_SERIAL_PRINTF("tail block committed:  pipelineLength=%hu TH=%hu,%hu\n",telemetryPipeline.getPipelineLength(),telemetryPipeline.getTailBlockIndex(),telemetryPipeline.getHeadBlockIndex());
-    }
-    else
-    {
-      USB_SERIAL_PRINTF("tail block NOT committed\n");
-
-      break;    // do not attempt any more tail pulls this event cycle
-    }
-  }
-}
-
-// TinyGPSPlus must be non-const as act of getting lat and lng resets the updated flag
-void populateCurrentLemonTelemetry(LemonTelemetryForJson& l, TinyGPSPlus& g)
-{
-  l.gps_lat =  g.location.lat(); l.gps_lng = g.location.lng();
-  l.gps_hdop = g.hdop.hdop();    l.gps_course_deg = g.course.deg(); l.gps_knots = g.speed.knots();
-  l.gps_hour = g.time.hour();    l.gps_minute =  g.time.minute();   l.gps_second =  g.time.second();
-  l.gps_day =  g.date.day();     l.gps_month =  g.date.month();
-  l.gps_year = g.date.year();
-  l.gps_satellites =             g.satellites.value();
-
-  getM5ImuSensorData(l);
-}
-
-void populateFinalLemonTelemetry(LemonTelemetryForJson& l)
-{
-  l.downlink_send_duration = downlinkSendMessageDurationMicroSeconds;
-  l.uplink_preamble_latency = preambleReceivedAfterMicroSeconds;
-  l.uplink_rx_latency = uplinkRxMicroSeconds;
-}
-
-void constructLemonTelemetryForStorage(struct LemonTelemetryForStorage& s, const LemonTelemetryForJson l, const uint16_t uplinkMessageLength)
-{
-  s.gps_lat = l.gps_lat;  s.gps_lng = l.gps_lng;          // must be on 8 byte boundary 
-  s.goodUplinkMessageCount = goodUplinkMessageCount;      // GLOBAL
-  s.badUplinkMessageCount = badUplinkMessageCount;      // GLOBAL
-//  s.badLengthUplinkMsgCount = badLengthUplinkMsgCount;      // GLOBAL
-//  s.badChkSumUplinkMsgCount = badChkSumUplinkMsgCount;      // GLOBAL  
-  s.consoleDownlinkMsgCount = consoleDownlinkMsgCount;    // GLOBAL
-  s.telemetry_timestamp = lastGoodUplinkMessage;          // GLOBAL
-  s.fixCount = fixCount;                                  // GLOBAL
-  s.vBusVoltage = (uint16_t)(0.11);
-  s.vBusCurrent = (uint16_t)(0.11);
-  s.vBatVoltage = (uint16_t)(0.11);
-  s.uplinkMessageMissingCount = (uint16_t)(uplinkMessageMissingCount);          // 40
-  s.uplinkMessageLength = uplinkMessageLength;            // GLOBAL
-  s.gps_hdop = (uint16_t)(l.gps_hdop * 10.0);
-  s.gps_course_deg = (uint16_t)(l.gps_course_deg * 10.0);
-  s.gps_knots = (uint16_t)(l.gps_knots * 10.0);            // 48
-  
-  s.downlink_send_duration = l.downlink_send_duration; 
-  s.uplink_preamble_latency = l.uplink_preamble_latency; 
-  s.uplink_rx_latency = l.uplink_rx_latency;
-  s.imu_lin_acc_x = l.imu_lin_acc_x; s.imu_lin_acc_y = l.imu_lin_acc_y; s.imu_lin_acc_z = l.imu_lin_acc_z;
-  s.imu_rot_acc_x = l.imu_rot_acc_x; s.imu_rot_acc_y = l.imu_rot_acc_y; s.imu_rot_acc_z = l.imu_rot_acc_z;
-  s.uplinkBadMessagePercentage = uplinkBadMessagePercentage;      // 88
-
-  s.KBFromMako = KBFromMako;                             // GLOBAL
-  s.gps_hour = l.gps_hour; s.gps_minute = l.gps_minute;  s.gps_second = l.gps_second;
-  s.gps_day = l.gps_day; s.gps_month = l.gps_month; s.gps_satellites = (uint8_t)l.gps_satellites;
-  s.gps_year =  l.gps_year;         // 100     
-
-  s.four_byte_zero_padding = 0;     // 104
-}
-
-//  uint32_t  l.privateMQTTUploadCount;
-//  float     l.KBToPrivateMQTT;
-//  uint32_t  l.live_metrics_count;
-//  uint32_t  l.privateMQTTUploadDutyCycle;
-//  uint16_t  l.privateMQTTMessageLength = privateMQTTMessageLength;
-
-uint8_t decode_uint8(uint8_t*& msg) 
-{ 
-  return  *(msg++);
-}
-
-uint16_t decode_uint16(uint8_t*& msg) 
-{ 
-  // copy 2 bytes out of msg
-  uint16_t r = *(msg++) + ((*(msg++)) << 8);
-  return r;
-}
-
-uint32_t decode_uint32(uint8_t*& msg) 
-{
-  // copy 4 bytes out of msg
-  uint32_t r = *(msg++) + ((*(msg++)) << 8) + ((*(msg++)) << 16) + ((*(msg++)) << 24);
-  return r;
-}
-
-float decode_float(uint8_t*& msg) 
-{ 
-  char* p = nullptr;
-  float f = 0.0; 
-  
-  // copy 4 bytes out of msg
-  p = (char*)&f; *(p++) = *(msg++); *(p++) = *(msg++); *(p++) = *(msg++); *(p++) = *(msg++); 
-
-  return  f;
-}
-
-double decode_double(uint8_t*& msg) 
-{ 
-  char* p = nullptr;
-  double d = 0.0; 
-
-  // copy 8 bytes out of msg
-  p = (char*)&d; *(p++) = *(msg++); *(p++) = *(msg++); *(p++) = *(msg++); *(p++) = *(msg++); *(p++) = *(msg++); *(p++) = *(msg++); *(p++) = *(msg++); *(p++) = *(msg++);
-  return  d;
-}
-
-void decode_uint16_into_3_char_array(uint8_t*& msg, char* target)
-{
-  uint16_t twoBytes = decode_uint16(msg);
-
-  target[0] = (twoBytes & 0x00FF);
-  target[1] = ((twoBytes & 0xFF00) >> 8);
-  target[2] = '\0';
-}
-
-void decode_uint32_into_5_char_array(uint8_t*& msg, char* target)
-{
-  uint16_t twoBytes = decode_uint16(msg);
-
-  target[0] = (twoBytes & 0x00FF);
-  target[1] = ((twoBytes & 0xFF00) >> 8);
-
-  twoBytes = decode_uint16(msg);
-  target[2] = (twoBytes & 0x00FF);
-  target[3] = ((twoBytes & 0xFF00) >> 8);
-
-  target[4] = '\0';
-}
-
-bool decodeIntoLemonTelemetryForUpload(uint8_t* msg, const uint16_t length, struct LemonTelemetryForJson& l)
-{
-  l.gps_lat = decode_double(msg);
-  l.gps_lng = decode_double(msg);         
-  l.goodUplinkMessageCount = decode_uint32(msg);
-  l.badUplinkMessageCount = decode_uint32(msg);
-//  l.badLengthUplinkMsgCount = decode_uint32(msg);
-//  l.badChkSumUplinkMsgCount = decode_uint32(msg); 
-  l.consoleDownlinkMsgCount = decode_uint32(msg);
-  l.telemetry_timestamp = decode_uint32(msg);
-  l.fixCount = decode_uint32(msg);
-  l.vBusVoltage = ((float)decode_uint16(msg)) / 1000.0;
-  l.vBusCurrent = ((float)decode_uint16(msg)) / 100.0;
-  l.vBatVoltage = ((float)decode_uint16(msg)) / 1000.0;
-  l.uplinkMessageMissingCount = decode_uint16(msg);
-  l.uplinkMessageLength = decode_uint16(msg);
-  l.gps_hdop = ((float)decode_uint16(msg)) / 10.0;
-  l.gps_course_deg = ((float)decode_uint16(msg)) / 10.0;
-  l.gps_knots = ((float)decode_uint16(msg)) / 10.0;        // 44
-
-  l.downlink_send_duration = decode_uint32(msg);
-  l.uplink_preamble_latency = decode_uint32(msg);
-  
-  l.uplink_rx_latency = decode_uint32(msg);
-  l.imu_lin_acc_x = decode_float(msg);
-  l.imu_lin_acc_y = decode_float(msg);
-  l.imu_lin_acc_z = decode_float(msg);
-  l.imu_rot_acc_x = decode_float(msg);
-  l.imu_rot_acc_y = decode_float(msg);
-  l.imu_rot_acc_z = decode_float(msg);
-  l.uplinkBadMessagePercentage = decode_float(msg);   // 88
-
-  l.KBFromMako = decode_float(msg);
-  l.gps_hour = decode_uint8(msg);
-  l.gps_minute = decode_uint8(msg);
-  l.gps_second = decode_uint8(msg);
-  l.gps_day = decode_uint8(msg);
-  l.gps_month = decode_uint8(msg);
-  l.gps_satellites = decode_uint8(msg);
-  l.gps_year = decode_uint16(msg);    // 100
-  
-  return true;
-}
-
-void checkMakoJSONForAlarms(struct MakoUplinkTelemetryForJson& m)
-{
-  if (m.user_action & LEAK_DETECTED_USER_ACTION)
-  {
-      makoReportsLeak = true;
-  }
-}
-
-// uplink msg from mako is 114 bytes
-bool decodeMakoUplinkMessageV5a(uint8_t* uplinkMsg, struct MakoUplinkTelemetryForJson& m, const bool preventGlobalUpdate)
-{
-  bool result = false;
-
-  uint16_t uplink_length = decode_uint16(uplinkMsg);
-  uint16_t uplink_msgtype = decode_uint16(uplinkMsg);
-
-  m.depth = ((float)decode_uint16(uplinkMsg)) / 10.0;
-  m.water_pressure = ((float)decode_uint16(uplinkMsg)) / 100.0;
-  m.water_temperature = ((float)decode_uint16(uplinkMsg)) / 10.0;
-  
-  m.enclosure_temperature = ((float)decode_uint16(uplinkMsg)) / 10.0;
-  m.enclosure_humidity = ((float)decode_uint16(uplinkMsg)) / 10.0;
-  m.enclosure_air_pressure = ((float)decode_uint16(uplinkMsg)) / 10.0;
-  m.magnetic_heading_compensated = ((float)decode_uint16(uplinkMsg)) / 10.0;
-
-  m.heading_to_target = ((float)decode_uint16(uplinkMsg)) / 10.0;
-  m.distance_to_target = ((float)decode_uint16(uplinkMsg)) / 10.0;
-  m.journey_course = ((float)decode_uint16(uplinkMsg)) / 10.0;
-  m.journey_distance = ((float)decode_uint16(uplinkMsg)) / 100.0;
-
-  decode_uint16_into_3_char_array(uplinkMsg, m.screen_display);
-
-  m.seconds_on = decode_uint16(uplinkMsg);
-  m.user_action = decode_uint16(uplinkMsg);
-
-  m.bad_checksum_msgs = decode_uint16(uplinkMsg);
-  m.usb_voltage = ((float)decode_uint16(uplinkMsg)) / 1000.0;
-  m.usb_current = ((float)decode_uint16(uplinkMsg)) / 100.0;
-
-  decode_uint32_into_5_char_array(uplinkMsg,m.target_code);
-
-  char* stripChar = strchr(m.target_code,' ');
-  if (stripChar)
-    *stripChar = '\0';                // strip any trailing space
-
-  stripChar = strchr(m.target_code,'\n');
-  if (stripChar)
-    *stripChar = '\0';      // strip any trailing newline
-
-  m.minimum_sensor_read_time = decode_uint16(uplinkMsg);
-  m.quietTimeMsBeforeUplink = decode_uint16(uplinkMsg);
-  m.sensor_aquisition_time = decode_uint16(uplinkMsg);
-  m.max_sensor_acquisition_time = decode_uint16(uplinkMsg);
-  m.actual_sensor_acquisition_time = decode_uint16(uplinkMsg);
-  m.max_actual_sensor_acquisition_time = decode_uint16(uplinkMsg);
-
-  m.lsm_acc_x = decode_float(uplinkMsg); m.lsm_acc_y = decode_float(uplinkMsg);  m.lsm_acc_z = decode_float(uplinkMsg);
-
-  m.imu_gyro_x = decode_float(uplinkMsg); m.imu_gyro_y = decode_float(uplinkMsg); m.imu_gyro_z = decode_float(uplinkMsg);
-  m.imu_lin_acc_x = decode_float(uplinkMsg); m.imu_lin_acc_y = decode_float(uplinkMsg); m.imu_lin_acc_z = decode_float(uplinkMsg);
-  m.imu_rot_acc_x = decode_float(uplinkMsg); m.imu_rot_acc_y = decode_float(uplinkMsg); m.imu_rot_acc_z = decode_float(uplinkMsg);
-
-  m.good_checksum_msgs = decode_uint16(uplinkMsg);
-
-  m.way_marker_enum = decode_uint16(uplinkMsg);
-  
-  decode_uint16_into_3_char_array(uplinkMsg, m.way_marker_label);
-  decode_uint16_into_3_char_array(uplinkMsg, m.direction_metric);
- 
-  m.console_flags = decode_uint16(uplinkMsg);
-
-  // must include this otherwise will not decode rest of message correctly
-  uint16_t uplink_checksum = decode_uint16(uplinkMsg);    // not including in MakoUplinkTelemetryForJson struct
-  
-  m.console_requests_send_tweet = (m.console_flags & 0x01);
-  m.console_requests_emergency_tweet = (m.console_flags & 0x02);
-
-  //  USB_SERIAL.printf("decodeUplink good msg: %d msg type\n",uplink_msgtype);
-
-  m.goodUplinkMessageCount = goodUplinkMessageCount;
-  m.lastGoodUplinkMessage = lastGoodUplinkMessage;
-  m.KBFromMako = KBFromMako;
-
-/* GLOBALS - need to remove/refactor*/
-  if (!preventGlobalUpdate)
-  {
-    lastGoodUplinkMessage = millis();
-    KBFromMako = KBFromMako + (((float)uplink_length) / 1024.0);
-  
-    uplinkMessageLength = uplink_length;
-  }
-  
-  result = true;
-
-  return result;
-}
-
-uint16_t calcUplinkChecksum(char* buffer, uint16_t length)
-{
-  uint16_t* word_buffer = (uint16_t*)buffer;
-  uint16_t word_length = length / 2;
-
-  uint16_t checksum = 0;
-
-  while (word_length--)
-    checksum = checksum ^ *(word_buffer++);
-
-  return checksum;
-}
-
-const char* fake_no_fix = "$GPRMC,235316.000,A,4003.9040,N,10512.5792,W,0.09,144.75,141112,,*19\n";
-
-void sendFakeGPSData_No_Fix()
-{
-  serial_mako_gopro.write(fake_no_fix);
-  delay(100);
-}
-
-const char* fake_no_gps = "$GPRMC,092204.999,A,4250.5589,S,14718.5084,E,0.00,89.68,211200,,*25\n";
-
-void sendFakeGPSData_No_GPS()
-{
-  serial_mako_gopro.write(fake_no_gps);
-  delay(100);
-}
-
-void buildUplinkTelemetryMessageV6a(char* payload, const struct MakoUplinkTelemetryForJson& m, const struct LemonTelemetryForJson& l)
-{
-  currentPrivateMQTTUploadAt = millis();
-  privateMQTTUploadDutyCycle = currentPrivateMQTTUploadAt - lastPrivateMQTTUploadAt;
-
-  uint32_t live_metrics_count = 75; // as of 9 May 2023
-  
-  sprintf(payload,
-          "{\"UTC_time\":\"%02d:%02d:%02d\",\"UTC_date\":\"%02d:%02d:%02d\",\"lemon_on_mins\":%lu,\"coordinates\":[%f,%f],\"depth\":%f,"
-          "\"water_pressure\":%f,\"water_temperature\":%f,\"enclosure_temperature\":%f,\"enclosure_humidity\":%f,\"enclosure_air_pressure\":%f,"
-          "\"magnetic_heading_compensated\":%f,\"heading_to_target\":%f,\"distance_to_target\":%f,\"journey_course\":%f,\"journey_distance\":%f,"
-          "\"mako_screen_display\":\"%s\",\"mako_on_mins\":%lu,\"mako_user_action\":%d,\"mako_rx_bad_checksum_msgs\":%hu,"
-          "\"mako_usb_voltage\":%f,\"mako_usb_current\":%f,\"mako_target_code\":\"%s\","
-          "\"fix_count\":%lu,\"lemon_usb_voltage\":%f,\"lemon_usb_current\":%f,\"lemon_bat_voltage\":%f,\"uplink_missing_msgs_from_mako\":%hu,"
-          "\"sats\":%lu,\"hdop\":%f,\"gps_course\":%f,\"gps_speed_knots\":%f,"
-
-          "\"min_sens_read\":%hu,\"quiet_b4_uplink\":%hu,\"sens_read\":%hu,\"max_sens_read\":%hu,\"act_sens_read\":%hu,\"max_act_sens_read\":%hu,"
-
-          "\"mako_lsm_acc_x\":%f,\"mako_lsm_acc_y\":%f,\"mako_lsm_acc_z\":%f,"
-
-          "\"mako_imu_gyro_x\":%f,\"mako_imu_gyro_y\":%f,\"mako_imu_gyro_z\":%f,"
-          "\"mako_imu_lin_acc_x\":%f,\"mako_imu_lin_acc_y\":%f,\"mako_imu_lin_acc_z\":%f,"
-          "\"mako_imu_rot_acc_x\":%f,\"mako_imu_rot_acc_y\":%f,\"mako_imu_rot_acc_z\":%f,"
-          "\"mako_rx_good_checksum_msgs\":%hu,"
-
-          "\"downlink_send_duration\":%lu,\"uplink_preamble_latency\":%lu,\"uplink_rx_latency\":%lu,"
-          "\"lemon_imu_lin_acc_x\":%f,\"lemon_imu_lin_acc_y\":%f,\"lemon_imu_lin_acc_z\":%f,"
-          "\"lemon_imu_rot_acc_x\":%f,\"lemon_imu_rot_acc_y\":%f,\"lemon_imu_rot_acc_z\":%f,"
-          "\"uplink_bad_percentage\":%.1f,"
-
-          "\"mako_waymarker_e\":%d,\"mako_waymarker_label\":\"%s\",\"mako_direction_metric\":\"%s\","
-
-          "\"uplink_good_msgs_from_mako\":%lu,\"uplink_bad_msgs_from_mako\":%lu,\"uplink_msg_length\":%hu,\"msgs_to_qubitro\":%d,\"qubitro_msg_length\":%hu,\"KB_to_qubitro\":%.1f,\"KB_uplinked_from_mako\":%.1f,"
-          "\"live_metrics\":%lu,\"qubitro_upload_duty_cycle\":%lu,\"console_downlink_msg\":%lu,\"geo_location\":\"Gozo, Malta\""
-          "}",
-
-          // with bad length and bad checksum stats
-          //           "\"uplink_good_msgs_from_mako\":%lu,\"uplink_bad_msgs_from_mako\":%lu,\"uplink_bad_len_msgs_from_mako\":%lu,\"uplink_bad_chk_msgs_from_mako\":%lu,\"uplink_msg_length\":%hu,\"msgs_to_qubitro\":%d,\"qubitro_msg_length\":%hu,\"KB_to_qubitro\":%.1f,\"KB_uplinked_from_mako\":%.1f,"
-
-          l.gps_hour, l.gps_minute, l.gps_second,
-          l.gps_day, l.gps_month, l.gps_year,
-          currentPrivateMQTTUploadAt / 1000 / 60,   // lemon on minutes
-          l.gps_lat, l.gps_lng,
-          m.depth, m.water_pressure, m.water_temperature,
-          m.enclosure_temperature, m.enclosure_humidity, m.enclosure_air_pressure,
-          m.magnetic_heading_compensated, m.heading_to_target, m.distance_to_target,
-          m.journey_course, m.journey_distance,
-          m.screen_display,
-          m.seconds_on,
-          m.user_action,
-          m.bad_checksum_msgs, m.usb_voltage, m.usb_current, 
-          
-          m.target_code,
-
-          l.fixCount,
-          
-          l.vBusVoltage, l.vBusCurrent, l.vBatVoltage, l.uplinkMessageMissingCount,
-
-          l.gps_satellites, l.gps_hdop, l.gps_course_deg, l.gps_knots,
-          
-          m.minimum_sensor_read_time, m.quietTimeMsBeforeUplink, m.sensor_aquisition_time,  
-          m.max_sensor_acquisition_time, m.actual_sensor_acquisition_time, m.max_actual_sensor_acquisition_time,
-
-          m.lsm_acc_x, m.lsm_acc_y, m.lsm_acc_z,
-
-          m.imu_gyro_x,    m.imu_gyro_y,    m.imu_gyro_z,
-          m.imu_lin_acc_x, m.imu_lin_acc_y, m.imu_lin_acc_z,
-          m.imu_rot_acc_x, m.imu_rot_acc_y, m.imu_rot_acc_z,
-          m.good_checksum_msgs,
-          l.downlink_send_duration,
-          l.uplink_preamble_latency,    
-          l.uplink_rx_latency,
-          l.imu_lin_acc_x, l.imu_lin_acc_y, l.imu_lin_acc_z,
-          l.imu_rot_acc_x, l.imu_rot_acc_y, l.imu_rot_acc_z,
-          l.uplinkBadMessagePercentage,
-
-          m.way_marker_enum, m.way_marker_label, m.direction_metric,
-          
-          l.goodUplinkMessageCount,
-          l.badUplinkMessageCount,
-//          l.badLengthUplinkMsgCount,
-//          l.badChkSumUplinkMsgCount,
-          l.uplinkMessageLength,
-          privateMQTTUploadCount,
-          privateMQTTMessageLength,             ///  ????
-          KBToPrivateMQTT,                      ///  ????
-          l.KBFromMako,
-          live_metrics_count,
-          privateMQTTUploadDutyCycle,           ///  ????
-          l.consoleDownlinkMsgCount
-          
-          // DO NOT POPULATE (HARDCODED IN SPRINTF STRING) geo_location
-         );
-
-  extern uint16_t privateMQTTMessageLength;
-  extern float KBToPrivateMQTT;
-  
-  privateMQTTMessageLength = strlen(payload);
-  KBToPrivateMQTT += (((float)(privateMQTTMessageLength)) / 1024.0);
-
-  lastPrivateMQTTUploadAt = millis();
-
-  // update last uploaded mako stats
-  latestMakoStats=MakoStats(m.minimum_sensor_read_time, m.quietTimeMsBeforeUplink,m.sensor_aquisition_time, 
-                            m.max_sensor_acquisition_time, m.actual_sensor_acquisition_time, m.max_actual_sensor_acquisition_time);
-}
-
-void buildBasicTelemetryMessage(char* payload)
-{
-  sprintf(payload, "{\"lat\":%f,\"lng\":%f}",  gps.location.lat(), gps.location.lng());
-}
-
-enum e_q_upload_status uploadTelemetryToPrivateMQTT(MakoUplinkTelemetryForJson* makoTelemetry, struct LemonTelemetryForJson* lemonTelemetry)
-{
-  extern MercatorMQTT privateMQTT;
-  enum e_q_upload_status uploadStatus = Q_UNDEFINED_ERROR;
-
-  if(enableUploadToPrivateMQTT)
-  {
-    if (privateMQTT.canUpload())
-    {
-        char* mqtt_payload = privateMQTT.getPayloadBuffer();
-        buildUplinkTelemetryMessageV6a(mqtt_payload, *makoTelemetry, *lemonTelemetry);
-
-        const int qos = 1;
-        MQTTConnectionResult result = privateMQTT.publish("telemetry/uplink", mqtt_payload, qos);
-
-        switch(result) {
-          case MQTTConnectionResult::SUCCESS:
-            toggleStatusLED();
-            uploadStatus = Q_SUCCESS_SEND;
-            privateMQTTUploadCount++;
-            USB_SERIAL_PRINTF("Private MQTT Client SEND MESSAGE SUCCESS.\n");
-            break;
-          case MQTTConnectionResult::SEND_ERROR:
-            uploadStatus = Q_MQTT_CLIENT_SEND_ERROR;
-            USB_SERIAL_PRINTF("Private MQTT Client failed to send message.\n");
-            break;
-          default:
-            USB_SERIAL_PRINTF("Private MQTT Client failed - error unknown.\n");
-            uploadStatus = Q_MQTT_CLIENT_SEND_ERROR;
-            break;
-        }
-    }
-    else
-    {
-      if (WiFi.status() != WL_CONNECTED) {
-        uploadStatus = Q_NO_WIFI_CONNECTION;
-        USB_SERIAL_PRINTLN("Private MQTT No Wifi\n");
-      } else {
-        uploadStatus = Q_MQTT_CLIENT_CONNECT_ERROR;
-        USB_SERIAL_PRINTF("Private MQTT Client error - not connected\n");
-      }
-    }
-  }
-  else
-  {
-    uploadStatus = Q_SUCCESS_NOT_ENABLED;
-
-    USB_SERIAL_PRINTLN("Private MQTT Not Enabled\n");
-  }
-
-  return uploadStatus;
-}
-
-
+#include "main_part3.cpp"
 
 #endif
