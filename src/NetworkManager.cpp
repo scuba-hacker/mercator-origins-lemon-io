@@ -146,6 +146,7 @@ void NetworkManager::loop() {
         } else {
             USB_SERIAL_PRINTLN("[MQTT: Cannot connect to broker");
             displayManager.addDisplayLine("MQTT: Cannot connect to broker");
+            delay(2000);
             mqttCheck.initialTestPublishDone = true;
         }
     }

@@ -875,7 +875,7 @@ void setup()
   privateMQTT.setConnectionCallbacks(
     [&] { USB_SERIAL_PRINTF("Local MQTT connected (%s)\n", privateMQTT.getEncryptionStatus()); },
     [&] { USB_SERIAL_PRINTF("Local MQTT disconnected (%s)\n", privateMQTT.getEncryptionStatus()); },
-    [&] { USB_SERIAL_PRINTF("Remote MQTT connected (%s)\n", privateMQTT.getEncryptionStatus()); },
+    [&] { USB_SERIAL_PRINTF("Remote MQTT connected (%s)\n", privateMQTT.getEncryptionStatus()); },§
     [&] { USB_SERIAL_PRINTF("Remote MQTT disconnected (%s)\n", privateMQTT.getEncryptionStatus()); }
   );
 
