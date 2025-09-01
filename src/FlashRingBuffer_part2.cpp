@@ -30,7 +30,7 @@ uint32_t FlashRingBuffer::getRingDistance() const {
     }
 }
 
-bool FlashRingBuffer::validateSectorHeader(const SectorHeader& header) {
+bool FlashRingBuffer::validateSectorHeader(const SectorHeader& header) const {
     // Basic magic and usage validation
     if (header.magic != SECTOR_MAGIC) {
         return false;

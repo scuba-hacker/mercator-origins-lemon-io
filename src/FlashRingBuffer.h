@@ -101,7 +101,7 @@ private:
     
     bool scanAndRecover();
     uint32_t scanSectorRecords(uint32_t sector_index, uint32_t claimed_used);
-    bool validateSectorHeader(const SectorHeader& header);
+    bool validateSectorHeader(const SectorHeader& header) const;
     bool validateSectorComplete(uint32_t sector_index) const;
     uint16_t calculateCRC16(const uint8_t* data, size_t length) const;
     uint32_t calculateCRC32(const uint8_t* data, size_t length) const;
