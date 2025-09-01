@@ -71,7 +71,7 @@ public:
     
     // Message size constraints
     static const uint16_t MIN_MESSAGE_SIZE = 16;
-    static const uint16_t MAX_MESSAGE_SIZE = 928;
+    static const uint16_t MAX_MESSAGE_SIZE = 1008;  // Max size for 4 messages per 4KB sector with sentinels
     static const uint32_t MAX_RECORD_SIZE = MAX_MESSAGE_SIZE + RECORD_HEADER_SIZE;
     static const uint32_t USABLE_SECTOR_SIZE = SECTOR_SIZE - SECTOR_HEADER_SIZE;
 
@@ -93,7 +93,7 @@ private:
     bool findPartition();
     esp_err_t eraseSector(uint32_t sector_index);
     esp_err_t writeSector(uint32_t sector_index, const void* data, size_t size);
-    esp_err_t readSector(uint32_t sector_index, void* data, size_t size);
+    esp_err_t readSector(uint32_t sector_index, void* data, size_t size) const;
     
     bool loadPersistedState();
     bool savePersistedState();
@@ -102,8 +102,9 @@ private:
     bool scanAndRecover();
     uint32_t scanSectorRecords(uint32_t sector_index, uint32_t claimed_used);
     bool validateSectorHeader(const SectorHeader& header);
-    uint16_t calculateCRC16(const uint8_t* data, size_t length);
-    uint32_t calculateCRC32(const uint8_t* data, size_t length);
+    bool validateSectorComplete(uint32_t sector_index) const;
+    uint16_t calculateCRC16(const uint8_t* data, size_t length) const;
+    uint32_t calculateCRC32(const uint8_t* data, size_t length) const;
     
     bool advanceSector();
     bool sectorHasSpace(uint32_t required_bytes) const;
@@ -139,6 +140,9 @@ public:
     bool performSelfTest();
     bool performPowerOnSelfTest(bool auto_repair = true);
     bool performExtendedDiagnostics();
+    bool performDeepSectorValidation();
+    bool performPowerLossRecoveryTest();
+    bool performStressTest(uint32_t num_records = 1000);
     
     // Safe shutdown
     void prepareForShutdown();

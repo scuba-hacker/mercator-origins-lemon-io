@@ -338,7 +338,7 @@ bool FlashTelemetryManager::convertBlockToFlashRecord(const BlockHeader& block) 
     }
     
     uint16_t max_payload_size;
-    uint8_t* block_buffer = block.getBuffer(max_payload_size);
+    uint8_t* block_buffer = const_cast<BlockHeader&>(block).getBuffer(max_payload_size);
     
     return m_flash_buffer.appendRecord(block_buffer, payload_size);
 }
@@ -361,7 +361,7 @@ bool FlashTelemetryManager::convertFlashRecordToBlock(BlockHeader& block) {
     // Create a BlockHeader and populate it
     block = m_psram_pipeline.getHeadBlockForPopulating();
     uint16_t max_payload_size;
-    uint8_t* block_buffer = block.getBuffer(max_payload_size);
+    uint8_t* block_buffer = const_cast<BlockHeader&>(block).getBuffer(max_payload_size);
     
     if (actual_length > max_payload_size) {
         USB_SERIAL_PRINTF("FlashTelemetryManager::convertFlashRecordToBlock() - Record too large: %u > %u\n", 
