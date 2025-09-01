@@ -3,6 +3,8 @@
 #include "TelemetryPipeline.h"
 #include <NavigationWaypoints.h>
 
+#include "logs_page.h"
+
 extern "C" {
   #include "lwip/dns.h"
 }
@@ -492,6 +494,10 @@ void NetworkManager::setupWebServerRoutes() {
         USB_SERIAL_PRINTLN("Restarting now...");
         esp_restart();
     });
+
+    asyncWebServer->on("/logs", HTTP_GET, [](AsyncWebServerRequest * request) {
+        request->send_P(200, "text/html", LOGS_PAGE_HTML);
+      });
 
     // Debug endpoint to test WebSocket
     asyncWebServer->on("/test-ws", HTTP_GET, [this](AsyncWebServerRequest * request) {
