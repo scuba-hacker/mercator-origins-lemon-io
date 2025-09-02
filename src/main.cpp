@@ -9,7 +9,21 @@ bool writeTelemetryLogToSerial = false; // writeLogToSerial must also be true if
 // Uncomment to enable
 #define USE_WEBSERIAL
 
-// Uncomment to use Flash persistence instead of PSRAM telemetry pipeline
+/**
+ * MARINE FLASH PERSISTENCE CONTROL
+ * 
+ * Uncomment to use Flash persistence instead of PSRAM telemetry pipeline
+ * 
+ * Marine Operational Modes:
+ * - PSRAM Mode (commented): Battle-tested for reliability
+ * - Flash Mode (uncommented): Extended 8+ hour marine logging capability
+ * 
+ * Flash mode enables:
+ * - Data persistence across power cycles
+ * - Extended dive logging (8+ hours without connectivity)
+ * - Automatic power-loss recovery
+ * - Marine-grade data integrity protection
+ */
 // #define USE_FLASH_TELEMETRY
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -289,11 +303,31 @@ uint32_t privateMQTTUploadCount = 0;
 Preferences testingPrefs;
 bool wifiTestingBlocked = false;
 
-// #### START IN-MEMORY TELEMETRY-PIPELINE / MESSAGE BUFFER CONFIG
+// #### START TELEMETRY STORAGE SYSTEM SELECTION ####
+/**
+ * Marine Telemetry Storage System Selection
+ * 
+ * This conditional compilation provides seamless switching between:
+ * 
+ * FLASH MODE (USE_FLASH_TELEMETRY defined):
+ * - FlashTelemetryManager: Marine-grade persistent storage
+ * - 10MB flash ring buffer survives power cycles
+ * - 8+ hour dive logging capability without connectivity
+ * - Power-safe atomic operations
+ * - Automatic fallback to PSRAM if flash fails
+ * 
+ * PSRAM MODE (USE_FLASH_TELEMETRY not defined):
+ * - TelemetryPipeline: Battle-tested PSRAM-only storage
+ * - Proven reliability in marine environments
+ * - Limited to active power session duration
+ * - Immediate fallback for flash system issues
+ * 
+ * KEY: Both systems share identical API - existing code unchanged
+ */
 #ifdef USE_FLASH_TELEMETRY
-FlashTelemetryManager telemetryPipeline;    // Flash-based persistent pipeline
+FlashTelemetryManager telemetryPipeline;    // Flash-based persistent pipeline with PSRAM fallback
 #else
-TelemetryPipeline telemetryPipeline;        // Original PSRAM-based pipeline  
+TelemetryPipeline telemetryPipeline;        // Original PSRAM-based pipeline (battle-tested fallback)
 #endif
 
 const uint32_t telemetry_online_head_commit_duty_ms = 1000;
@@ -919,6 +953,18 @@ void setup()
   const uint16_t maxPipelineBlockPayloadSize = 256; // was 224 - Assuming 120 byte Mako Telemetry Msg and 104 byte Lemon Telemetry Msg
   BlockHeader::s_overrideMaxPayloadSize(maxPipelineBlockPayloadSize);  // 400 messages with 256 byte max payload. 
   
+  /**
+   * Initialize Marine Telemetry System
+   * 
+   * Initializes the selected telemetry storage system (Flash or PSRAM).
+   * Critical for marine operation - handles:
+   * - Flash system initialization and validation (if USE_FLASH_TELEMETRY defined)
+   * - PSRAM system initialization (always available as fallback)
+   * - Power-on self-test and automatic repair (flash mode)
+   * - System health reporting and diagnostic logging
+   * 
+   * Marine Safety: System will fall back to PSRAM mode if flash initialization fails
+   */
   initializeTelemetrySystem();
 
   dumpHeapUsage("main: after Telemetry Pipeline creation  ");

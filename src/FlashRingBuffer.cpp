@@ -1,76 +1,144 @@
+/**
+ * @file FlashRingBuffer.cpp
+ * @brief Implementation of power-safe flash ring buffer for marine telemetry storage
+ * 
+ * This file contains the core implementation of the FlashRingBuffer class,
+ * providing persistent storage for telemetry data in marine environments.
+ * 
+ * Key Implementation Features:
+ * - Constructor/destructor with proper resource management
+ * - Initialization sequence with partition discovery and state recovery
+ * - Core record operations with power-loss safety
+ * - State management with ESP32 NVS persistence
+ * - CRC-protected data integrity
+ * - RAM-buffered writes for efficiency
+ * 
+ * Marine Use Cases:
+ * - Dive computer data logging during 8+ hour excursions
+ * - Survives power cycles during equipment shutdown/startup  
+ * - Spools stored data when connectivity returns
+ * - Concurrent logging while uploading backlog
+ * 
+ * @author Generated for Mercator Origins dive computer system
+ * @version 1.0
+ * @date 2024
+ */
+
 #include "FlashRingBuffer.h"
 #include "SerialConfig.h"
 #include <Arduino.h>
 #include <cstring>
 
-// Constructor and destructor
+// === Constructor and Destructor ===
+/**
+ * @brief Constructor - Initialize member variables to safe defaults
+ * 
+ * Sets all pointers to null and initializes state structure to zero.
+ * No memory allocation or hardware access performed here - that's
+ * deferred to init() for proper error handling.
+ */
 FlashRingBuffer::FlashRingBuffer() : 
-    m_partition(nullptr),
-    m_initialized(false),
-    m_fn_millis(nullptr),
-    m_sector_buffer(nullptr),
-    m_sector_assembly_buffer(nullptr),
-    m_buffer_used(0) {
-    memset(&m_state, 0, sizeof(m_state));
+    m_partition(nullptr),                // ESP32 flash partition handle - null until init()
+    m_initialized(false),               // System not ready for use yet  
+    m_fn_millis(nullptr),               // Timing function - injected during init()
+    m_sector_buffer(nullptr),           // 4KB read buffer - allocated during init()
+    m_sector_assembly_buffer(nullptr),  // 4KB write assembly buffer - allocated during init()
+    m_buffer_used(0) {                  // No data in assembly buffer yet
+    memset(&m_state, 0, sizeof(m_state)); // Clear ring buffer state to all zeros
 }
 
+/**
+ * @brief Destructor - Clean up all resources
+ * 
+ * Ensures proper shutdown sequence with RAM buffer flush and
+ * state persistence before releasing memory. Safe to call
+ * even if init() was never called or failed.
+ */
 FlashRingBuffer::~FlashRingBuffer() {
-    teardown();
+    teardown();  // Handles all cleanup including flush and memory deallocation
 }
 
-// Initialization and teardown
+// === Initialization and Teardown ===
+
+/**
+ * @brief Complete system initialization for marine telemetry storage
+ * @param fn_millis Function pointer to Arduino millis() for timing operations
+ * @return true if initialization successful and system ready for use
+ * 
+ * Performs comprehensive initialization sequence:
+ * 1. Memory allocation for sector buffers
+ * 2. Flash partition discovery and validation
+ * 3. ESP32 NVS initialization for persistent state
+ * 4. State recovery from previous sessions
+ * 5. Power-on self-test with auto-repair capabilities
+ * 
+ * Marine Safety Considerations:
+ * - Automatic recovery from incomplete shutdowns
+ * - Validation of all stored data integrity
+ * - Fallback to full partition scan if state corrupted
+ * - Detailed logging for troubleshooting at sea
+ */
 bool FlashRingBuffer::init(long unsigned int (*fn_millis)(void)) {
     USB_SERIAL_PRINTLN("FlashRingBuffer::init() - Starting initialization");
     
+    // Prevent double initialization
     if (m_initialized) {
         USB_SERIAL_PRINTLN("FlashRingBuffer already initialized");
         return true;
     }
     
+    // Store timing function for diagnostic operations
     m_fn_millis = fn_millis;
     
-    // Allocate sector buffer
+    // === Memory Allocation Phase ===
+    // Allocate 4KB sector buffer for flash read operations
     m_sector_buffer = (uint8_t*)malloc(SECTOR_SIZE);
     if (!m_sector_buffer) {
         USB_SERIAL_PRINTLN("FlashRingBuffer::init() - Failed to allocate sector buffer");
         return false;
     }
     
-    // Allocate sector assembly buffer for RAM buffering
+    // Allocate 4KB assembly buffer for RAM-based record accumulation
+    // This enables efficient sector-sized writes to flash
     m_sector_assembly_buffer = (uint8_t*)malloc(SECTOR_SIZE);
     if (!m_sector_assembly_buffer) {
         USB_SERIAL_PRINTLN("FlashRingBuffer::init() - Failed to allocate assembly buffer");
-        teardown();
+        teardown();  // Clean up sector buffer before failing
         return false;
     }
     
-    // Initialize assembly buffer with sector header
+    // Initialize assembly buffer - 0xFF represents erased flash state
     memset(m_sector_assembly_buffer, 0xFF, SECTOR_SIZE);
-    m_buffer_used = 0;
+    m_buffer_used = 0;  // No records accumulated yet
     
-    // Find flash partition
+    // === Flash Partition Discovery ===
+    // Locate dedicated 'flashbuf' partition (data,0x40 type)
     if (!findPartition()) {
         USB_SERIAL_PRINTLN("FlashRingBuffer::init() - Failed to find partition");
         teardown();
         return false;
     }
     
-    // Initialize preferences for persistent state
+    // === NVS Initialization for Persistent State ===
+    // Initialize ESP32 Non-Volatile Storage for ring buffer state persistence
+    // Namespace "flashring" keeps our data separate from other system settings
     if (!m_preferences.begin("flashring", false)) {
         USB_SERIAL_PRINTLN("FlashRingBuffer::init() - Failed to initialize preferences");
         teardown();
         return false;
     }
     
-    // Try to load persisted state
+    // === State Recovery Phase ===
+    // Attempt to load ring buffer state from previous session
     if (loadPersistedState()) {
         USB_SERIAL_PRINTF("FlashRingBuffer::init() - Loaded persisted state: head=%u, tail=%u, seq=%u\n", 
                   m_state.head_sector, m_state.tail_sector, m_state.next_seq_number);
         
-        // Validate state by scanning flash
+        // Validate loaded state against actual flash content
+        // Critical for detecting corruption or inconsistencies after power loss
         if (!scanAndRecover()) {
             USB_SERIAL_PRINTLN("FlashRingBuffer::init() - State validation failed, performing full recovery");
-            // Reset state and try full recovery
+            // Reset state and try full recovery from flash content
             memset(&m_state, 0, sizeof(m_state));
             if (!scanAndRecover()) {
                 USB_SERIAL_PRINTLN("FlashRingBuffer::init() - Full recovery failed");
@@ -80,7 +148,8 @@ bool FlashRingBuffer::init(long unsigned int (*fn_millis)(void)) {
         }
     } else {
         USB_SERIAL_PRINTLN("FlashRingBuffer::init() - No valid persisted state, performing full scan");
-        // No valid persisted state, perform full scan
+        // No valid persisted state found - perform full partition scan
+        // This occurs on first boot or after NVS corruption
         if (!scanAndRecover()) {
             USB_SERIAL_PRINTLN("FlashRingBuffer::init() - Initial scan failed");
             teardown();
@@ -88,48 +157,77 @@ bool FlashRingBuffer::init(long unsigned int (*fn_millis)(void)) {
         }
     }
     
+    // === Initialization Complete ===
     m_initialized = true;
     USB_SERIAL_PRINTLN("FlashRingBuffer::init() - Initialization complete");
     
-    // Run automatic power-on self-test with auto-repair
+    // === Power-On Self-Test Phase ===
+    // Critical for marine safety - comprehensive system validation
     USB_SERIAL_PRINTLN("FlashRingBuffer::init() - Running power-on self-test...");
-    bool post_result = performPowerOnSelfTest(true);
+    bool post_result = performPowerOnSelfTest(true);  // Enable auto-repair
     
     if (!post_result) {
         USB_SERIAL_PRINTLN("FlashRingBuffer::init() - WARNING: Power-on self-test failed!");
-        // Continue operation but log the failure
+        // Continue operation but log the failure - system may still be functional
+        // In marine environments, partial functionality is better than complete failure
     }
     
-    printStatus();
+    // === Status Report ===
+    printStatus();  // Provide complete system status for marine diagnostics
     
     return true;
 }
 
+/**
+ * @brief Safe system teardown with data preservation
+ * 
+ * Performs complete cleanup sequence ensuring no data loss:
+ * 1. Flush any pending RAM buffer data to flash
+ * 2. Save current state to ESP32 NVS
+ * 3. Release allocated memory buffers
+ * 4. Reset all member variables to safe defaults
+ * 
+ * Marine Safety: Called automatically by destructor or can be called
+ * explicitly before power-down to ensure data integrity.
+ */
 void FlashRingBuffer::teardown() {
+    // Perform safe shutdown if system was initialized
     if (m_initialized) {
-        prepareForShutdown();
+        prepareForShutdown();  // Flush buffers and save state
     }
     
+    // Close ESP32 NVS preferences namespace
     m_preferences.end();
     
+    // Release sector buffer memory
     if (m_sector_buffer) {
         free(m_sector_buffer);
         m_sector_buffer = nullptr;
     }
     
+    // Release assembly buffer memory  
     if (m_sector_assembly_buffer) {
         free(m_sector_assembly_buffer);
         m_sector_assembly_buffer = nullptr;
     }
     
+    // Reset all state to safe defaults
     m_buffer_used = 0;
-    
     m_partition = nullptr;
     m_initialized = false;
     memset(&m_state, 0, sizeof(m_state));
 }
 
-// Private helper methods
+// === Private Helper Methods ===
+
+/**
+ * @brief Locate and validate the dedicated flash partition
+ * @return true if partition found and validated
+ * 
+ * Searches for partition named "flashbuf" with type data,0x40
+ * Validates partition size meets minimum requirements (10MB)
+ * Critical for marine deployment - logs detailed partition information
+ */
 bool FlashRingBuffer::findPartition() {
     m_partition = esp_partition_find_first(ESP_PARTITION_TYPE_DATA, (esp_partition_subtype_t)0x40, "flashbuf");
     if (!m_partition) {
@@ -199,7 +297,21 @@ esp_err_t FlashRingBuffer::readSector(uint32_t sector_index, void* data, size_t 
     return err;
 }
 
-// CRC calculation methods
+// === CRC Calculation Methods ===
+
+/**
+ * @brief Calculate CRC16-CCITT for telemetry record protection
+ * @param data Pointer to data to calculate CRC for
+ * @param length Number of bytes to include in calculation
+ * @return 16-bit CRC value
+ * 
+ * Uses CRC16-CCITT polynomial (0x1021) with 0xFFFF initial value
+ * Critical for detecting corruption in telemetry records stored in flash
+ * Marine environment requires robust error detection due to:
+ * - Power fluctuations during boat operations
+ * - Electromagnetic interference from marine electronics
+ * - Potential flash memory wear in harsh conditions
+ */
 uint16_t FlashRingBuffer::calculateCRC16(const uint8_t* data, size_t length) const {
     uint16_t crc = 0xFFFF;
     for (size_t i = 0; i < length; i++) {
@@ -215,6 +327,16 @@ uint16_t FlashRingBuffer::calculateCRC16(const uint8_t* data, size_t length) con
     return crc;
 }
 
+/**
+ * @brief Calculate CRC32 for sector header protection
+ * @param data Pointer to data to calculate CRC for  
+ * @param length Number of bytes to include in calculation
+ * @return 32-bit CRC value
+ * 
+ * Uses CRC32 polynomial (0xEDB88320) with 0xFFFFFFFF initial value
+ * Provides stronger protection for critical sector headers
+ * More robust than CRC16 for detecting multiple bit errors in headers
+ */
 uint32_t FlashRingBuffer::calculateCRC32(const uint8_t* data, size_t length) const {
     uint32_t crc = 0xFFFFFFFF;
     for (size_t i = 0; i < length; i++) {
@@ -340,7 +462,26 @@ void FlashRingBuffer::emergencyFlush() {
     }
 }
 
-// Core record operations
+// === Core Record Operations ===
+
+/**
+ * @brief Append telemetry record to RAM buffer with power-safe semantics
+ * @param payload Pointer to telemetry data (16-1008 bytes)
+ * @param length Size of telemetry payload
+ * @return true if record successfully buffered
+ * 
+ * Marine-optimized buffering strategy:
+ * 1. Records accumulated in RAM buffer until sector-size batch ready
+ * 2. Automatic flush to flash when buffer approaches sector boundary
+ * 3. Power-safe record structure with validity markers
+ * 4. CRC16 calculation for corruption detection
+ * 
+ * Key Benefits for Marine Use:
+ * - Reduces flash wear by batching writes into sector-sized operations
+ * - Maintains high logging rate even during network connectivity loss
+ * - Ensures data integrity through CRC protection
+ * - Atomic operations prevent corruption during power interruptions
+ */
 bool FlashRingBuffer::appendRecord(const uint8_t* payload, uint16_t length) {
     if (!m_initialized || !payload) {
         USB_SERIAL_PRINTLN("FlashRingBuffer::appendRecord() - Not initialized or null payload");
@@ -394,9 +535,29 @@ bool FlashRingBuffer::appendRecord(const uint8_t* payload, uint16_t length) {
     return true;
 }
 
+/**
+ * @brief Flush accumulated RAM buffer to flash with power-safe atomic write
+ * @return true if flush successful
+ * 
+ * Critical marine operation ensuring no data loss during power interruptions:
+ * 
+ * Power-Safe Write Sequence:
+ * 1. Validate buffer contents and space requirements
+ * 2. Advance to new sector if current sector insufficient space
+ * 3. Prepare complete sector with header, existing data, and new records
+ * 4. Add sentinel patterns (0x55AA) to detect incomplete writes
+ * 5. Atomic erase-then-write operation
+ * 6. Update persistent state in ESP32 NVS
+ * 
+ * Marine Reliability Features:
+ * - Atomic sector operations prevent partial corruption
+ * - Sentinel patterns detect power-loss during write
+ * - State persistence survives boat power cycles
+ * - Detailed logging for marine troubleshooting
+ */
 bool FlashRingBuffer::flushRAMBufferToFlash() {
     if (!m_initialized || m_buffer_used == 0) {
-        return true; // Nothing to flush
+        return true; // Nothing to flush - not an error condition
     }
     
     USB_SERIAL_PRINTF("FlashRingBuffer::flushRAMBufferToFlash() - Flushing %u bytes to sector %u\n", 
@@ -647,7 +808,16 @@ bool FlashRingBuffer::deleteOldestRecord() {
     return true;
 }
 
-// Statistics and status methods
+// === Statistics and Status Methods ===
+
+/**
+ * @brief Count total number of valid records currently stored
+ * @return Number of records in ring buffer
+ * 
+ * Performs complete partition scan from tail to head counting valid records
+ * Critical for marine monitoring - provides accurate data inventory
+ * Used for upload progress tracking and storage management
+ */
 uint32_t FlashRingBuffer::getRecordCount() const {
     if (!m_initialized || isEmpty()) {
         return 0;

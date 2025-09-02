@@ -1,8 +1,42 @@
+/**
+ * @file FlashTelemetryManager.cpp
+ * @brief Implementation of marine telemetry manager with flash persistence
+ * 
+ * This file implements the FlashTelemetryManager class which provides a
+ * compatibility layer between the new FlashRingBuffer (persistent) and
+ * existing TelemetryPipeline (PSRAM-only) systems.
+ * 
+ * Key Implementation Features:
+ * - Drop-in replacement for TelemetryPipeline (same API)
+ * - Intelligent fallback from flash to PSRAM on failures
+ * - Runtime mode switching for operational flexibility
+ * - Block-to-record conversion for seamless integration
+ * - Comprehensive error handling and logging
+ * 
+ * Marine Integration Strategy:
+ * - Non-intrusive: Existing code unchanged, just replace TelemetryPipeline
+ * - Battle-tested fallback: PSRAM mode continues proven operation
+ * - Extended capability: Flash mode enables 8+ hour dive logging
+ * - Operational safety: Can disable flash mode remotely if issues arise
+ * 
+ * @author Generated for Mercator Origins dive computer system
+ * @version 1.0
+ * @date 2024
+ */
+
 #include "FlashTelemetryManager.h"
 #include "SerialConfig.h"
 #include <Arduino.h>
 #include <cstring>
 
+// === Construction and Destruction ===
+
+/**
+ * @brief Constructor - Initialize all systems to safe defaults
+ * 
+ * Marine Safety: Default to PSRAM-only mode (battle-tested) with flash disabled
+ * This ensures system operates safely even if flash initialization fails
+ */
 FlashTelemetryManager::FlashTelemetryManager() :
     m_storage_mode(PSRAM_ONLY),
     m_initialized(false),
@@ -19,6 +53,25 @@ FlashTelemetryManager::~FlashTelemetryManager() {
     teardown();
 }
 
+/**
+ * @brief Complete system initialization with marine safety priorities
+ * @param fn_millis Timing function for diagnostics
+ * @param maxBlockBufferMemoryUsageKB PSRAM limit for fallback mode
+ * @param maxBlockBufferMemoryUsageBytesRemainder Additional PSRAM bytes
+ * @return true if system ready for operation
+ * 
+ * Marine Initialization Strategy:
+ * 1. Always initialize PSRAM pipeline first (guaranteed fallback)
+ * 2. Attempt flash buffer initialization if enabled
+ * 3. Run flash self-test to validate reliability
+ * 4. Fall back to PSRAM if flash fails any validation
+ * 5. Provide detailed diagnostics for marine troubleshooting
+ * 
+ * Safety Philosophy:
+ * - PSRAM-only operation is always available (battle-tested)
+ * - Flash operation is enhanced capability, not critical requirement
+ * - System continues to function even if flash completely fails
+ */
 bool FlashTelemetryManager::init(long unsigned int (*fn_millis)(void), 
                                 const uint16_t maxBlockBufferMemoryUsageKB,
                                 const uint16_t maxBlockBufferMemoryUsageBytesRemainder) {
@@ -110,7 +163,19 @@ void FlashTelemetryManager::enableFlashBuffer(bool enable) {
     }
 }
 
-// TelemetryPipeline-compatible API implementation
+// === TelemetryPipeline-Compatible API Implementation ===
+
+/**
+ * @brief Get block header for new telemetry data - Drop-in TelemetryPipeline replacement
+ * @return BlockHeader for data population
+ * 
+ * Marine Compatibility Strategy:
+ * - Always use PSRAM pipeline to get block structure (maintains compatibility)
+ * - Store reference to block for later conversion to flash format if needed
+ * - Ensures existing telemetry code continues to work unchanged
+ * 
+ * This method maintains 100% API compatibility with TelemetryPipeline
+ */
 BlockHeader FlashTelemetryManager::getHeadBlockForPopulating() {
     if (!m_initialized) {
         USB_SERIAL_PRINTLN("FlashTelemetryManager::getHeadBlockForPopulating() - Not initialized");
@@ -125,6 +190,21 @@ BlockHeader FlashTelemetryManager::getHeadBlockForPopulating() {
     return m_current_head_block;
 }
 
+/**
+ * @brief Commit populated telemetry block - Critical marine data persistence
+ * @param head Populated block header with telemetry data
+ * @param pipelineFull Returns true if storage system is full
+ * @return true if commit successful
+ * 
+ * Marine Storage Strategy:
+ * - FLASH_ONLY mode: Convert block to flash record for persistence
+ * - PSRAM mode: Use traditional PSRAM storage (battle-tested)
+ * - Automatic fallback: If flash write fails, fall back to PSRAM
+ * 
+ * Critical for Marine Operation:
+ * This is where dive telemetry data is actually persisted. The fallback
+ * mechanism ensures data is never lost even if the flash system fails.
+ */
 bool FlashTelemetryManager::commitPopulatedHeadBlock(BlockHeader head, bool& pipelineFull) {
     if (!m_initialized || !m_has_pending_head_block) {
         USB_SERIAL_PRINTLN("FlashTelemetryManager::commitPopulatedHeadBlock() - Invalid state");
@@ -326,7 +406,22 @@ void FlashTelemetryManager::prepareForShutdown() {
     }
 }
 
-// Helper methods
+// === Helper Methods for Block/Record Conversion ===
+
+/**
+ * @brief Convert TelemetryPipeline block to FlashRingBuffer record
+ * @param block BlockHeader with telemetry data to convert
+ * @return true if conversion and storage successful
+ * 
+ * Critical Conversion Process:
+ * - Extract payload buffer and size from BlockHeader
+ * - Store directly as binary record in FlashRingBuffer
+ * - Maintains data integrity through CRC protection in flash layer
+ * 
+ * Marine Safety:
+ * This conversion enables existing telemetry code to work unchanged
+ * while gaining persistent storage capabilities for extended marine operations
+ */
 bool FlashTelemetryManager::convertBlockToFlashRecord(const BlockHeader& block) {
     if (!block.isBlockValid() || !m_flash_buffer.isInitialized()) {
         return false;

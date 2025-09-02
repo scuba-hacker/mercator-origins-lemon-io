@@ -1,6 +1,59 @@
+/**
+ * @file FlashRingBuffer_part3.cpp
+ * @brief Advanced testing and failure injection for FlashRingBuffer
+ * 
+ * This file contains the advanced testing and diagnostic capabilities:
+ * - Comprehensive self-test with multiple record sizes
+ * - Extended diagnostics with deep validation
+ * - Power-loss recovery testing
+ * - Stress testing with high write/read loads
+ * - Failure injection methods for testing robustness
+ * 
+ * Marine Testing Philosophy:
+ * - "Test like you operate" - simulate real marine conditions
+ * - Comprehensive validation before deployment
+ * - Stress testing beyond normal operational parameters
+ * - Recovery testing from various failure modes
+ * - Detailed logging for troubleshooting
+ * 
+ * Critical Testing Features:
+ * - Variable message size validation (16-1008 bytes)
+ * - Buffer overflow protection testing
+ * - Empty buffer behavior validation
+ * - Multi-sector power-loss recovery
+ * - CRC corruption detection and repair
+ * - Ring buffer wrap-around testing
+ * 
+ * @author Generated for Mercator Origins dive computer system
+ * @version 1.0
+ * @date 2024
+ */
+
 #ifdef BUILD_INCLUDE_FLASHRINGBUFFER_PART3
 
-// Enhanced self-test with comprehensive validation
+// === Enhanced Self-Test with Comprehensive Validation ===
+
+/**
+ * @brief Comprehensive functional validation for marine deployment
+ * @return true if all tests pass
+ * 
+ * Marine-Ready Testing:
+ * This self-test validates all core functionality needed for reliable
+ * marine operation. Tests multiple record sizes from minimum (16 bytes)
+ * to maximum (1008 bytes) to ensure the system handles the full range
+ * of telemetry data sizes expected in marine environments.
+ * 
+ * Test Coverage:
+ * 1. Write/read/delete cycle for all supported message sizes
+ * 2. Buffer overflow protection (rejects oversized records)
+ * 3. Empty buffer behavior (proper error handling)
+ * 4. Data integrity verification (CRC validation)
+ * 
+ * Critical for Marine Deployment:
+ * - Validates system readiness before dive operations
+ * - Ensures reliable telemetry storage across data size ranges
+ * - Confirms proper error handling for edge cases
+ */
 bool FlashRingBuffer::performSelfTest() {
     USB_SERIAL_PRINTLN("FlashRingBuffer::performSelfTest() - Running comprehensive self-test");
     
@@ -337,6 +390,32 @@ bool FlashRingBuffer::performDeepSectorValidation() {
     return validation_passed;
 }
 
+/**
+ * @brief Critical power-loss recovery test for marine safety
+ * @return true if system successfully recovers from simulated power failures
+ * 
+ * Marine Power-Loss Testing:
+ * This test simulates the power interruptions that frequently occur in
+ * marine environments and validates the system's ability to recover
+ * with minimal data loss. Essential for dive computer reliability.
+ * 
+ * Simulation Scenarios:
+ * 1. Incomplete sector write (power lost during flash sector erase/write)
+ * 2. Incomplete record write (power lost during record commit)
+ * 3. Corrupted sentinel patterns (power lost during sector completion)
+ * 4. System state corruption (power lost during state persistence)
+ * 
+ * Recovery Validation:
+ * - System reinitializes successfully after corruption injection
+ * - Data recovery with acceptable loss thresholds
+ * - Corrupted/incomplete data properly detected and discarded
+ * - System continues normal operation after recovery
+ * 
+ * Marine Safety Critical:
+ * - Validates system survives boat electrical system fluctuations
+ * - Ensures dive data integrity after emergency shutdowns
+ * - Confirms system reliability for extended marine operations
+ */
 bool FlashRingBuffer::performPowerLossRecoveryTest() {
     USB_SERIAL_PRINTLN("=== FlashRingBuffer Power Loss Recovery Test ===");
     
@@ -663,6 +742,34 @@ bool FlashRingBuffer::performStressTest(uint32_t num_records) {
 //=============================================================================
 // FAILURE INJECTION METHODS FOR TESTING
 //=============================================================================
+
+/**
+ * @brief Comprehensive failure injection capabilities for testing robustness
+ * 
+ * TESTING_MODE Only - DO NOT USE IN PRODUCTION:
+ * These methods intentionally corrupt the flash storage system to validate
+ * the robustness of recovery mechanisms. They are essential for ensuring
+ * the system can handle real-world marine failure scenarios.
+ * 
+ * Failure Scenarios Covered:
+ * - Sector header corruption (magic number, CRC, usage fields)
+ * - Persistent state corruption (NVS/EEPROM data)
+ * - Incomplete write simulation (power-loss during operations)
+ * - Ring buffer pointer corruption
+ * - Random multi-sector corruption
+ * - Partition access failures
+ * 
+ * Marine Testing Importance:
+ * - Validates system survives harsh marine electrical environments
+ * - Tests recovery from electromagnetic interference corruption
+ * - Ensures system reliability under vibration and temperature extremes
+ * - Validates automatic repair capabilities
+ * 
+ * SAFETY WARNING:
+ * These methods will corrupt stored data and are intended only for
+ * controlled testing environments. Never compile with TESTING_MODE
+ * enabled for production deployments.
+ */
 
 #ifdef TESTING_MODE
 

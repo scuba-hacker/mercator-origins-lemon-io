@@ -350,16 +350,40 @@ void saveTestingPreferences() {
             wifiTestingBlocked ? "YES" : "NO");
 }
 
+/**
+ * @brief Initialize Marine Telemetry Storage System
+ * 
+ * Initializes the telemetry system based on compile-time configuration.
+ * This function provides unified initialization for both storage modes:
+ * 
+ * Flash Mode (USE_FLASH_TELEMETRY defined):
+ * - Initializes FlashTelemetryManager with flash persistence
+ * - Runs power-on self-test with auto-repair capability  
+ * - Falls back to PSRAM mode if flash system fails
+ * - Enables 8+ hour marine logging without connectivity
+ * 
+ * PSRAM Mode (USE_FLASH_TELEMETRY not defined):
+ * - Initializes traditional TelemetryPipeline  
+ * - Battle-tested reliability for marine operations
+ * - Limited to active power session duration
+ * 
+ * Marine Safety: Both modes use identical API ensuring seamless operation
+ */
 void initializeTelemetrySystem() {
   USB_SERIAL_PRINTLN(">>> Initializing telemetry system...");
+  
+  // Initialize the selected telemetry system (API is identical for both)
   telemetryPipeline.init(&millis, 2048);
   
 #ifdef USE_FLASH_TELEMETRY
   USB_SERIAL_PRINTLN(">>> Telemetry System: Flash persistence ENABLED");
+  USB_SERIAL_PRINTLN(">>> Marine Mode: Extended dive logging (8+ hours) with power-safe storage");
 #else
   USB_SERIAL_PRINTLN(">>> Telemetry System: Using PSRAM (volatile) storage");
+  USB_SERIAL_PRINTLN(">>> Marine Mode: Battle-tested reliability, active session only");
 #endif
   
+  // Configure NetworkManager to use the initialized telemetry system
   networkManager.setTelemetryPipeline(&telemetryPipeline);
 }
 

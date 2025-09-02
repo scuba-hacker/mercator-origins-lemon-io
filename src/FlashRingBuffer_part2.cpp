@@ -1,5 +1,46 @@
+/**
+ * @file FlashRingBuffer_part2.cpp  
+ * @brief Extended implementation of FlashRingBuffer - Status, Diagnostics & Recovery
+ * 
+ * This file contains the extended functionality of the FlashRingBuffer class:
+ * - Space and status calculation methods
+ * - Sector validation and completion checking  
+ * - Power-loss recovery mechanisms
+ * - Comprehensive diagnostic and self-test routines
+ * - Corruption detection and automatic repair
+ * - Factory reset and data clearing operations
+ * 
+ * Marine Reliability Focus:
+ * - Sentinel pattern validation for incomplete write detection
+ * - CRC verification at sector and record levels
+ * - Power-on self-test with auto-repair capabilities
+ * - Graceful handling of corruption scenarios
+ * - Detailed diagnostic reporting for marine troubleshooting
+ * 
+ * Critical Features:
+ * - Detects incomplete writes from power loss during flash operations
+ * - Automatically repairs minor corruption during startup
+ * - Provides comprehensive health monitoring
+ * - Supports emergency recovery procedures
+ * 
+ * @author Generated for Mercator Origins dive computer system
+ * @version 1.0
+ * @date 2024
+ */
+
 #ifdef BUILD_INCLUDE_FLASHRINGBUFFER_PART2
 
+// === Space and Status Calculation Methods ===
+
+/**
+ * @brief Calculate total flash space currently used by ring buffer
+ * @return Number of bytes used across all sectors including headers
+ * 
+ * Accounts for:
+ * - Complete sectors between tail and head
+ * - Partially filled head sector
+ * - Data pending in RAM buffer
+ */
 uint32_t FlashRingBuffer::getUsedSpace() const {
     if (!m_initialized) {
         return 0;
@@ -46,6 +87,24 @@ bool FlashRingBuffer::validateSectorHeader(const SectorHeader& header) const {
     return (calculated_crc == header.crc32);
 }
 
+/**
+ * @brief Validate sector completion using sentinel pattern analysis
+ * @param sector_index Sector to validate (0-2559)
+ * @return true if sector is complete and safe
+ * 
+ * Critical Power-Loss Safety Check:
+ * This method detects incomplete flash writes that can occur during power loss
+ * in marine environments. Uses sentinel pattern (0x55AA) in unused sector space
+ * to detect:
+ * - Incomplete erase operations (0xFFFF patterns)
+ * - Partial write operations (missing sentinel patterns)
+ * - Flash memory corruption
+ * 
+ * Marine Importance:
+ * - Prevents corruption from spreading during recovery
+ * - Enables safe data recovery after power interruption
+ * - Critical for maintaining data integrity in harsh marine conditions
+ */
 bool FlashRingBuffer::validateSectorComplete(uint32_t sector_index) const {
     if (sector_index >= TOTAL_SECTORS) {
         return false;
@@ -179,7 +238,27 @@ bool FlashRingBuffer::advanceSector() {
     return true;
 }
 
-// Scan and recovery functions
+// === Scan and Recovery Functions ===
+
+/**
+ * @brief Complete partition scan and state recovery after power loss
+ * @return true if recovery successful
+ * 
+ * Marine Recovery Algorithm:
+ * 1. Scan all 2560 sectors for valid headers
+ * 2. Use sequence numbers to determine head/tail positions
+ * 3. Validate sector completion with sentinel patterns
+ * 4. Repair incomplete writes detected during scan
+ * 5. Reconstruct ring buffer state from flash content
+ * 
+ * Power-Loss Recovery:
+ * - Handles scenarios where state was lost during shutdown
+ * - Automatically repairs sectors with incomplete writes
+ * - Maintains data integrity through validation checks
+ * - Essential for marine environments with frequent power cycling
+ * 
+ * Performance: Optimized with periodic yields to prevent watchdog timeout
+ */
 bool FlashRingBuffer::scanAndRecover() {
     USB_SERIAL_PRINTLN("FlashRingBuffer::scanAndRecover() - Starting sector scan");
     
@@ -351,7 +430,35 @@ uint32_t FlashRingBuffer::scanSectorRecords(uint32_t sector_index, uint32_t clai
     return verified_used;
 }
 
-// Power-On Self-Test with comprehensive diagnostics
+// === Power-On Self-Test with Comprehensive Diagnostics ===
+
+/**
+ * @brief Comprehensive system validation for marine deployment readiness
+ * @param auto_repair Enable automatic repair of detected issues
+ * @return true if system is healthy or successfully repaired
+ * 
+ * Critical Marine Safety Check:
+ * This comprehensive diagnostic routine ensures the flash storage system
+ * is ready for reliable operation in marine environments where:
+ * - System reliability is critical for dive safety
+ * - Remote troubleshooting capabilities are essential  
+ * - Automatic recovery from corruption is vital
+ * - Detailed diagnostic information aids maintenance
+ * 
+ * Test Sequence:
+ * 1. Partition accessibility validation
+ * 2. Complete sector-by-sector health analysis
+ * 3. Record integrity verification  
+ * 4. State consistency checking
+ * 5. Automatic corruption repair (if enabled)
+ * 6. Performance metrics collection
+ * 
+ * Marine Deployment:
+ * - Run automatically during system initialization
+ * - Provides "go/no-go" decision for dive operations
+ * - Logs detailed diagnostics for shore-based analysis
+ * - Enables proactive maintenance planning
+ */
 bool FlashRingBuffer::performPowerOnSelfTest(bool auto_repair) {
     USB_SERIAL_PRINTLN("=== FlashRingBuffer Power-On Self-Test ===");
     uint32_t start_time = m_fn_millis ? m_fn_millis() : 0;
