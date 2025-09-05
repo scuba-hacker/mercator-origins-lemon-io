@@ -2,12 +2,12 @@
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-bool writeLogToSerial = true;
+bool writeLogToSerial = false;
 bool writeTelemetryLogToSerial = false; // writeLogToSerial must also be true if this is set to true
 
 // make sure this is disabled if writeLogToSerial is false
 // Uncomment to enable
-#define USE_WEBSERIAL
+//#define USE_WEBSERIAL
 
 /**
  * MARINE FLASH PERSISTENCE CONTROL
@@ -1102,6 +1102,8 @@ void loop()
 
           timeNextGoodFixExpectedBy = now + maxTimeBeforeAlertNoFix;
 
+          // These will be updated - variables declared as static in GPS loss detection section
+
           // only enter here on GPRMC and GPGGA msgs with M5 GPS unit, 0.5 sec between each message.
           // GNRMC followed by GNGGA messages for NEO-6M, no perceptible gap between GNRMC and GNGGA.
           // 1 second between updates on the same message type for M5.
@@ -1175,26 +1177,58 @@ void loop()
   }
   // *************  END CODE FOR RECEIVING GPS MESSAGE
 
-  // *************  START CODE FOR TELEMETRY PROCESSING FOR GPS MESSAGE RECEIVED
-  if (nofix_msg_loop_count > 0)
+  // GPS fix loss detection - check if previously had fix but lost it  
+  static uint32_t lastGPSFixTime = 0;
+  static bool hadPreviousFix = false;
+  
+  // Update variables when GPS fix is active (called from GPS processing section above)
+  if (gps.location.isValid() && gps.isSentenceFix()) {
+    lastGPSFixTime = now;
+    hadPreviousFix = true;
+  }
+  
+  // Check if GPS fix was lost after we previously had one
+  if (hadPreviousFix && (now - lastGPSFixTime > 30000)) // 30 sec without fix
   {
-    if (now > sendNextFakeGPSMessageAt)
+    // GPS fix lost - reset counter to enable fake GPS data and MQTT uploads
+    nofix_msg_loop_count = 1;
+    hadPreviousFix = false; // Reset to prevent repeated triggers
+    USB_SERIAL_PRINTLN("GPS fix lost - resetting nofix counter for MQTT uploads");
+  }
+
+  // *************  START CODE FOR TELEMETRY PROCESSING FOR GPS MESSAGE RECEIVED
+  // Always ensure MQTT upload happens regardless of GPS state - send fake GPS data when needed
+  if (now > sendNextFakeGPSMessageAt)
+  {
+    if (nofix_msg_loop_count > 0) 
     {
       sendLemonStatus(LC_NO_FIX);
-      sendFakeGPSData_No_Fix();               // only sent at startup before any GPS FIX has been received
-      sendNextFakeGPSMessageAt = now + 250;
+      sendFakeGPSData_No_Fix();
+      // Force process uplink message to ensure MQTT continues during GPS outage
+      processUplinkMessage = true;
+      uplinkMessageListenTimer = millis();
     }
-  }
-  else if (nofix_msg_loop_count != -1)
-  {
-    if (now > sendNextFakeGPSMessageAt)
+    else if (nofix_msg_loop_count != -1) 
     {
-      sendLemonStatus(LC_NO_GPS);
-      sendFakeGPSData_No_GPS();               // only sent at startup before any GPS data has been received
-      sendNextFakeGPSMessageAt = now + 250;
+      sendLemonStatus(LC_NO_GPS);  
+      sendFakeGPSData_No_GPS();
+      // Force process uplink message to ensure MQTT continues before first GPS fix
+      processUplinkMessage = true;
+      uplinkMessageListenTimer = millis();
     }
+    else if (now > timeNextGoodFixExpectedBy) // GPS fix lost after initial fix
+    {
+      sendLemonStatus(LC_NO_FIX);
+      sendFakeGPSData_No_Fix();
+      // Force process uplink message to ensure MQTT continues after GPS fix loss
+      processUplinkMessage = true;
+      uplinkMessageListenTimer = millis();
+    }
+    
+    sendNextFakeGPSMessageAt = now + 250;
   }
-  else
+
+  // Always allow telemetry processing - removed the 'else' to enable MQTT before GPS fix
   {
     if (processUplinkMessage && enableReadUplinkComms)
     {
@@ -1305,6 +1339,39 @@ void loop()
         }
 
         processUplinkMessage = false; // finished processing the uplink message
+      }
+      else if ((nofix_msg_loop_count >= 0 || now > timeNextGoodFixExpectedBy) && (millis() - uplinkMessageListenTimer) > uplinkMessageLingerPeriodMs)
+      {
+        // No GPS fix available or GPS fix lost - create telemetry message with zero'd Mako data
+        USB_SERIAL_PRINTLN("11.0 No GPS fix - creating telemetry with zero'd Mako data");
+        
+        // Get the next free head block to populate in the telemetry pipeline
+        BlockHeader headBlock = telemetryPipeline.getHeadBlockForPopulating();
+        
+        // Populate head block with zero'd Mako telemetry (no valid data)
+        bool messageValidatedOk = populateHeadWithMakoTelemetry(headBlock, false, nullptr, 0);
+        
+        uint32_t timeNow = millis();
+        
+        // Always commit telemetry when no GPS fix to ensure MQTT uploads continue
+        if (timeNow >= last_head_committed_at + telemetry_online_head_commit_duty_ms)
+        {
+          last_head_committed_at = timeNow;
+          
+          populateFinalLemonTelemetry(latestLemonTelemetry);
+          USB_SERIAL_PRINTLN("11.1 Populated final lemon telemetry (no GPS fix)");
+          
+          // Populate head block with Lemon telemetry data and commit
+          populateHeadWithLemonTelemetryAndCommit(headBlock);
+          USB_SERIAL_PRINTLN("11.2 Populated Head with lemon Telemetry and Commit (no GPS fix)");
+          
+          USB_SERIAL_PRINTLN("11.3 Sending next msg to mqtt (no GPS fix)");
+          // Send the next message(s) from pipeline to private MQTT
+          getNextTelemetryMessagesUploadedToPrivateMQTT();
+          USB_SERIAL_PRINTLN("11.4 Sent next msg to mqtt (no GPS fix)");
+        }
+        
+        processUplinkMessage = false; // finished processing
       }
       else if (accumulateMissedMessageCount && (millis() - uplinkMessageListenTimer) > uplinkMessageLingerPeriodMs)
       {
