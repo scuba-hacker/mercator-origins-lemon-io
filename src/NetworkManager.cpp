@@ -12,6 +12,7 @@ extern "C" {
 // Access global variables from main.cpp
 extern int32_t lastCheckForInternetConnectivityAt;
 extern uint32_t privateMQTTUploadCount;
+extern bool forceGPSNoFixForTesting;
 
 // Static instance pointer for callbacks
 NetworkManager* NetworkManager::instance = nullptr;
@@ -613,6 +614,10 @@ void NetworkManager::setupWebServerRoutes() {
                     if (setTargetRequestIndex == -1)
                         setTargetRequest = "";
                 }
+            } else if (pButton->value() == String("gpsSimToggleButton")) {
+                forceGPSNoFixForTesting = !forceGPSNoFixForTesting;
+                Serial.print("GPS NO FIX simulation toggled to: ");
+                Serial.println(forceGPSNoFixForTesting ? "ACTIVE" : "INACTIVE");
             }
         } else {
             request->send(200, "text/plain", "invalid");

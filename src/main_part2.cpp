@@ -724,6 +724,7 @@ struct MakoUplinkTelemetryForJson
 String getStats()
 {
   readings["fixCount"] = fixCount;
+  readings["gpsSimulationActive"] = (forceGPSNoFixForTesting ? "ACTIVE" : "INACTIVE");
   readings["goodUplinkMessageCount"] = goodUplinkMessageCount;
   readings["privateMQTTUploadCount"] = privateMQTTUploadCount;
   readings["uplinkBadMessagePercentage"] = (int)uplinkBadMessagePercentage;
