@@ -532,9 +532,18 @@ uint16_t calcUplinkChecksum(char* buffer, uint16_t length)
 
 const char* fake_no_fix = "$GPRMC,235316.000,A,4003.9040,N,10512.5792,W,0.09,144.75,141112,,*19\n";
 
+// Proper NO FIX GGA message for testing (quality=0 means no fix)
+const char* fake_gga_no_fix = "$GPGGA,123519,4807.038,N,01131.324,E,0,00,99.9,545.4,M,46.9,M,,*42\n";
+
 void sendFakeGPSData_No_Fix()
 {
   serial_mako_gopro.write(fake_no_fix);
+  delay(100);
+}
+
+void sendFakeGGANoFixForTesting()
+{
+  serial_mako_gopro.write(fake_gga_no_fix);
   delay(100);
 }
 

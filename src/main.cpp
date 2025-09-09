@@ -5,6 +5,9 @@
 bool writeLogToSerial = false;
 bool writeTelemetryLogToSerial = false; // writeLogToSerial must also be true if this is set to true
 
+// DEBUG: Set to true to simulate GPS NO FIX for testing Mako timeout system
+bool forceGPSNoFixForTesting = false;
+
 // make sure this is disabled if writeLogToSerial is false
 // Uncomment to enable
 //#define USE_WEBSERIAL
@@ -570,6 +573,7 @@ void checkMakoJSONForAlarms(struct MakoUplinkTelemetryForJson& m);
 uint16_t calcUplinkChecksum(char* buffer, uint16_t length);
 void sendFakeGPSData_No_Fix();
 void sendFakeGPSData_No_GPS();
+void sendFakeGGANoFixForTesting();
 void toggleOTAActive();
 void toggleWiFiActive();
 
@@ -1111,7 +1115,17 @@ void loop()
 
           //////////////////////////////////////////////////////////
           // send message to outgoing serial connection to mako gopro
-          serial_mako_gopro.write(customiseNMEASentence(gps.getSentence(), networkManager.getShowOnMapRequestIndex()));
+          if (forceGPSNoFixForTesting && gps.isSentenceGGA())
+          {
+            // DEBUG: Send fake NO FIX GGA message instead of real GPS data
+            sendFakeGGANoFixForTesting();
+            USB_SERIAL_PRINTLN("DEBUG: Sending fake GGA NO FIX message to Mako for testing");
+          }
+          else
+          {
+            // Send real GPS data normally
+            serial_mako_gopro.write(customiseNMEASentence(gps.getSentence(), networkManager.getShowOnMapRequestIndex()));
+          }
           consoleDownlinkMsgCount++;
 
           if (gps.isSentenceGGA())
@@ -1180,20 +1194,23 @@ void loop()
   // GPS fix loss detection - check if previously had fix but lost it  
   static uint32_t lastGPSFixTime = 0;
   static bool hadPreviousFix = false;
+  static bool gpsFixCurrentlyLost = false;
   
   // Update variables when GPS fix is active (called from GPS processing section above)
   if (gps.location.isValid() && gps.isSentenceFix()) {
     lastGPSFixTime = now;
     hadPreviousFix = true;
+    gpsFixCurrentlyLost = false; // Clear lost flag when fix returns
   }
   
   // Check if GPS fix was lost after we previously had one
   if (hadPreviousFix && (now - lastGPSFixTime > 30000)) // 30 sec without fix
   {
-    // GPS fix lost - reset counter to enable fake GPS data and MQTT uploads
-    nofix_msg_loop_count = 1;
-    hadPreviousFix = false; // Reset to prevent repeated triggers
-    USB_SERIAL_PRINTLN("GPS fix lost - resetting nofix counter for MQTT uploads");
+    // GPS fix lost - but DON'T reset nofix_msg_loop_count to avoid reverting to pre-first-fix behavior
+    if (!gpsFixCurrentlyLost) {
+      gpsFixCurrentlyLost = true;
+      USB_SERIAL_PRINTLN("GPS fix lost - maintaining normal message flow (no duty cycle change)");
+    }
   }
 
   // *************  START CODE FOR TELEMETRY PROCESSING FOR GPS MESSAGE RECEIVED
@@ -1216,7 +1233,7 @@ void loop()
       processUplinkMessage = true;
       uplinkMessageListenTimer = millis();
     }
-    else if (now > timeNextGoodFixExpectedBy) // GPS fix lost after initial fix
+    else if (gpsFixCurrentlyLost || now > timeNextGoodFixExpectedBy) // GPS fix lost after initial fix
     {
       sendLemonStatus(LC_NO_FIX);
       sendFakeGPSData_No_Fix();
@@ -1340,7 +1357,7 @@ void loop()
 
         processUplinkMessage = false; // finished processing the uplink message
       }
-      else if ((nofix_msg_loop_count >= 0 || now > timeNextGoodFixExpectedBy) && (millis() - uplinkMessageListenTimer) > uplinkMessageLingerPeriodMs)
+      else if ((nofix_msg_loop_count >= 0 || gpsFixCurrentlyLost || now > timeNextGoodFixExpectedBy) && (millis() - uplinkMessageListenTimer) > uplinkMessageLingerPeriodMs)
       {
         // No GPS fix available or GPS fix lost - create telemetry message with zero'd Mako data
         USB_SERIAL_PRINTLN("11.0 No GPS fix - creating telemetry with zero'd Mako data");
@@ -1392,7 +1409,7 @@ void loop()
   now = millis();
   if (now > timeOfNextLemonStatus)
   {
-    if (now > timeNextGoodFixExpectedBy)
+    if (gpsFixCurrentlyLost || now > timeNextGoodFixExpectedBy)
     {
       if (now > timeNextGPSByteExpectedBy)
         sendLemonStatus(LC_NO_GPS);
