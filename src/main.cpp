@@ -2,15 +2,18 @@
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-bool writeLogToSerial = false;
+bool writeLogToSerial = true;
 bool writeTelemetryLogToSerial = false; // writeLogToSerial must also be true if this is set to true
+
+// set USE_WEB_SERIAL in SerialConfig.h if required
+#include "SerialConfig.h"
 
 // DEBUG: Set to true to simulate GPS NO FIX for testing Mako timeout system
 bool forceGPSNoFixForTesting = false;
+bool sendOneReEnableFixCommand = false;
+bool sendOneCeaseFixCommand = false;
+bool fastStartup = true;
 
-// make sure this is disabled if writeLogToSerial is false
-// Uncomment to enable
-//#define USE_WEBSERIAL
 
 /**
  * MARINE FLASH PERSISTENCE CONTROL
@@ -51,7 +54,6 @@ UMS3 ProS3;
 #include "OLEDGSDisplayManager.h"
 #include "OLEDLXDisplayManager.h"
 
-#include "SerialConfig.h"
 #include "NetworkManager.h"
 #include <Preferences.h>
 
@@ -443,6 +445,9 @@ void updateButtonsAndBuzzer()
   p_primaryButton->read();
 }
 void sendLemonStatus(const e_lemon_status status);
+
+bool nmea_get_field(const char *s, int index, char *out, size_t outsz);
+
 struct MakoStats
 {
   uint16_t minimum_sensor_read_time;
@@ -571,9 +576,9 @@ bool makoReportsLeak = false;
 void checkMakoJSONForAlarms(struct MakoUplinkTelemetryForJson& m);
 
 uint16_t calcUplinkChecksum(char* buffer, uint16_t length);
-void sendFakeGPSData_No_Fix();
-void sendFakeGPSData_No_GPS();
-void sendFakeGGANoFixForTesting();
+void sendFakeGPSData_No_Fix(const char* context);
+void sendFakeGPSData_No_GPS(const char* context);
+void sendCeaseFixMessagesNMEAMessage(bool cease, const char* context);
 void toggleOTAActive();
 void toggleWiFiActive();
 
@@ -645,7 +650,7 @@ class mqttConnectionTest
 mqttConnectionTest mqttCheck;
 
 bool fullTestAdafruitDisplay = false;
-bool singleScreenTestAdafruitDisplay = true;
+bool singleScreenTestAdafruitDisplay = !fastStartup;
 bool testLgfxAdafruitDisplay = false;
 
 bool useGsDisplayManager = true;
@@ -724,6 +729,7 @@ void initialiseUARTS()
   // UART1 for receiving data from GPS
   serial_gps.setRxBufferSize(GPS_RX_BUFFER_SIZE); // must set before begin
   serial_gps.begin(GPS_BAUD_RATE, SERIAL_8N1, GPS_RX_WHITE_GPIO, GPS_TX_GREY_GPIO);
+  sendCeaseFixMessagesNMEAMessage(false, "setup() - clear any existing test block of FIX msg as is persistent across boots"); // ensure test block of FIX msg is off
 
   xTaskCreatePinnedToCore(gpsRxTask,
                           "gpsRxTask",
@@ -777,11 +783,11 @@ void testTightSerialRxLoop()
   while(1)
   {
     if (serial_lantern_neopixels.available())
-      Serial.println(serial_lantern_neopixels.read());
+      USB_SERIAL_PRINTLN(serial_lantern_neopixels.read());
 
     if (millis() > nextTestMsg)
     {
-      Serial.println("Test");
+      USB_SERIAL_PRINTLN("Test");
       nextTestMsg = millis() + 500;
     }
   }
@@ -1003,7 +1009,8 @@ void setup()
     privateMQTT.begin();
   
   wideDisplayManager.addDisplayLine("Lemon-IO Online @ " + networkManager.getLocalIP());
-  delay(1000);
+  if (!fastStartup)
+    delay(1000);
 
   wideDisplayManager.clearDisplay();
 
@@ -1031,6 +1038,7 @@ double humidFloat=0.0;
 bool newTempHumidRead=false;
 
 uint32_t sendNextFakeGPSMessageAt = 0;
+uint32_t periodBetweenFakeGPSMessages = 500;
 
 
 void loop()
@@ -1115,16 +1123,74 @@ void loop()
 
           //////////////////////////////////////////////////////////
           // send message to outgoing serial connection to mako gopro
-          if (forceGPSNoFixForTesting && gps.isSentenceGGA())
+          if (forceGPSNoFixForTesting && (gps.isSentenceGGA() || gps.isSentenceRMC()))
           {
-            // DEBUG: Send fake NO FIX GGA message instead of real GPS data
-            sendFakeGGANoFixForTesting();
-            USB_SERIAL_PRINTLN("DEBUG: Sending fake GGA NO FIX message to Mako for testing");
+            if (sendOneCeaseFixCommand)
+            {
+              sendOneCeaseFixCommand = false;
+              sendCeaseFixMessagesNMEAMessage(true,"User Input: One shot enable cease fix messages, GMA/RMC msgs now stopped, Fake No Fix will be sent after timeout");
+              float f = gps.location.lat();   // dummy read to clear the updated flag
+              return;
+            }
           }
           else
           {
+            if (sendOneReEnableFixCommand)
+            {
+              sendOneReEnableFixCommand = false;
+              sendCeaseFixMessagesNMEAMessage(false,"User Input: One shot disable cease fix messages, wait for next GGA/RMC to send as a FIX");
+              float f = gps.location.lat();   // dummy read to clear the updated flag 
+  
+              // don't send the just-received FIX/GGA message, wait for the next one
+              return;
+            }
+            int fixQualityGGA=-1;
+            char validFixRMC='-';
+
             // Send real GPS data normally
+            USB_SERIAL.printf("\nOriginal NMEA  %s\n",gps.getSentence()+1);
+
             serial_mako_gopro.write(customiseNMEASentence(gps.getSentence(), networkManager.getShowOnMapRequestIndex()));
+
+            if (writeLogToSerial)
+            {
+              char* nmea_orig = gps.getSentence(); // first char is always new line
+              char* nmea = nmea_orig+1;
+
+              const char* fixType = "UNKNOWN FIX TYPE";
+              const char* msgType = "UNKNOWN MSG TYPE";
+
+              if (!strncmp(nmea, "$GPGGA", 6) || 
+                  !strncmp(nmea, "$GNGGA", 6)) 
+              {
+                msgType = "$G-GGA";
+                char fld[8];
+                if (nmea_get_field(nmea, 6, fld, sizeof fld))    // 7th field
+                    fixQualityGGA = atoi(fld);                       // 0=no fix, 1=GPS, 2=DGPS, ...
+                fixType = (fixQualityGGA == 0) ? "NO FIX" : "FIX";
+              }
+              else if (!strncmp(nmea, "$GPRMC", 6) || 
+                      !strncmp(nmea, "$GNRMC", 6)) 
+              {
+                msgType = "$G-RMC";
+                char status[4] = {0};
+                if (nmea_get_field(nmea, 2, status, sizeof status)) 
+                {  // 3rd field
+                  // status[0] == 'A' (valid) or 'V' (void)
+                  validFixRMC = status[0];
+                  fixType = (validFixRMC == 'A') ? "FIX" : "NO FIX";    // was A
+                } 
+                else 
+                {
+                  fixType = "NO FIX";
+                }
+              }
+
+              if (!forceGPSNoFixForTesting)
+                USB_SERIAL_PRINTF("**** SEND TO MAKO ****  Real GPS Message %s - actual %s GGA:%i RMC:%c  %s\n", msgType, fixType, fixQualityGGA, validFixRMC, nmea);
+              else
+                USB_SERIAL_PRINTF("**** SEND TO MAKO ****  Real GPS Message %s - under test - %s GGA:%i RMC:%c  %s\n", msgType, fixType, fixQualityGGA, validFixRMC, nmea);
+            }
           }
           consoleDownlinkMsgCount++;
 
@@ -1220,15 +1286,15 @@ void loop()
     if (nofix_msg_loop_count > 0) 
     {
       sendLemonStatus(LC_NO_FIX);
-      sendFakeGPSData_No_Fix();
+      sendFakeGPSData_No_Fix(" conditional: now > sendNextFakeGPSMessageAt && nofix_msg_loop_count > 0");
       // Force process uplink message to ensure MQTT continues during GPS outage
       processUplinkMessage = true;
       uplinkMessageListenTimer = millis();
     }
     else if (nofix_msg_loop_count != -1) 
     {
-      sendLemonStatus(LC_NO_GPS);  
-      sendFakeGPSData_No_GPS();
+      sendLemonStatus(LC_NO_GPS);
+      sendFakeGPSData_No_GPS("conditional: now > sendNextFakeGPSMessageAt && nofix_msg_loop_count != -1");
       // Force process uplink message to ensure MQTT continues before first GPS fix
       processUplinkMessage = true;
       uplinkMessageListenTimer = millis();
@@ -1236,13 +1302,14 @@ void loop()
     else if (gpsFixCurrentlyLost || now > timeNextGoodFixExpectedBy) // GPS fix lost after initial fix
     {
       sendLemonStatus(LC_NO_FIX);
-      sendFakeGPSData_No_Fix();
+      sendFakeGPSData_No_Fix(gpsFixCurrentlyLost ? " conditional: now > sendNextFakeGPSMessageAt && gpsFixCurrentlyLost" : 
+                                                  " conditional: now > sendNextFakeGPSMessageAt && now > timeNextGoodFixExpectedBy");    
       // Force process uplink message to ensure MQTT continues after GPS fix loss
       processUplinkMessage = true;
       uplinkMessageListenTimer = millis();
     }
     
-    sendNextFakeGPSMessageAt = now + 250;
+    sendNextFakeGPSMessageAt = now + periodBetweenFakeGPSMessages;
   }
 
   // Always allow telemetry processing - removed the 'else' to enable MQTT before GPS fix
@@ -1471,6 +1538,31 @@ void loop()
     dumpHeapUsage("loop() - after send telegram");
   }
 #endif
+}
+
+// index is the comma separate index of the field
+bool nmea_get_field(const char *s, int index, char *out, size_t outsz) {
+    // Skip leading control chars/newlines/spaces
+    while (*s && (unsigned char)*s <= ' ') s++;
+    if (*s == '$') s++;
+
+    int cur = 0;
+    const char *start = s;
+    for (const char *p = s; ; ++p) {
+        if (*p == ',' || *p == '*' || *p == '\0' || *p == '\r' || *p == '\n') {
+            if (cur == index) {
+                size_t len = (size_t)(p - start);
+                if (len >= outsz) len = outsz - 1;
+                memcpy(out, start, len);
+                out[len] = '\0';
+                return true;
+            }
+            if (*p == '*' || *p == '\0' || *p == '\r' || *p == '\n') break;
+            cur++;
+            start = p + 1;
+        }
+    }
+    return false;
 }
 
 #define BUILD_INCLUDE_MAIN_PART2

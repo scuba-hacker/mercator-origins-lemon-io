@@ -13,7 +13,9 @@ extern "C" {
 extern int32_t lastCheckForInternetConnectivityAt;
 extern uint32_t privateMQTTUploadCount;
 extern bool forceGPSNoFixForTesting;
-
+extern bool sendOneReEnableFixCommand;
+extern bool sendOneCeaseFixCommand;
+extern bool fastStartup;
 // Static instance pointer for callbacks
 NetworkManager* NetworkManager::instance = nullptr;
 
@@ -473,7 +475,8 @@ bool NetworkManager::setupOTAWebServer(const char* _ssid, const char* _password,
             asyncWebServer->begin();
             USB_SERIAL_PRINTLN("setupOTAWebServer: OTA setup complete");
             otaActive = true;
-            delay(2000);
+            if (!fastStartup)
+              delay(2000);
             connected = true;
             
             if (updateButtonsCallback)
@@ -497,7 +500,7 @@ void NetworkManager::setupWebServerRoutes() {
     });
 
     asyncWebServer->on("/logs", HTTP_GET, [](AsyncWebServerRequest * request) {
-        request->send_P(200, "text/html", LOGS_PAGE_HTML);
+        request->send(200, "text/html", LOGS_PAGE_HTML);
       });
 
     // Debug endpoint to test WebSocket
@@ -558,12 +561,12 @@ void NetworkManager::setupWebServerRoutes() {
     });
 
     asyncWebServer->on("/stats", HTTP_GET, [this](AsyncWebServerRequest * request) {
-        AsyncWebServerResponse *response = request->beginResponse_P(200, "text/html", config.statsHtml, config.statsHtmlSize); 
+        AsyncWebServerResponse *response = request->beginResponse(200, "text/html", config.statsHtml, config.statsHtmlSize); 
         request->send(response);
     });
 
     asyncWebServer->on("/map", HTTP_GET, [this](AsyncWebServerRequest * request) {
-        AsyncWebServerResponse *response = request->beginResponse_P(200, "text/html", config.mapHtml, config.mapHtmlSize); 
+        AsyncWebServerResponse *response = request->beginResponse(200, "text/html", config.mapHtml, config.mapHtmlSize); 
         request->send(response);
     });
         
@@ -616,8 +619,18 @@ void NetworkManager::setupWebServerRoutes() {
                 }
             } else if (pButton->value() == String("gpsSimToggleButton")) {
                 forceGPSNoFixForTesting = !forceGPSNoFixForTesting;
-                Serial.print("GPS NO FIX simulation toggled to: ");
-                Serial.println(forceGPSNoFixForTesting ? "ACTIVE" : "INACTIVE");
+                USB_SERIAL_PRINT("GPS NO FIX simulation toggled to: ");
+                USB_SERIAL_PRINTLN(forceGPSNoFixForTesting ? "ACTIVE" : "INACTIVE");
+                if (forceGPSNoFixForTesting)
+                {
+                    sendOneReEnableFixCommand = false;
+                    sendOneCeaseFixCommand = true;
+                }
+                else
+                {
+                    sendOneReEnableFixCommand = true;
+                    sendOneCeaseFixCommand = false;
+                }
             }
         } else {
             request->send(200, "text/plain", "invalid");

@@ -118,7 +118,8 @@
             <button onclick="saveConsole()">Save Log</button>
             <button onclick="scrollToTop()">Scroll to Top</button>
             <button onclick="scrollToBottom()">Scroll to Bottom</button>
-            <button onclick="toggleAutoScroll()" id="autoScrollBtn">Auto-scroll: ON</button>
+            <button onclick="toggleAutoScroll()" id="autoScrollBtn">Auto-scroll: OFF</button>
+            <button onclick="copyConsole()" id="copyBtn" title="Copy">Copy Log</button>
         </div>
         <div class="command-controls">
             <input type="text" id="messageInput" class="command-input" placeholder="Type custom command">
@@ -150,7 +151,7 @@
 
     <script>
         let ws;
-        let autoScroll = true;
+        let autoScroll = false;
         let logBuffer = [];
         const console = document.getElementById('console');
         const status = document.getElementById('status');
@@ -241,7 +242,55 @@
             autoScrollBtn.textContent = 'Auto-scroll: ' + (autoScroll ? 'ON' : 'OFF');
         }
 
-        function sendInputMessage() {
+    async function copyConsole() {
+        const text = console.textContent || '';
+        if (!text) { 
+            alert('Console is empty'); 
+            return; 
+        }
+
+        // Prefer modern Clipboard API (requires HTTPS or localhost)
+        if (navigator.clipboard && window.isSecureContext) {
+            try {
+                await navigator.clipboard.writeText(text);
+                flashStatus('Copied console to clipboard', true);
+                return;
+            } catch (e) {
+                // fall through to legacy path
+            }
+        }
+
+        // Legacy fallback: temporary textarea + execCommand
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.left = '-9999px';
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        try {
+            const ok = document.execCommand('copy');
+            flashStatus(ok ? 'Copied console to clipboard' : 'Copy failed', ok);
+        } catch {
+            alert('Copy not supported in this browser');
+        } finally {
+            document.body.removeChild(ta);
+        }
+    }
+
+    // Small helper to show a quick success/fail message in the status bar
+    function flashStatus(msg, success) {
+        const prev = status.textContent;
+        const prevClass = status.className;
+        status.textContent = msg;
+        status.className = 'status ' + (success ? 'connected' : 'disconnected');
+        setTimeout(() => {
+            status.textContent = prev;
+            status.className = prevClass;
+        }, 1500);
+    }
+
+    function sendInputMessage() {
             const messageInput = document.getElementById('messageInput');
             const message = messageInput.value.trim();
             

@@ -104,6 +104,7 @@ const char STATS_HTML[] = R"rawliteral(
            <button class="button button-green" id="updateButton">Update</button>
            <button class="button button-red" id="rebootButton">Reboot</button>
            <button class="button button-orange" id="gpsSimToggleButton">Toggle GPS NO FIX Sim</button>
+           <button class="button button-black" id="logsButton">Logs</button>
            <button class="button button-amber" id="clearCountersButton">Clear Counters</button>
 
             <br><br>
@@ -349,6 +350,11 @@ const char STATS_HTML[] = R"rawliteral(
    }
 
    // Function to handle update button click
+   function handleLogsButtonClick() {
+       window.location.href = "/logs";
+   }
+
+   // Function to handle update button click
    function handleMapButtonClick() {
        window.location.href = "/map";
    }
@@ -366,6 +372,8 @@ const char STATS_HTML[] = R"rawliteral(
 
    // Attach event listener to the update button
    document.getElementById("updateButton").addEventListener("click", handleUpdateButtonClick);
+
+   document.getElementById("logsButton").addEventListener("click", handleLogsButtonClick);
 
    document.getElementById("rebootButton").addEventListener("click", function() {
        handleButtonClick("rebootButton");
@@ -520,6 +528,9 @@ const char STATS_HTML[] = R"rawliteral(
        switch(event.key) {
            case 'u':
                handleUpdateButtonClick();
+               break;
+           case 'l':
+               handleLogsButtonClick();
                break;
            case 'm':
                handleMapButtonClick();

@@ -530,29 +530,52 @@ uint16_t calcUplinkChecksum(char* buffer, uint16_t length)
   return checksum;
 }
 
-const char* fake_no_fix = "$GPRMC,235316.000,A,4003.9040,N,10512.5792,W,0.09,144.75,141112,,*19\n";
-
-// Proper NO FIX GGA message for testing (quality=0 means no fix)
-const char* fake_gga_no_fix = "$GPGGA,123519,4807.038,N,01131.324,E,0,00,99.9,545.4,M,46.9,M,,*42\n";
-
-void sendFakeGPSData_No_Fix()
+// u-Blox GPS does not send a 'no fix' GGA or RMC message - they are simply not sent.
+// This is an issue because it means that there is no message to send the diver.
+// So send a fake message so that Mako can tell that Lemon/GPS is still there and
+// that Fix is lost.
+void sendFakeGPSData_No_Fix(const char* context)
 {
+  // issue is that there is an A instead of a V in field 3. 
+  const char* fake_no_fix = "$GPRMC,235316.000,A,4003.9040,N,10512.5792,W,0.09,144.75,141112,,*19\n";
+  USB_SERIAL_PRINTF("**** SEND TO MAKO **** sendFakeGPSData_No_Fix %s\n",context);
   serial_mako_gopro.write(fake_no_fix);
-  delay(100);
 }
 
-void sendFakeGGANoFixForTesting()
+void sendFakeGPSData_No_GPS(const char* context)
 {
-  serial_mako_gopro.write(fake_gga_no_fix);
-  delay(100);
-}
-
-const char* fake_no_gps = "$GPRMC,092204.999,A,4250.5589,S,14718.5084,E,0.00,89.68,211200,,*25\n";
-
-void sendFakeGPSData_No_GPS()
-{
+  const char* fake_no_gps = "$GPRMC,092204.999,A,4250.5589,S,14718.5084,E,0.00,89.68,211200,,*25\n";
+  USB_SERIAL_PRINTF("**** SEND TO MAKO **** sendFakeGPSData_No_GPS %s\n",context);
   serial_mako_gopro.write(fake_no_gps);
-  delay(100);
+}
+
+void sendCeaseFixMessagesNMEAMessage(bool cease, const char* context)
+{
+  // These are u-blox commands.
+  // Ceasing FIX messages means to stop the output even if the GPS has a valid fix.
+  // The u-blox default behaviour is to cease output of GGA/RMC messages when there is no fix,
+  // rather than send GGA message with quality set to 0 and RMC message status set to V.
+  // Sending the cease messages stops ALL sending of GGA/RMC.
+  // Sending the resume messages allows GGA/RMC to be sent IF there is a FIX, as in the default case.
+
+  const char* cease_fix_gga_messages =  "$PUBX,40,GGA,0,0,0,0,0,0*46\n";
+  const char* cease_fix_rmc_messages =  "$PUBX,40,RMC,0,0,0,0,0,0*47\n";
+
+  const char* resume_fix_gga_messages = "$PUBX,40,GGA,0,1,0,0,0,0*5B\n";
+  const char* resume_fix_rmc_messages =  "$PUBX,40,RMC,0,1,0,0,0,0*46\n";
+
+  USB_SERIAL_PRINTF("**** SEND TO MAKO **** sendCeaseFixMessagesNMEAMessage: %s  %s\n",(cease ? "True - Stop Sending FIX" : "False - Restart sending FIX"),context);
+
+  if (cease)
+  {
+    serial_mako_gopro.write(cease_fix_gga_messages);
+    serial_mako_gopro.write(cease_fix_rmc_messages);
+  }
+  else
+  {
+    serial_mako_gopro.write(resume_fix_gga_messages);
+    serial_mako_gopro.write(resume_fix_rmc_messages);
+  }
 }
 
 void buildUplinkTelemetryMessageV6a(char* payload, const struct MakoUplinkTelemetryForJson& m, const struct LemonTelemetryForJson& l)

@@ -10,6 +10,10 @@
 extern bool writeLogToSerial;
 extern bool writeTelemetryLogToSerial;
 
+#ifndef USE_WEBSERIAL        // make sure this is disabled if writeLogToSerial is false - Uncomment to enable
+  #define USE_WEBSERIAL   // make sure this is disabled if writeLogToSerial is false - Uncomment to enable
+#endif                   // make sure this is disabled if writeLogToSerial is false - Uncomment to enable
+
 // Serial base configuration
 #ifdef USE_WEBSERIAL
   #define USB_SERIAL_BASE WebSerial

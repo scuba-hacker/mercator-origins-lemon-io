@@ -1,6 +1,8 @@
 #include "OLEDDisplayManager.h"
 #include "SerialConfig.h"
 
+extern bool fastStartup;
+
 OLEDWideDisplayManager::OLEDWideDisplayManager(U8G2& u8g2Display, int screenWidth, int maxLines)
     : display(u8g2Display)
     , scrollingStatusLine("")
@@ -177,8 +179,9 @@ void OLEDWideDisplayManager::updateScrollingStatusLine(const String& newText, bo
         return;
     }
     
-    int pixelScrollDelay = 1;           // was 2
-    int pixelsScrolledPerFrame = 10;            // was 1
+    int pixelScrollDelay = (fastStartup ? 0 : 1);           // was 2
+    int pixelsScrolledPerFrame = (fastStartup ? 100 : 10);            // was 1
+
     
     // Stop any progress animation when updating text
     if (showingProgress) {
