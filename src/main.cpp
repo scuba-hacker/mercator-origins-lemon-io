@@ -345,6 +345,7 @@ const uint32_t maxTimeBeforeAlertNoFix = 3000;
 const uint32_t maxTimeBeforeAlertNoGPSByte = 2000;
 uint32_t timeNextGoodFixExpectedBy = 0;
 uint32_t timeNextGPSByteExpectedBy = 0;
+bool hasGPSFix = false;
 
 enum e_user_action
 {
@@ -794,7 +795,7 @@ void testTightSerialRxLoop()
 }
 
 uint32_t timeOfNextLemonStatus = 0;
-const uint32_t lemonStatusDutyCycle = 1000;
+const uint32_t lemonStatusDutyCycle = 500;
 
 uint32_t timeOfNextTelegramBotUpdateSendMsg = 0;
 const uint32_t telegramBotDutyCycle = 10000;
@@ -1040,6 +1041,7 @@ bool newTempHumidRead=false;
 uint32_t sendNextFakeGPSMessageAt = 0;
 const uint32_t periodBetweenFakeGPSMessages = 950;
 
+const uint32_t timeoutUntilNoGPSDetected = 10000;
 
 void loop()
 {  
@@ -1082,12 +1084,9 @@ void loop()
     lastWebSocketUpdate = now;
   }
   
-  // GPS device timeout detection (10 seconds)
-  if (now - lastGPSMessageTime > 10000) 
-  {
-    hasGPSDevice = false;
-  }
-  
+  hasGPSDevice = (now < lastGPSMessageTime + timeoutUntilNoGPSDetected);
+  hasGPSFix    = gps.location.isValid() && (now < timeNextGoodFixExpectedBy);
+
   // *************  START CODE FOR RECEIVING GPS MESSAGE
   GPSDataPacket gpsPacket;
 
@@ -1482,7 +1481,6 @@ void loop()
   {
     // Calculate GPS statistics
     uint32_t gpsNoFixCount = gpsMessagesReceived - fixCount;
-    bool hasGPSFix = gps.location.isValid();
     double gpsHdop = gps.hdop.hdop();
     uint8_t gpsSatellites = gps.satellites.value();
     
