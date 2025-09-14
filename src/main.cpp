@@ -9,7 +9,8 @@ bool writeTelemetryLogToSerial = false; // writeLogToSerial must also be true if
 #include "SerialConfig.h"
 
 // DEBUG: Set to true to simulate GPS NO FIX for testing Mako timeout system
-bool forceGPSNoFixForTesting = false;
+bool forceGPSMissingGGARMCForTesting = false;
+bool overrideGPSToNoFixForTesting = false;
 bool sendOneReEnableFixCommand = false;
 bool sendOneCeaseFixCommand = false;
 bool fastStartup = true;
@@ -1105,7 +1106,7 @@ void loop()
   }
   
   hasGPSDevice = (now < lastGPSMessageTime + timeoutUntilNoGPSDetected);
-  hasGPSFix    = gps.location.isValid() && (now < timeNextGoodFixExpectedBy);
+  hasGPSFix    = !overrideGPSToNoFixForTesting && gps.isSentenceContainingValidFix() && now < timeNextGoodFixExpectedBy;
 
   // *************  START CODE FOR RECEIVING GPS MESSAGE
   GPSDataPacket gpsPacket;
@@ -1123,15 +1124,18 @@ void loop()
       if (gps.encode(gpsPacket.data[i]))
       {
         // Must extract longitude and latitude for the updated flag to be set on next location update.
-        if (gps.location.isValid() && gps.location.isUpdated() && gps.isSentenceFix())
+        if (gps.location.isValid() && gps.location.isUpdated() && gps.isSentenceFixMsgType())
         {
+          hasGPSFix    = !overrideGPSToNoFixForTesting && gps.isSentenceContainingValidFix() && now < timeNextGoodFixExpectedBy;
+
           if (now > timeOfNextLemonStatus)
           {
-            sendLemonStatus(LC_GOOD_FIX);
+            sendLemonStatus(hasGPSFix ? LC_GOOD_FIX : LC_NO_FIX);
             timeOfNextLemonStatus = now + lemonStatusDutyCycle;
           }
 
-          timeNextGoodFixExpectedBy = now + maxTimeBeforeAlertNoFix;
+          if (hasGPSFix)
+            timeNextGoodFixExpectedBy = now + maxTimeBeforeAlertNoFix;
 
           // These will be updated - variables declared as static in GPS loss detection section
 
@@ -1142,7 +1146,7 @@ void loop()
 
           //////////////////////////////////////////////////////////
           // send message to outgoing serial connection to mako gopro
-          if (forceGPSNoFixForTesting && (gps.isSentenceGGA() || gps.isSentenceRMC()))
+          if (forceGPSMissingGGARMCForTesting && (gps.isSentenceGGA() || gps.isSentenceRMC()))
           {
             if (sendOneCeaseFixCommand)
             {
@@ -1163,6 +1167,7 @@ void loop()
               // don't send the just-received FIX/GGA message, wait for the next one
               return;
             }
+
             int fixQualityGGA=-1;
             char validFixRMC='-';
 
@@ -1205,7 +1210,7 @@ void loop()
                 }
               }
 
-              if (!forceGPSNoFixForTesting)
+              if (!overrideGPSToNoFixForTesting)
                 USB_SERIAL_PRINTF("**** SEND TO MAKO ****  Real GPS Message %s - actual %s GGA:%i RMC:%c  %s\n", msgType, fixType, fixQualityGGA, validFixRMC, nmea);
               else
                 USB_SERIAL_PRINTF("**** SEND TO MAKO ****  Real GPS Message %s - under test - %s GGA:%i RMC:%c  %s\n", msgType, fixType, fixQualityGGA, validFixRMC, nmea);
@@ -1264,7 +1269,7 @@ void loop()
             strncpy(msgType,gps.getSentence(),8);
 
             // first byte in getSentence() is currently always newline
-            USB_SERIAL_PRINTF("NO GPS FIX - MESSAGE RECEIVED: %s\n",msgType + (msgType[0] == '\n' ? 1 : 0));
+            USB_SERIAL_PRINTF("NO GPS FIX - MESSAGE RECEIVED: %s  %s\n",msgType + (msgType[0] == '\n' ? 1 : 0),gps.getSentence());
           }
         }
       }
@@ -1278,6 +1283,7 @@ void loop()
 
   // *************  START CODE FOR TELEMETRY PROCESSING FOR GPS MESSAGE RECEIVED
   // Always ensure MQTT upload happens regardless of GPS state - send fake GPS data when needed
+/*
   if (now > sendNextFakeGPSMessageAt)
   {
     if (nofix_msg_loop_count > 0) 
@@ -1307,6 +1313,7 @@ void loop()
     
     sendNextFakeGPSMessageAt = now + periodBetweenFakeGPSMessages;
   }
+*/
 
   // Always allow telemetry processing - removed the 'else' to enable MQTT before GPS fix
   {

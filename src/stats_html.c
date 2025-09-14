@@ -103,7 +103,8 @@ const char STATS_HTML[] = R"rawliteral(
            <button class="button button-blue" id="mapButton">Local Map</button>
            <button class="button button-green" id="updateButton">Update</button>
            <button class="button button-red" id="rebootButton">Reboot</button>
-           <button class="button button-orange" id="gpsSimToggleButton">Toggle GPS NO FIX Sim</button>
+           <button class="button button-orange" id="gpsMissingFixSimToggleButton">Toggle GPS NO FIX Sim</button>
+           <button class="button button-purple" id="gpsOverrideNoFixSimToggleButton">Toggle GPS Override No FIX Sim</button>
            <button class="button button-black" id="logsButton">Logs</button>
            <button class="button button-amber" id="clearCountersButton">Clear Counters</button>
 
@@ -129,8 +130,12 @@ const char STATS_HTML[] = R"rawliteral(
                    <p class="reading"><span id="fixCount"></span></p>
                </div>
                <div class="card">
+                   <p class="card-title">GPS MISSING FIX Simulation</p>
+                   <p class="reading"><span id="gpsMissingMsgsSimActive"></span></p>
+               </div>
+               <div class="card">
                    <p class="card-title">GPS NO FIX Simulation</p>
-                   <p class="reading"><span id="gpsSimulationActive"></span></p>
+                   <p class="reading"><span id="gpsOverrideNoFixSimActive"></span></p>
                </div>
                <div class="card">
                    <p class="card-title">Good Uplinks</p>
@@ -379,8 +384,12 @@ const char STATS_HTML[] = R"rawliteral(
        handleButtonClick("rebootButton");
    });
 
-   document.getElementById("gpsSimToggleButton").addEventListener("click", function() {
-       handleButtonClick("gpsSimToggleButton");
+   document.getElementById("gpsMissingFixSimToggleButton").addEventListener("click", function() {
+       handleButtonClick("gpsMissingFixSimToggleButton");
+   });
+
+   document.getElementById("gpsOverrideNoFixSimToggleButton").addEventListener("click", function() {
+       handleButtonClick("gpsOverrideNoFixSimToggleButton");
    });
 
    document.getElementById("clearCountersButton").addEventListener("click", function() {

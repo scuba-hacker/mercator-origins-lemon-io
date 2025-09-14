@@ -12,9 +12,10 @@ extern "C" {
 // Access global variables from main.cpp
 extern int32_t lastCheckForInternetConnectivityAt;
 extern uint32_t privateMQTTUploadCount;
-extern bool forceGPSNoFixForTesting;
+extern bool forceGPSMissingGGARMCForTesting;
 extern bool sendOneReEnableFixCommand;
 extern bool sendOneCeaseFixCommand;
+extern bool overrideGPSToNoFixForTesting;
 extern bool fastStartup;
 // Static instance pointer for callbacks
 NetworkManager* NetworkManager::instance = nullptr;
@@ -617,11 +618,11 @@ void NetworkManager::setupWebServerRoutes() {
                     if (setTargetRequestIndex == -1)
                         setTargetRequest = "";
                 }
-            } else if (pButton->value() == String("gpsSimToggleButton")) {
-                forceGPSNoFixForTesting = !forceGPSNoFixForTesting;
-                USB_SERIAL_PRINT("GPS NO FIX simulation toggled to: ");
-                USB_SERIAL_PRINTLN(forceGPSNoFixForTesting ? "ACTIVE" : "INACTIVE");
-                if (forceGPSNoFixForTesting)
+            } else if (pButton->value() == String("gpsMissingFixSimToggleButton")) {
+                forceGPSMissingGGARMCForTesting = !forceGPSMissingGGARMCForTesting;
+                USB_SERIAL_PRINT("GPS Missing FIX simulation toggled to: ");
+                USB_SERIAL_PRINTLN(forceGPSMissingGGARMCForTesting ? "ACTIVE" : "INACTIVE");
+                if (forceGPSMissingGGARMCForTesting)
                 {
                     sendOneReEnableFixCommand = false;
                     sendOneCeaseFixCommand = true;
@@ -631,8 +632,13 @@ void NetworkManager::setupWebServerRoutes() {
                     sendOneReEnableFixCommand = true;
                     sendOneCeaseFixCommand = false;
                 }
-            }
-        } else {
+            } else if (pButton->value() == String("gpsOverrideNoFixSimToggleButton")) {
+                overrideGPSToNoFixForTesting = !overrideGPSToNoFixForTesting;
+                USB_SERIAL_PRINT("GPS Overide No FIX simulation toggled to: ");
+                USB_SERIAL_PRINTLN(overrideGPSToNoFixForTesting ? "ACTIVE" : "INACTIVE");
+            }        
+        }
+        else {
             request->send(200, "text/plain", "invalid");
         }
     });

@@ -27,6 +27,31 @@ char* customiseNMEASentence(char* sentence, int showOnMapIndex)
   const bool isGNRMC = ((strncmp(startSentence,"$GPRMC",6) == 0 ||
                          strncmp(startSentence,"$GNRMC",6) == 0));
 
+  if (overrideGPSToNoFixForTesting)
+  {
+    if (isGNGGA)
+    {
+      // $GPGGA,172814.0,3723.46587704,N,12202.26957864,W,2,6,1.2,18.893,M,-25.669,M,2.0 0031*4F
+      // Field 6 is quality indicator (2 above) - 0 means NO FIX, 1 means GPS Fix, other vals out of scope
+      // Find ',W,' or ',E,' and overwrite the following field
+      char* fixFlagW = strstr(startSentence,",W,");
+      char* fixFlagE = strstr(startSentence,",E,");
+
+      if (fixFlagW)
+        *(fixFlagW+3) = '0';   // override valid fix 1 with no fix 0
+      else if (fixFlagE)
+        *(fixFlagE+3) = '0';   // override valid fix 1 with no fix 0
+    }
+    else
+    {
+      // $GPRMC,123519,A,4807.038,N,01131.000,E,022.4,084.4,230394,003.1,W*6A
+      // Field 2 is A for Fix (active), V for no fix (void)
+      char* fixFlag = strstr(startSentence,",A,");
+      if (fixFlag)
+        *(fixFlag+1) = 'V';   // override valid fix (A) with void fix (V) which is NO FIX
+    }
+  }
+
   bool overrideLocation = false;
 
   USB_SERIAL_PRINTLN("0. checking for override location");
@@ -724,7 +749,8 @@ struct MakoUplinkTelemetryForJson
 String getStats()
 {
   readings["fixCount"] = fixCount;
-  readings["gpsSimulationActive"] = (forceGPSNoFixForTesting ? "ACTIVE" : "INACTIVE");
+  readings["gpsMissingMsgsSimActive"] = (forceGPSMissingGGARMCForTesting ? "ACTIVE" : "INACTIVE");
+  readings["gpsOverrideNoFixSimActive"] = (overrideGPSToNoFixForTesting ? "ACTIVE" : "INACTIVE");
   readings["goodUplinkMessageCount"] = goodUplinkMessageCount;
   readings["privateMQTTUploadCount"] = privateMQTTUploadCount;
   readings["uplinkBadMessagePercentage"] = (int)uplinkBadMessagePercentage;

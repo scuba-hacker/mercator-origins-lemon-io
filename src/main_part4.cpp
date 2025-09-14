@@ -129,8 +129,6 @@ struct GpsModuleInfo {
 
 static GpsModuleInfo detectedModule = {GPS_MODULE_UNKNOWN, "", "", 0};
 
-// ---- Small timeouts ----
-const uint32_t UBLOX_ACK_TIMEOUT_MS = 200;
 
 // ---- UBX helper: compute checksum (CK_A, CK_B) over class,id,len,payload ----
 void ubxChecksum(uint8_t cls_, uint8_t id_, const uint8_t *pl, uint16_t len, uint8_t &cka, uint8_t &ckb) {
@@ -146,6 +144,14 @@ bool sendUBX(uint8_t cls_, uint8_t id_, const uint8_t *payload, uint16_t len, bo
   uint8_t cka, ckb;
   ubxChecksum(cls_, id_, payload, len, cka, ckb);
 
+  // Debug: Show command being sent
+  BUFFER_LOG_PRINTF("Sending UBX cmd 0x%02X 0x%02X len=%d: ", cls_, id_, len);
+  for (int i = 0; i < len && i < 20; i++) {  // Show first 20 bytes
+    BUFFER_LOG_PRINTF("%02X ", payload[i]);
+  }
+  if (len > 20) BUFFER_LOG_PRINTF("...");
+  BUFFER_LOG_PRINTF(" CK=%02X%02X\n", cka, ckb);
+
   // UBX header + body
   // 0xB5 0x62 is the U-BLOX Header
   serial_gps.write(0xB5); serial_gps.write(0x62);     // Verified page 134 of u-Blox protocol spec
@@ -157,6 +163,15 @@ bool sendUBX(uint8_t cls_, uint8_t id_, const uint8_t *payload, uint16_t len, bo
   serial_gps.flush();
 
   if (!waitAck) return true;
+
+  // ---- Dynamic timeouts based on command type ----
+  uint32_t UBLOX_ACK_TIMEOUT_MS = 1000;
+
+  // CFG-VALSET commands need longer timeouts (especially multi-parameter ones)
+  if (cls_ == 0x06 && id_ == 0x8A) {
+    UBLOX_ACK_TIMEOUT_MS = 3000;  // 3 seconds for CFG-VALSET
+    BUFFER_LOG_PRINTF(" [CFG-VALSET detected, using 3s timeout]");
+  }
 
   // Expect: B5 62 05 01 02 00 <cls> <id> CK_A CK_B
   const uint32_t deadline = millis() + UBLOX_ACK_TIMEOUT_MS;
@@ -174,12 +189,32 @@ bool sendUBX(uint8_t cls_, uint8_t id_, const uint8_t *payload, uint16_t len, bo
       }
       buf[idx++] = b;
       if (idx == sizeof(buf)) {
-        bool ok = (buf[0]==0xB5 && buf[1]==0x62 && buf[2]==0x05 && buf[3]==0x01 &&
-                   buf[4]==0x02 && buf[5]==0x00 && buf[6]==cls_ && buf[7]==id_);
-        if (ok) {
+        // Check for ACK (0x05 0x01)
+        bool isAck = (buf[0]==0xB5 && buf[1]==0x62 && buf[2]==0x05 && buf[3]==0x01 &&
+                      buf[4]==0x02 && buf[5]==0x00 && buf[6]==cls_ && buf[7]==id_);
+
+        // Check for NACK (0x05 0x00)
+        bool isNack = (buf[0]==0xB5 && buf[1]==0x62 && buf[2]==0x05 && buf[3]==0x00 &&
+                       buf[4]==0x02 && buf[5]==0x00 && buf[6]==cls_ && buf[7]==id_);
+
+        if (isAck) {
           BUFFER_LOG_PRINTF(" ACK received (skipped %d NMEA bytes)\n", bytesSkippedForAck);
           return true;
+        } else if (isNack) {
+          BUFFER_LOG_PRINTF(" NACK received - command rejected (skipped %d NMEA bytes)\n", bytesSkippedForAck);
+          BUFFER_LOG_PRINTF(" UBX frame rejected: ");
+          for (int i = 0; i < 10; i++) {
+            BUFFER_LOG_PRINTF("%02X ", buf[i]);
+          }
+          BUFFER_LOG_PRINTF("\n");
+          return false;
         }
+
+        // Log any other UBX responses we're seeing
+        if (buf[0]==0xB5 && buf[1]==0x62) {
+          BUFFER_LOG_PRINTF(" Other UBX response: %02X %02X len=%d\n", buf[2], buf[3], buf[4] | (buf[5] << 8));
+        }
+
         // slide window to resync
         memmove(buf, buf+1, --idx);
       }
@@ -541,10 +576,18 @@ uint8_t UBX_CFG_RATE_VALSET[] = {
   // (no padding needed; VALSET packs items back-to-back)
 };
 
+// UBX-CFG-INFMSG-NMEA_UART1_VALSET (0x06 0x8A)
+// header: version=0x00, layers=0x01 (RAM), rsvd[2]=0
+uint8_t UBX_CFG_INFMSG_NMEA_UART1_VALSET[] = {
+  0x00, 0x01, 0x00, 0x00,   // version 0, layers=0x01(RAM), 2 bytes reserved
+  0x07, 0x00, 0x92, 0x20,   // key 0x20920007 (little-endian): 20 92 00 07
+  0x00                      // value - disable
+};
+
 // UBX-CFG-VALSET (0x06 0x8A)
 // header: version=0x00, layers=0x01 (RAM), rsvd[2]=0
 uint8_t UBX_CFG_PEDESTRIAN_MODEL_VALSET[] = {
-  0x00, 0x01, 0x00, 0x00,
+  0x00, 0x01, 0x00, 0x00,   // version 0, layers=0x01(RAM), 2 bytes reserved
   // key 0x20110021 (little-endian): 21 00 11 20, value E1=0x03 (Pedestrian)
   0x21, 0x00, 0x11, 0x20, 0x03
 };
@@ -560,10 +603,11 @@ uint8_t UBX_CFG_SEA_MODEL_VALSET[] = {
 // UBX-CFG-VALSET (0x06 0x8A)
 // header: version=0x00, layers=0x01 (RAM), rsvd[2]=0
 // Emit no fix messages when there is no fix, instead of no message at all
-uint8_t UBX_CFG_NMEA_OUT_INVFIX[] = {
+// Simplified NMEA configuration - just disable position filtering
+uint8_t UBX_CFG_NMEA_EMIT_NO_FIX[] = {
   0x00, 0x01, 0x00, 0x00,             // version=0, layers=0x01(RAM), 2 bytes reserved
-  0x23, 0x00, 0x93, 0x10, 0x01,       // key 0x10930023,
-  0x01                                // value=1 (true, enable no fix messages)
+  // Disable position filtering (allow invalid positions through)
+  0x22, 0x00, 0x93, 0x10, 0x00        // CFG-NMEA-FILT_POS = false (key 0x10930022)
 };
 
 // 6) CFG-CFG (0x06 0x09) — Save to BBR/Flash (where present)
@@ -698,19 +742,20 @@ bool configureUBLOXGps()
     else {
       // Stop the suppression of No Fix GGA/RMC messages
       // Normally they are simply not sent, resulting in a gap in messages.    
-      ok &= sendUBX(0x06, 0x8A, UBX_CFG_NMEA_OUT_INVFIX, sizeof(UBX_CFG_NMEA_OUT_INVFIX));
-      BUFFER_LOG_PRINTF("%s Allow No Fix messages (GGA/RMC)\n", (ok ? okAck : badAck));
+      bool send_no_fix_result = sendUBX(0x06, 0x8A, UBX_CFG_NMEA_EMIT_NO_FIX, sizeof(UBX_CFG_NMEA_EMIT_NO_FIX));
+      ok &= send_no_fix_result;
+      BUFFER_LOG_PRINTF("%s Allow No Fix messages (GGA/RMC)\n", (send_no_fix_result ? okAck : badAck));
     }
 
     // Configure NMEA message rates using module-specific format - 3 retries on failure
-    ok &= sendCFG_MSG_enable(0xF0, 0x00, "GGA",3);   // Enable GGA
-    ok &= sendCFG_MSG_enable(0xF0, 0x04, "RMC",3);   // Enable RMC
+    ok &= sendCFG_MSG_enable(0xF0, 0x00,  "GGA",3);  // Enable GGA
+    ok &= sendCFG_MSG_enable(0xF0, 0x04,  "RMC",3);  // Enable RMC
     ok &= sendCFG_MSG_disable(0xF0, 0x01, "GLL",3);  // Disable GLL
     ok &= sendCFG_MSG_disable(0xF0, 0x02, "GSA",3);  // Disable GSA
     ok &= sendCFG_MSG_disable(0xF0, 0x03, "GSV",3);  // Disable GSV
     ok &= sendCFG_MSG_disable(0xF0, 0x05, "VTG",3);  // Disable VTG
     ok &= sendCFG_MSG_disable(0xF0, 0x08, "ZDA",3);  // Disable ZDA
-
+    
     // Set navigation rate = 1 Hz - ZED-9FR only
     bool rate_ok = sendUBX(0x06, 0x8A, UBX_CFG_RATE_VALSET, sizeof(UBX_CFG_RATE_VALSET));
     BUFFER_LOG_PRINTF("%s Set nav Rate to 1 Hz\n", (rate_ok ? okAck : badAck));
