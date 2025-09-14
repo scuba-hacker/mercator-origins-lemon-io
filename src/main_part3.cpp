@@ -743,4 +743,8 @@ enum e_q_upload_status uploadTelemetryToPrivateMQTT(MakoUplinkTelemetryForJson* 
   return uploadStatus;
 }
 
+#define BUILD_INCLUDE_MAIN_PART4
+
+#include "main_part4.cpp"
+
 #endif

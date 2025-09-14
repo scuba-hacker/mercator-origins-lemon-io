@@ -2,7 +2,7 @@
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-bool writeLogToSerial = false;
+bool writeLogToSerial = true;
 bool writeTelemetryLogToSerial = false; // writeLogToSerial must also be true if this is set to true
 
 // set USE_WEB_SERIAL in SerialConfig.h if required
@@ -85,7 +85,7 @@ U8G2_SSD1322_NHD_256X64_F_4W_HW_SPI wideOLEDDisplay(U8G2_R0, OLED_CS_ORANGE, OLE
 HardwareSerial serial_lantern_neopixels(UART_NUMBER_LANTERN_NEOPIXELS);
 
 #define UART_NUMBER_GPS    1
-#define GPS_BAUD_RATE      9600
+#define GPS_BAUD_RATE      115200
 #define GPS_TX_GREY_GPIO   39
 #define GPS_RX_WHITE_GPIO  38
 
@@ -579,6 +579,7 @@ void checkMakoJSONForAlarms(struct MakoUplinkTelemetryForJson& m);
 uint16_t calcUplinkChecksum(char* buffer, uint16_t length);
 void sendFakeGPSData_No_Fix(const char* context);
 void sendFakeGPSData_No_GPS(const char* context);
+bool configureUBLOXGps(); 
 void sendCeaseFixMessagesNMEAMessage(bool cease, const char* context);
 void toggleOTAActive();
 void toggleWiFiActive();
@@ -730,7 +731,20 @@ void initialiseUARTS()
   // UART1 for receiving data from GPS
   serial_gps.setRxBufferSize(GPS_RX_BUFFER_SIZE); // must set before begin
   serial_gps.begin(GPS_BAUD_RATE, SERIAL_8N1, GPS_RX_WHITE_GPIO, GPS_TX_GREY_GPIO);
-  sendCeaseFixMessagesNMEAMessage(false, "setup() - clear any existing test block of FIX msg as is persistent across boots"); // ensure test block of FIX msg is off
+//  sendCeaseFixMessagesNMEAMessage(false, "setup() - clear any existing test block of FIX msg as is persistent across boots"); // ensure test block of FIX msg is off
+
+  BUFFER_LOG_RESET();
+
+  BUFFER_LOG_PRINTLN("###########################################################################");
+
+  BUFFER_LOG_PRINTLN("\nSetting ZED-FNR to Sea Model, 1 Hz, GGA+RMC only, NMEA even with NO FIX...");
+
+  bool ok = configureUBLOXGps();    // Populates the BUFFER_LOG with diagnostics
+
+  BUFFER_LOG_PRINTLN(ok ? "GPS configured OK (ACKs received)."
+                    : "GPS configuration partially failed (some ACKs missed).");
+
+  BUFFER_LOG_PRINTLN("###########################################################################");
 
   xTaskCreatePinnedToCore(gpsRxTask,
                           "gpsRxTask",
@@ -1013,6 +1027,13 @@ void setup()
   if (!fastStartup)
     delay(1000);
 
+  delay(5000);    // allow time to connect to /logs page for checking GPS results
+
+  USB_SERIAL.println("++++++++++++++  BUFFER LOG ++++++++++++++++++");
+  USB_SERIAL.println(BUFFER_LOG_GET_BUFFER());
+  BUFFER_LOG_RESET();
+  USB_SERIAL.println("++++++++++++++++++++++++++++++++++++++++++++");
+
   wideDisplayManager.clearDisplay();
 
   if (useGsDisplayManager)
@@ -1027,9 +1048,8 @@ void setup()
   setupCompletedAt = millis();
   startAccumulatingMissedMessagesAt = setupCompletedAt + delayBeforeCountingMissedMessages;
 
-  
   // Load testing preferences
-  loadTestingPreferences();
+  loadTestingPreferences();  
 
   USB_SERIAL_PRINTLN("Setup() completed");
 }

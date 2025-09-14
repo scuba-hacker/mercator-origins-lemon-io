@@ -189,16 +189,22 @@
             const timestamp = new Date().toLocaleTimeString();
             const timestampedData = '[' + timestamp + '] ' + data;
             logBuffer.push(timestampedData);
-            
-            console.textContent += timestampedData;
-            
+
+            // Check current selection state and update accordingly
+            checkForSelectionChange();
+
+            // Only update console if not paused
+            if (console.dataset.paused !== 'true') {
+                console.textContent += timestampedData;
+
+                if (autoScroll) {
+                    console.scrollTop = console.scrollHeight;
+                }
+            }
+
             // Check for OTA shutdown sequence
             if (data.includes('OTA mode will be disabled') || data.includes('OTA mode disabled')) {
                 showOtaBanner();
-            }
-            
-            if (autoScroll) {
-                console.scrollTop = console.scrollHeight;
             }
         }
 
@@ -215,6 +221,33 @@
         function clearConsole() {
             console.textContent = '';
             logBuffer = [];
+            // Reset paused state
+            console.dataset.paused = 'false';
+            console.style.borderColor = '#444';
+        }
+
+        // Resume updates when user deselects text
+        function checkForSelectionChange() {
+            const selection = window.getSelection();
+            const hasSelection = selection.rangeCount > 0 && !selection.isCollapsed;
+            const currentlyPaused = console.dataset.paused === 'true';
+
+            if (hasSelection && !currentlyPaused) {
+                // User just made a selection - pause updates
+                console.dataset.paused = 'true';
+                console.style.borderColor = '#ffa500'; // Orange border to indicate paused updates
+            } else if (!hasSelection && currentlyPaused) {
+                // User cleared selection - resume updates
+                console.dataset.paused = 'false';
+                console.style.borderColor = '#444';
+
+                // Rebuild console content from buffer to catch up
+                console.textContent = logBuffer.join('');
+
+                if (autoScroll) {
+                    console.scrollTop = console.scrollHeight;
+                }
+            }
         }
 
         function saveConsole() {
@@ -328,6 +361,19 @@
                     sendInputMessage();
                 }
             });
+
+            // Listen for selection changes to resume updates when text is deselected
+            document.addEventListener('selectionchange', () => {
+                // Small delay to ensure selection state has settled
+                setTimeout(checkForSelectionChange, 10);
+            });
+
+            // Also check on mouse/key events that might change selection
+            console.addEventListener('mouseup', () => setTimeout(checkForSelectionChange, 10));
+            console.addEventListener('keyup', () => setTimeout(checkForSelectionChange, 10));
+
+            // Initialize paused state
+            console.dataset.paused = 'false';
         });
 
         // Auto-connect on load
