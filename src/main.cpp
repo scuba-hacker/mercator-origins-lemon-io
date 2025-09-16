@@ -86,7 +86,7 @@ U8G2_SSD1322_NHD_256X64_F_4W_HW_SPI wideOLEDDisplay(U8G2_R0, OLED_CS_ORANGE, OLE
 HardwareSerial serial_lantern_neopixels(UART_NUMBER_LANTERN_NEOPIXELS);
 
 #define UART_NUMBER_GPS    1
-#define GPS_BAUD_RATE      115200
+#define GPS_BAUD_RATE      9600
 #define GPS_TX_GREY_GPIO   39
 #define GPS_RX_WHITE_GPIO  38
 
@@ -621,6 +621,7 @@ void statusLEDOn()     { statusLED = true;       ProS3.setPixelPower(statusLED);
 void statusLEDOff()    { statusLED = false;      ProS3.setPixelPower(statusLED); ProS3.writePixel(); }
 void statusLEDColourYellow() { ProS3.setPixelColor(128,128,0); }
 void statusLEDColourRed() { ProS3.setPixelColor(255,0,0); }
+void statusLEDColourPurple() { ProS3.setPixelColor(35,31,42); }
 
 TaskHandle_t mainTaskHandle = nullptr;
 BaseType_t mainTaskCoreId = 0;
@@ -882,12 +883,14 @@ void setup()
 {
   randomSeed(analogRead(RANDOM_NUMBER_ADC_GPIO_13));  // Use a floating analog pin for entropy - for OLED screen saver random movements
 
-  initialiseUARTS();
-
   ProS3.begin();
   USB_SERIAL_PRINTF("=== MAIN SETUP START ===\n");
-  statusLEDColourYellow();
+  statusLEDColourPurple();
   statusLEDOn();
+
+  initialiseUARTS();
+
+  statusLEDColourYellow();
 
   // Initialize GPS queue - 10 packets deep should be sufficient
   gpsQueue = xQueueCreate(GPS_QUEUE_SIZE, sizeof(GPSDataPacket));

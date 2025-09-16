@@ -165,12 +165,12 @@ bool sendUBX(uint8_t cls_, uint8_t id_, const uint8_t *payload, uint16_t len, bo
   if (!waitAck) return true;
 
   // ---- Dynamic timeouts based on command type ----
-  uint32_t UBLOX_ACK_TIMEOUT_MS = 1000;
+  uint32_t UBLOX_ACK_TIMEOUT_MS = 50;
 
   // CFG-VALSET commands need longer timeouts (especially multi-parameter ones)
   if (cls_ == 0x06 && id_ == 0x8A) {
-    UBLOX_ACK_TIMEOUT_MS = 3000;  // 3 seconds for CFG-VALSET
-    BUFFER_LOG_PRINTF(" [CFG-VALSET detected, using 3s timeout]");
+    UBLOX_ACK_TIMEOUT_MS = 50;
+    BUFFER_LOG_PRINTF(" [CFG-VALSET detected, using 100ms timeout]");
   }
 
   // Expect: B5 62 05 01 02 00 <cls> <id> CK_A CK_B
@@ -690,7 +690,7 @@ bool configureUBLOXGps()
     if (!pollMON_VER()) {
       BUFFER_LOG_PRINTLN("Failed to get GPS firmware version");
       attempts++;
-      delay(100);
+      delay(50);
     }
     else
     {
@@ -722,7 +722,7 @@ bool configureUBLOXGps()
     {
       BUFFER_LOG_PRINTLN("Got 0 port configs"); 
       attempts++;
-      delay(100);
+      delay(50);
     }
   }
 
