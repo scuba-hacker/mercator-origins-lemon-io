@@ -103,7 +103,7 @@ const char STATS_HTML[] = R"rawliteral(
            <button class="button button-blue" id="mapButton">Local Map</button>
            <button class="button button-green" id="updateButton">Update</button>
            <button class="button button-red" id="rebootButton">Reboot</button>
-           <button class="button button-orange" id="gpsMissingFixSimToggleButton">Toggle GPS NO FIX Sim</button>
+           <button class="button button-orange" id="gpsMissingFixSimToggleButton">Toggle GPS Missing FIX Sim</button>
            <button class="button button-purple" id="gpsOverrideNoFixSimToggleButton">Toggle GPS Override No FIX Sim</button>
            <button class="button button-black" id="logsButton">Logs</button>
            <button class="button button-amber" id="clearCountersButton">Clear Counters</button>
@@ -251,6 +251,12 @@ const char STATS_HTML[] = R"rawliteral(
 
        function initWebSocket() {
            console.log('Trying to open a WebSocket connection…');
+
+           // Close existing connection if not already closed
+           if (websocket && websocket.readyState !== WebSocket.CLOSED) {
+               websocket.close();
+           }
+
            websocket = new WebSocket(gateway);
            websocket.onopen = onOpen;
            websocket.onclose = onClose;
@@ -549,6 +555,21 @@ const char STATS_HTML[] = R"rawliteral(
 
    // Attach keydown event listener to document
        document.addEventListener("keydown", handleKeyDown);
+
+   // Cleanup WebSocket connection when page unloads
+   function closeWebSocket() {
+       if (websocket) {
+           console.log('Closing WebSocket, state:', websocket.readyState);
+           websocket.close(1000, 'Page closing');
+           websocket = null;
+       }
+   }
+   window.addEventListener('beforeunload', closeWebSocket);
+   window.addEventListener('pagehide', closeWebSocket);
+   window.addEventListener('unload', closeWebSocket);
+   window.addEventListener('visibilitychange', function() {
+       if (document.hidden) closeWebSocket();
+   });
 
    </script>
    </body>

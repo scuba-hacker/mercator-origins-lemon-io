@@ -164,6 +164,15 @@ void NetworkManager::loop() {
     
     // Handle connectivity checking
     checkConnectivity();
+
+    // Periodic WebSocket cleanup
+    static uint32_t lastWSCleanup = 0;
+    if (millis() - lastWSCleanup > 10000) {  // Every 10 seconds
+        if (ws) {
+            ws->cleanupClients();
+        }
+        lastWSCleanup = millis();
+    }
 }
 
 const char* NetworkManager::scanForKnownNetworkAsync() {
@@ -528,33 +537,54 @@ void NetworkManager::setupWebServerRoutes() {
                      "<div id=\"messages\"></div>"
                      "<button onclick=\"sendTest()\">Send Test</button>"
                      "<script>"
-                     "var ws = new WebSocket('ws://' + window.location.hostname + '/ws');"
+                     "var ws = null;"
                      "var messages = document.getElementById('messages');"
                      "var status = document.getElementById('status');"
-                     "ws.onopen = function() {"
-                         "status.innerHTML = 'Connected';"
-                         "status.style.color = 'green';"
-                         "console.log('WebSocket connected');"
-                     "};"
-                     "ws.onmessage = function(event) {"
-                         "console.log('Received:', event.data);"
-                         "messages.innerHTML += '<p>Received: ' + event.data.substring(0, 200) + '...</p>';"
-                     "};"
-                     "ws.onclose = function() {"
-                         "status.innerHTML = 'Disconnected';"
-                         "status.style.color = 'red';"
-                         "console.log('WebSocket disconnected');"
-                     "};"
-                     "ws.onerror = function(error) {"
-                         "status.innerHTML = 'Error';"
-                         "status.style.color = 'red';"
-                         "console.log('WebSocket error:', error);"
-                     "};"
+                     "function createWebSocket() {"
+                         "if (ws && ws.readyState !== WebSocket.CLOSED) {"
+                             "ws.close();"
+                         "}"
+                         "ws = new WebSocket('ws://' + window.location.hostname + '/ws');"
+                         "ws.onopen = function() {"
+                             "status.innerHTML = 'Connected';"
+                             "status.style.color = 'green';"
+                             "console.log('WebSocket connected');"
+                         "};"
+                         "ws.onmessage = function(event) {"
+                             "console.log('Received:', event.data);"
+                             "messages.innerHTML += '<p>Received: ' + event.data.substring(0, 200) + '...</p>';"
+                         "};"
+                         "ws.onclose = function() {"
+                             "status.innerHTML = 'Disconnected';"
+                             "status.style.color = 'red';"
+                             "console.log('WebSocket disconnected');"
+                         "};"
+                         "ws.onerror = function(error) {"
+                             "status.innerHTML = 'Error';"
+                             "status.style.color = 'red';"
+                             "console.log('WebSocket error:', error);"
+                         "};"
+                         "return ws;"
+                     "}"
+                     "createWebSocket();"
                      "function sendTest() {"
                          "if (ws.readyState === WebSocket.OPEN) {"
                              "ws.send('test message');"
                          "}"
                      "}"
+                     "function closeWebSocket() {"
+                         "if (ws) {"
+                             "console.log('Closing WebSocket, state:', ws.readyState);"
+                             "ws.close(1000, 'Page closing');"
+                             "ws = null;"
+                         "}"
+                     "}"
+                     "window.addEventListener('beforeunload', closeWebSocket);"
+                     "window.addEventListener('pagehide', closeWebSocket);"
+                     "window.addEventListener('unload', closeWebSocket);"
+                     "window.addEventListener('visibilitychange', function() {"
+                         "if (document.hidden) closeWebSocket();"
+                     "});"
                      "</script>"
                      "</body>"
                      "</html>";
@@ -562,8 +592,16 @@ void NetworkManager::setupWebServerRoutes() {
     });
 
     asyncWebServer->on("/stats", HTTP_GET, [this](AsyncWebServerRequest * request) {
-        AsyncWebServerResponse *response = request->beginResponse(200, "text/html", config.statsHtml, config.statsHtmlSize); 
-        request->send(response);
+        if (config.enableWebSerialFrame) {
+            // Send stats HTML with WebSerial frame included
+            AsyncWebServerResponse *response = request->beginResponse(200, "text/html", config.statsHtml, config.statsHtmlSize);
+            request->send(response);
+        } else {
+            // Remove WebSerial iframe from HTML before sending
+            String htmlContent = String((const char*)config.statsHtml);
+            htmlContent.replace("<iframe src=\"/webserial\" width=\"1000\" height=\"1000\" frameborder=\"0\"></iframe>", "<!-- WebSerial frame disabled -->");
+            request->send(200, "text/html", htmlContent);
+        }
     });
 
     asyncWebServer->on("/map", HTTP_GET, [this](AsyncWebServerRequest * request) {
@@ -685,6 +723,10 @@ void NetworkManager::initWebSocket() {
     ws->onEvent([this](AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type, void *arg, uint8_t *data, size_t len) {
         this->onWebSocketEvent(server, client, type, arg, data, len);
     });
+
+    // Set WebSocket cleanup parameters
+    ws->cleanupClients();  // Clean up disconnected clients
+
     USB_SERIAL_PRINTF("NetworkManager: WebSocket event handler set\n");
 }
 

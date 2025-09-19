@@ -163,25 +163,30 @@ const char LOGS_PAGE_HTML[] PROGMEM = R"rawliteral(
         function connect() {
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
             const wsUrl = protocol + '//' + window.location.hostname + ':' + window.location.port + '/webserialws';
-            
+
+            // Close existing connection if not already closed
+            if (ws && ws.readyState !== WebSocket.CLOSED) {
+                ws.close();
+            }
+
             ws = new WebSocket(wsUrl);
-            
+
             ws.onopen = function() {
                 status.textContent = 'Connected';
                 status.className = 'status connected';
                 addToConsole('=== Connected to Lemon IO Serial Console ===\n');
             };
-            
+
             ws.onmessage = function(event) {
                 addToConsole(event.data);
             };
-            
+
             ws.onclose = function() {
                 status.textContent = 'Disconnected - Reconnecting...';
                 status.className = 'status disconnected';
                 setTimeout(connect, 2000);
             };
-            
+
             ws.onerror = function() {
                 status.textContent = 'Connection Error';
                 status.className = 'status disconnected';
@@ -381,6 +386,21 @@ const char LOGS_PAGE_HTML[] PROGMEM = R"rawliteral(
 
         // Auto-connect on load
         connect();
+
+        // Cleanup WebSocket connection when page unloads
+        function closeWebSocket() {
+            if (ws) {
+                console.log('Closing WebSocket, state:', ws.readyState);
+                ws.close(1000, 'Page closing');
+                ws = null;
+            }
+        }
+        window.addEventListener('beforeunload', closeWebSocket);
+        window.addEventListener('pagehide', closeWebSocket);
+        window.addEventListener('unload', closeWebSocket);
+        window.addEventListener('visibilitychange', function() {
+            if (document.hidden) closeWebSocket();
+        });
     </script>
 </body>
 </html>)rawliteral";

@@ -48,6 +48,7 @@ struct NetworkConfig {
     // Feature flags
     bool enableOTAServer;
     bool enableWebSerial;
+    bool enableWebSerialFrame;  // Set to false to hide WebSerial iframe in stats page
     bool publishMQTTTestMessages;
     
     // Web content

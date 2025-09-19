@@ -15,6 +15,7 @@ bool sendOneReEnableFixCommand = false;
 bool sendOneCeaseFixCommand = false;
 bool fastStartup = true;
 
+bool enableWebSerialFrame=false;    // stats page iframe - use /logs instead
 
 /**
  * MARINE FLASH PERSISTENCE CONTROL
@@ -289,6 +290,7 @@ NetworkConfig networkConfig = {
 #else
     false,    // enableWebSerial - disabled when USE_WEBSERIAL not defined
 #endif
+    enableWebSerialFrame,
     publishMQTTTestMessages,
     STATS_HTML, STATS_HTML_SIZE,
     MAP_HTML, MAP_HTML_SIZE,

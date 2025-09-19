@@ -245,6 +245,12 @@
 
        function initWebSocket() {
            console.log('Trying to open a WebSocket connection…');
+
+           // Close existing connection if not already closed
+           if (websocket && websocket.readyState !== WebSocket.CLOSED) {
+               websocket.close();
+           }
+
            websocket = new WebSocket(gateway);
            websocket.onopen = onOpen;
            websocket.onclose = onClose;
@@ -543,6 +549,21 @@
 
    // Attach keydown event listener to document
        document.addEventListener("keydown", handleKeyDown);
+
+   // Cleanup WebSocket connection when page unloads
+   function closeWebSocket() {
+       if (websocket) {
+           console.log('Closing WebSocket, state:', websocket.readyState);
+           websocket.close(1000, 'Page closing');
+           websocket = null;
+       }
+   }
+   window.addEventListener('beforeunload', closeWebSocket);
+   window.addEventListener('pagehide', closeWebSocket);
+   window.addEventListener('unload', closeWebSocket);
+   window.addEventListener('visibilitychange', function() {
+       if (document.hidden) closeWebSocket();
+   });
 
    </script>
    </body>
