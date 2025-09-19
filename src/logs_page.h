@@ -156,6 +156,7 @@ const char LOGS_PAGE_HTML[] PROGMEM = R"rawliteral(
         let ws;
         let autoScroll = false;
         let logBuffer = [];
+        const MAX_LOG_BUFFER_SIZE = 100000;
         const console = document.getElementById('console');
         const status = document.getElementById('status');
         const autoScrollBtn = document.getElementById('autoScrollBtn');
@@ -196,7 +197,12 @@ const char LOGS_PAGE_HTML[] PROGMEM = R"rawliteral(
         function addToConsole(data) {
             const timestamp = new Date().toLocaleTimeString();
             const timestampedData = '[' + timestamp + '] ' + data;
+
+            // Add to buffer with size limit
             logBuffer.push(timestampedData);
+            if (logBuffer.length > MAX_LOG_BUFFER_SIZE) {
+                logBuffer.shift(); // Remove oldest entry
+            }
 
             // Check current selection state and update accordingly
             checkForSelectionChange();
@@ -228,10 +234,21 @@ const char LOGS_PAGE_HTML[] PROGMEM = R"rawliteral(
 
         function clearConsole() {
             console.textContent = '';
-            logBuffer = [];
+
+            // Force memory cleanup
+            logBuffer.length = 0;  // Clear array efficiently
+            logBuffer = [];        // Create new array to release old references
+
+            // Force garbage collection hint (if available)
+            if (window.gc && typeof window.gc === 'function') {
+                window.gc();
+            }
+
             // Reset paused state
             console.dataset.paused = 'false';
             console.style.borderColor = '#444';
+
+            console.log('Console cleared - buffer reset');
         }
 
         // Resume updates when user deselects text
@@ -250,7 +267,10 @@ const char LOGS_PAGE_HTML[] PROGMEM = R"rawliteral(
                 console.style.borderColor = '#444';
 
                 // Rebuild console content from buffer to catch up
-                console.textContent = logBuffer.join('');
+                const maxDisplayLines = 100000;
+                const linesToShow = logBuffer.length > maxDisplayLines ?
+                    logBuffer.slice(-maxDisplayLines) : logBuffer;
+                console.textContent = linesToShow.join('');
 
                 if (autoScroll) {
                     console.scrollTop = console.scrollHeight;
@@ -259,15 +279,27 @@ const char LOGS_PAGE_HTML[] PROGMEM = R"rawliteral(
         }
 
         function saveConsole() {
-            const blob = new Blob([logBuffer.join('')], { type: 'text/plain' });
-            const url = window.URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = 'lemon-io-console-' + new Date().toISOString().replace(/[:.]/g, '-') + '.txt';
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            window.URL.revokeObjectURL(url);
+            if (logBuffer.length === 0) {
+                alert('Console is empty - nothing to save');
+                return;
+            }
+
+            try {
+                const content = logBuffer.join('');
+                const blob = new Blob([content], { type: 'text/plain' });
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'lemon-io-console-' + new Date().toISOString().replace(/[:.]/g, '-') + '.txt';
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                window.URL.revokeObjectURL(url);
+                console.log('Console saved with', logBuffer.length, 'entries');
+            } catch (error) {
+                console.error('Error saving console:', error);
+                alert('Error saving console log');
+            }
         }
 
         function scrollToTop() {

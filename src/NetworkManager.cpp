@@ -165,11 +165,24 @@ void NetworkManager::loop() {
     // Handle connectivity checking
     checkConnectivity();
 
-    // Periodic WebSocket cleanup
+    // Periodic WebSocket and WebSerial cleanup
     static uint32_t lastWSCleanup = 0;
     if (millis() - lastWSCleanup > 10000) {  // Every 10 seconds
         if (ws) {
             ws->cleanupClients();
+        }
+        // Clean up any dead WebSerial connections
+        if (config.enableWebSerial && webSerialInitialised) {
+            // Clean up dead WebSerial WebSocket connections (fixes /webserialws memory leaks)
+            WebSerial.cleanupClients();
+
+            static uint32_t webSerialCleanupCount = 0;
+            webSerialCleanupCount++;
+
+            // Every 5th cleanup (50 seconds), log connection status
+            if (webSerialCleanupCount % 5 == 0) {
+                USB_SERIAL_PRINTF("Periodic cleanup - Main WS clients: %d, WebSerial cleaned\n", ws ? ws->count() : 0);
+            }
         }
         lastWSCleanup = millis();
     }
