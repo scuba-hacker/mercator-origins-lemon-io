@@ -14,9 +14,11 @@ const char LOGS_PAGE_HTML[] PROGMEM = R"rawliteral(
             background: #1e1e1e; 
             color: #d4d4d4; 
         }
-        .container { 
-            max-width: 1200px; 
-            margin: 0 auto; 
+        .container {
+            max-width: none;
+            margin: 0 auto;
+            padding: 0 20px;
+            width: 100%;
         }
         h1 { 
             color: #569cd6; 
@@ -32,9 +34,13 @@ const char LOGS_PAGE_HTML[] PROGMEM = R"rawliteral(
             display: flex;
             align-items: center;
             gap: 10px;
+            justify-content: center;
+            max-width: fit-content;
+            margin-left: auto;
+            margin-right: auto;
         }
         .command-input {
-            flex: 1;
+            width: 250px;
             padding: 8px;
             font-family: monospace;
             border: 1px solid #444;
@@ -51,33 +57,188 @@ const char LOGS_PAGE_HTML[] PROGMEM = R"rawliteral(
             border-radius: 4px;
             min-width: 150px;
         }
-        button { 
-            background: #0078d4; 
-            color: white; 
-            border: none; 
-            padding: 10px 20px; 
-            margin: 0 10px; 
-            border-radius: 4px; 
-            cursor: pointer; 
-            font-family: monospace; 
+        button {
+            background: #0078d4;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            margin: 0 10px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-family: monospace;
         }
-        button:hover { 
-            background: #106ebe; 
+        button:hover {
+            background: #106ebe;
         }
-        button:disabled { 
-            background: #666; 
-            cursor: not-allowed; 
+        .btn-write-bytes {
+            background: #2d5016;
+            color: white;
         }
-        #console { 
-            background: #000; 
-            border: 1px solid #444; 
-            padding: 10px; 
-            height: 500px; 
-            overflow-y: auto; 
-            font-size: 14px; 
-            line-height: 1.4; 
-            white-space: pre-wrap; 
-            word-wrap: break-word; 
+        .btn-write-bytes:hover {
+            background: #1e3810;
+        }
+        .btn-send {
+            background: #2d5016;
+            color: white;
+        }
+        .btn-send:hover {
+            background: #1e3810;
+        }
+        .btn-clear {
+            background: #f39c12;
+            color: white;
+        }
+        .btn-clear:hover {
+            background: #e67e22;
+        }
+        .btn-copy-log {
+            background: #f1c40f;
+            color: #000;
+        }
+        .btn-copy-log:hover {
+            background: #f39c12;
+            color: #000;
+        }
+        .btn-scroll {
+            padding: 8px 12px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .btn-scroll img {
+            width: 48px;
+            height: 48px;
+        }
+        button:disabled {
+            background: #666;
+            cursor: not-allowed;
+        }
+        .shortcut-controls {
+            margin-bottom: 20px;
+            text-align: center;
+        }
+        .btn-stats {
+            background: #2ecc71;
+            color: white;
+        }
+        .btn-stats:hover {
+            background: #27ae60;
+        }
+        .btn-reboot {
+            background: #e74c3c;
+            color: white;
+        }
+        .btn-reboot:hover {
+            background: #c0392b;
+        }
+        .btn-update {
+            background: #f39c12;
+            color: white;
+        }
+        .btn-update:hover {
+            background: #e67e22;
+        }
+        #console {
+            background: #000;
+            border: 1px solid #444;
+            padding: 10px;
+            height: 500px;
+            width: 80%;
+            min-height: 200px;
+            min-width: 300px;
+            max-height: 80vh;
+            max-width: 90vw;
+            overflow: auto;
+            font-size: 14px;
+            line-height: 1.4;
+            white-space: pre;
+            word-wrap: normal;
+            resize: both;
+            box-sizing: border-box;
+            margin: 20px auto;
+            display: block;
+            position: relative;
+        }
+        /* Resize handles for console edges */
+        .console-resize-left,
+        .console-resize-right,
+        .console-resize-bottom {
+            position: absolute;
+            background: rgba(68, 68, 68, 0.3);
+            z-index: 10;
+            transition: background-color 0.2s;
+        }
+        .console-resize-left:hover,
+        .console-resize-right:hover,
+        .console-resize-bottom:hover {
+            background: rgba(68, 68, 68, 0.6);
+        }
+        /* Left edge resize handle */
+        .console-resize-left {
+            left: -8px;
+            top: 10%;
+            bottom: 10%;
+            width: 16px;
+            cursor: ew-resize;
+            border-radius: 0 8px 8px 0;
+        }
+        /* Right edge resize handle */
+        .console-resize-right {
+            right: -8px;
+            top: 10%;
+            bottom: 10%;
+            width: 16px;
+            cursor: ew-resize;
+            border-radius: 8px 0 0 8px;
+        }
+        /* Bottom edge resize handle */
+        .console-resize-bottom {
+            bottom: -8px;
+            left: 10%;
+            right: 10%;
+            height: 16px;
+            cursor: ns-resize;
+            border-radius: 8px 8px 0 0;
+        }
+        #console::-webkit-scrollbar {
+            width: 20px;
+            height: 20px;
+        }
+        #console::-webkit-scrollbar-track {
+            background: #333;
+        }
+        #console::-webkit-scrollbar-thumb {
+            background: #666;
+            border-radius: 6px;
+        }
+        #console::-webkit-scrollbar-thumb:hover {
+            background: #888;
+        }
+        #console::-webkit-scrollbar-corner {
+            background: #333;
+        }
+
+        /* Responsive centering for different screen sizes */
+        @media (max-width: 768px) {
+            #console {
+                width: 95%;
+                min-width: 280px;
+            }
+            .container {
+                padding: 0 10px;
+            }
+        }
+
+        @media (min-width: 1400px) {
+            #console {
+                width: 70%;
+            }
+        }
+
+        @media (min-width: 1800px) {
+            #console {
+                width: 60%;
+            }
         }
         .status { 
             margin-top: 10px; 
@@ -116,17 +277,26 @@ const char LOGS_PAGE_HTML[] PROGMEM = R"rawliteral(
 <body>
     <div class="container">
         <h1>Lemon IO - Serial Console</h1>
+        <div class="shortcut-controls">
+            <button class="btn-stats" onclick="goToStats()">Stats</button>
+            <button class="btn-reboot" onclick="confirmReboot()">Reboot</button>
+            <button class="btn-update" onclick="goToUpdate()">Update</button>
+        </div>
         <div class="controls">
-            <button onclick="clearConsole()">Clear</button>
+            <button class="btn-clear" onclick="clearConsole()">Clear</button>
             <button onclick="saveConsole()">Save Log</button>
-            <button onclick="scrollToTop()">Scroll to Top</button>
-            <button onclick="scrollToBottom()">Scroll to Bottom</button>
+            <button class="btn-scroll" onclick="scrollToTop()">
+                <img src="/arrow-up.svg" alt="Scroll to top">
+            </button>
+            <button class="btn-scroll" onclick="scrollToBottom()">
+                <img src="/arrow-down.svg" alt="Scroll to bottom">
+            </button>
             <button onclick="toggleAutoScroll()" id="autoScrollBtn">Auto-scroll: OFF</button>
-            <button onclick="copyConsole()" id="copyBtn" title="Copy">Copy Log</button>
+            <button class="btn-copy-log" onclick="copyConsole()" id="copyBtn" title="Copy">Copy Log</button>
         </div>
         <div class="command-controls">
             <input type="text" id="messageInput" class="command-input" placeholder="Type custom command">
-            <button onclick="sendInputMessage()">Write Bytes</button>
+            <button class="btn-write-bytes" onclick="sendInputMessage()">Write Bytes</button>
             <select id="commandDropdown" class="command-dropdown">
                 <option value="">-- Select Command --</option>
                 <option value="S">Show System Status</option>
@@ -142,13 +312,17 @@ const char LOGS_PAGE_HTML[] PROGMEM = R"rawliteral(
                 <option value="ota-off">OTA Off</option>
                 <option value="reboot">Reboot</option>
             </select>
-            <button onclick="sendDropdownMessage()">Send</button>
+            <button class="btn-send" onclick="sendDropdownMessage()">Send</button>
         </div>
         <div id="otaBanner" class="ota-banner" style="display: none;">
             <strong>OTA MODE SHUTTING DOWN</strong><br>
             ESP-NOW communications will be restored momentarily...
         </div>
-        <div id="console"></div>
+        <div id="console">
+            <div class="console-resize-left"></div>
+            <div class="console-resize-right"></div>
+            <div class="console-resize-bottom"></div>
+        </div>
         <div id="status" class="status disconnected">Disconnected</div>
     </div>
 
@@ -393,6 +567,80 @@ const char LOGS_PAGE_HTML[] PROGMEM = R"rawliteral(
             }
         }
 
+        // Custom resize functionality for console edges
+        function initCustomResize() {
+            const console = document.getElementById('console');
+            const leftHandle = document.querySelector('.console-resize-left');
+            const rightHandle = document.querySelector('.console-resize-right');
+            const bottomHandle = document.querySelector('.console-resize-bottom');
+
+            let isResizing = false;
+            let currentHandle = null;
+            let startX, startY, startWidth, startHeight;
+
+            function startResize(e, handleType) {
+                isResizing = true;
+                currentHandle = handleType;
+                startX = e.clientX;
+                startY = e.clientY;
+                startWidth = parseInt(window.getComputedStyle(console).width, 10);
+                startHeight = parseInt(window.getComputedStyle(console).height, 10);
+                e.preventDefault();
+                e.stopPropagation();
+            }
+
+            // Left edge resize
+            if (leftHandle) {
+                leftHandle.addEventListener('mousedown', function(e) {
+                    startResize(e, 'left');
+                });
+            }
+
+            // Right edge resize
+            if (rightHandle) {
+                rightHandle.addEventListener('mousedown', function(e) {
+                    startResize(e, 'right');
+                });
+            }
+
+            // Bottom edge resize
+            if (bottomHandle) {
+                bottomHandle.addEventListener('mousedown', function(e) {
+                    startResize(e, 'bottom');
+                });
+            }
+
+            document.addEventListener('mousemove', function(e) {
+                if (!isResizing) return;
+
+                if (currentHandle === 'left') {
+                    const newWidth = startWidth - (e.clientX - startX);
+                    if (newWidth >= 300) {
+                        console.style.width = newWidth + 'px';
+                    }
+                } else if (currentHandle === 'right') {
+                    const newWidth = startWidth + (e.clientX - startX);
+                    if (newWidth >= 300) {
+                        console.style.width = newWidth + 'px';
+                    }
+                } else if (currentHandle === 'bottom') {
+                    const newHeight = startHeight + (e.clientY - startY);
+                    if (newHeight >= 200) {
+                        console.style.height = newHeight + 'px';
+                    }
+                }
+            });
+
+            document.addEventListener('mouseup', function() {
+                if (isResizing) {
+                    isResizing = false;
+                    currentHandle = null;
+                    // Save the new size to cookies
+                    saveConsoleSize();
+                }
+            });
+        }
+
         // Allow Enter key to send input message
         document.addEventListener('DOMContentLoaded', function() {
             const messageInput = document.getElementById('messageInput');
@@ -414,7 +662,97 @@ const char LOGS_PAGE_HTML[] PROGMEM = R"rawliteral(
 
             // Initialize paused state
             console.dataset.paused = 'false';
+
+            // Restore console size from cookies
+            restoreConsoleSize();
+
+            // Initialize custom resize functionality
+            initCustomResize();
+
+            // Add resize observer to save size when user resizes console
+            if (window.ResizeObserver) {
+                const resizeObserver = new ResizeObserver((entries) => {
+                    // Debounce the save to avoid too many cookie writes during resize
+                    clearTimeout(window.resizeSaveTimeout);
+                    window.resizeSaveTimeout = setTimeout(saveConsoleSize, 500);
+                });
+                resizeObserver.observe(console);
+            } else {
+                // Fallback for older browsers - use mutation observer
+                const observer = new MutationObserver((mutations) => {
+                    mutations.forEach((mutation) => {
+                        if (mutation.type === 'attributes' &&
+                            (mutation.attributeName === 'style')) {
+                            clearTimeout(window.resizeSaveTimeout);
+                            window.resizeSaveTimeout = setTimeout(saveConsoleSize, 500);
+                        }
+                    });
+                });
+                observer.observe(console, { attributes: true, attributeFilter: ['style'] });
+            }
         });
+
+        // Cookie functions for console size
+        function setCookie(name, value, days = 365) {
+            const expires = new Date();
+            expires.setTime(expires.getTime() + (days * 24 * 60 * 60 * 1000));
+            document.cookie = name + '=' + value + ';expires=' + expires.toUTCString() + ';path=/';
+        }
+
+        function getCookie(name) {
+            const nameEQ = name + '=';
+            const ca = document.cookie.split(';');
+            for (let i = 0; i < ca.length; i++) {
+                let c = ca[i];
+                while (c.charAt(0) === ' ') c = c.substring(1, c.length);
+                if (c.indexOf(nameEQ) === 0) return c.substring(nameEQ.length, c.length);
+            }
+            return null;
+        }
+
+        function saveConsoleSize() {
+            const consoleElement = document.getElementById('console');
+            const width = consoleElement.offsetWidth;
+            const height = consoleElement.offsetHeight;
+            setCookie('consoleWidth', width);
+            setCookie('consoleHeight', height);
+            console.log('Console size saved:', width + 'x' + height);
+        }
+
+        function restoreConsoleSize() {
+            const savedWidth = getCookie('consoleWidth');
+            const savedHeight = getCookie('consoleHeight');
+
+            if (savedWidth && savedHeight) {
+                const consoleElement = document.getElementById('console');
+                consoleElement.style.width = savedWidth + 'px';
+                consoleElement.style.height = savedHeight + 'px';
+                console.log('Console size restored:', savedWidth + 'x' + savedHeight);
+            }
+        }
+
+        // Shortcut button functions
+        function goToStats() {
+            window.location.href = '/stats';
+        }
+
+        function confirmReboot() {
+            if (confirm('Are you sure you want to reboot the device?')) {
+                fetch('/reboot', { method: 'GET' })
+                    .then(() => {
+                        alert('Reboot command sent. Device will restart shortly.');
+                    })
+                    .catch(error => {
+                        console.error('Error sending reboot command:', error);
+                        alert('Error sending reboot command');
+                    });
+            }
+        }
+
+        function goToUpdate() {
+            window.location.href = '/update';
+        }
+
 
         // Auto-connect on load
         connect();

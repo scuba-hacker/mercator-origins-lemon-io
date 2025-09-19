@@ -512,7 +512,7 @@ bool NetworkManager::setupOTAWebServer(const char* _ssid, const char* _password,
 
 void NetworkManager::setupWebServerRoutes() {
     asyncWebServer->on("/", HTTP_GET, [](AsyncWebServerRequest * request) {
-        request->send(200, "text/plain", "To upload firmware use /update");
+        request->redirect("/update");
     });
 
     asyncWebServer->on("/reboot", HTTP_GET, [](AsyncWebServerRequest * request) {
@@ -525,6 +525,23 @@ void NetworkManager::setupWebServerRoutes() {
     asyncWebServer->on("/logs", HTTP_GET, [](AsyncWebServerRequest * request) {
         request->send(200, "text/html", LOGS_PAGE_HTML);
       });
+
+    // Serve SVG files for scroll arrows
+    asyncWebServer->on("/arrow-up.svg", HTTP_GET, [](AsyncWebServerRequest * request) {
+        request->send(200, "image/svg+xml",
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"white\">"
+            "<path d=\"M7 14l5-5 5 5z\"/>"
+            "<path d=\"M7 10l5-5 5 5z\"/>"
+            "</svg>");
+    });
+
+    asyncWebServer->on("/arrow-down.svg", HTTP_GET, [](AsyncWebServerRequest * request) {
+        request->send(200, "image/svg+xml",
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"white\">"
+            "<path d=\"M7 10l5 5 5-5z\"/>"
+            "<path d=\"M7 14l5 5 5-5z\"/>"
+            "</svg>");
+    });
 
     // Debug endpoint to test WebSocket
     asyncWebServer->on("/test-ws", HTTP_GET, [this](AsyncWebServerRequest * request) {
