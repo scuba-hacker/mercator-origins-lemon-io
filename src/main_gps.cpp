@@ -1,4 +1,7 @@
-#ifdef BUILD_INCLUDE_MAIN_PART4
+#ifdef BUILD_INCLUDE_MAIN_GPS
+
+// u-blox SAM-M10Q Data Sheet
+
 
 // u-blox NEO-6M Data Sheet
 // https://content.u-blox.com/sites/default/files/products/documents/u-blox6_ReceiverDescrProtSpec_%28GPS.G6-SW-10018%29_Public.pdf
@@ -114,6 +117,7 @@ NEO-6T vs NEO-6M Product Data Sheet Differences:
 
 enum GpsModuleType {
   GPS_MODULE_UNKNOWN = 0,
+  GPS_MODULE_SAM_M10Q,
   GPS_MODULE_NEO_6M,
   GPS_MODULE_NEO_6T,
   GPS_MODULE_ZED_F9R,
@@ -129,23 +133,25 @@ struct GpsModuleInfo {
 
 static GpsModuleInfo detectedModule = {GPS_MODULE_UNKNOWN, "", "", 0};
 
+const char* okAck  = "OK - UBLOX - ";
+const char* badAck = "BAD - UBLOX - ";
 
 // ---- UBX helper: compute checksum (CK_A, CK_B) over class,id,len,payload ----
-void ubxChecksum(uint8_t cls_, uint8_t id_, const uint8_t *pl, uint16_t len, uint8_t &cka, uint8_t &ckb) {
+void ubxChecksum(uint8_t cls_, uint8_t id_, const uint8_t *payload, uint16_t len, uint8_t &cka, uint8_t &ckb) {
   cka = 0; ckb = 0;
   auto add = [&](uint8_t b){ cka = (uint8_t)(cka + b); ckb = (uint8_t)(ckb + cka); };
   add(cls_); add(id_);
   add((uint8_t)(len & 0xFF)); add((uint8_t)(len >> 8));
-  for (uint16_t i=0;i<len;i++) add(pl[i]);
+  for (uint16_t i=0;i<len;i++) add(payload[i]);
 }
 
 // ---- Send UBX and (optionally) wait for ACK-ACK for this (cls,id) ----
-bool sendUBX(uint8_t cls_, uint8_t id_, const uint8_t *payload, uint16_t len, bool waitAck = true) {
+bool sendUBX(uint8_t cls_, uint8_t id_, const uint8_t *payload, uint16_t len, const char* ubxCommand, bool waitAck = true) {
   uint8_t cka, ckb;
   ubxChecksum(cls_, id_, payload, len, cka, ckb);
 
   // Debug: Show command being sent
-  BUFFER_LOG_PRINTF("Sending UBX cmd 0x%02X 0x%02X len=%d: ", cls_, id_, len);
+  BUFFER_LOG_PRINTF("Sending UBX cmd 0x%02X 0x%02X (%s) len=%d: ", cls_, id_, ubxCommand, len);
   for (int i = 0; i < len && i < 20; i++) {  // Show first 20 bytes
     BUFFER_LOG_PRINTF("%02X ", payload[i]);
   }
@@ -177,46 +183,57 @@ bool sendUBX(uint8_t cls_, uint8_t id_, const uint8_t *payload, uint16_t len, bo
   const uint32_t deadline = millis() + UBLOX_ACK_TIMEOUT_MS;
   uint8_t buf[10]; uint8_t idx = 0;
   int bytesSkippedForAck = 0;
+  int attempts = 0;
+  const int maxAttempts = 3;
 
-  BUFFER_LOG_PRINTF("Waiting for ACK for cmd 0x%02X 0x%02X...", cls_, id_);
 
-  while (millis() < deadline) {
-    while (serial_gps.available()) {
-      uint8_t b = serial_gps.read();
-      if (idx == 0 && b != 0xB5) {
-        bytesSkippedForAck++; // count NMEA bytes while looking for ACK
-        continue;
-      }
-      buf[idx++] = b;
-      if (idx == sizeof(buf)) {
-        // Check for ACK (0x05 0x01)
-        bool isAck = (buf[0]==0xB5 && buf[1]==0x62 && buf[2]==0x05 && buf[3]==0x01 &&
-                      buf[4]==0x02 && buf[5]==0x00 && buf[6]==cls_ && buf[7]==id_);
+  while (idx == 0 && attempts < maxAttempts)
+  {
+    attempts++;
+  
+    BUFFER_LOG_PRINTF("Waiting for ACK for cmd 0x%02X 0x%02X  (%s) attempt %i...", cls_, id_, ubxCommand,attempts);
 
-        // Check for NACK (0x05 0x00)
-        bool isNack = (buf[0]==0xB5 && buf[1]==0x62 && buf[2]==0x05 && buf[3]==0x00 &&
-                       buf[4]==0x02 && buf[5]==0x00 && buf[6]==cls_ && buf[7]==id_);
+    const uint32_t deadline = millis() + UBLOX_ACK_TIMEOUT_MS;
 
-        if (isAck) {
-          BUFFER_LOG_PRINTF(" ACK received (skipped %d NMEA bytes)\n", bytesSkippedForAck);
-          return true;
-        } else if (isNack) {
-          BUFFER_LOG_PRINTF(" NACK received - command rejected (skipped %d NMEA bytes)\n", bytesSkippedForAck);
-          BUFFER_LOG_PRINTF(" UBX frame rejected: ");
-          for (int i = 0; i < 10; i++) {
-            BUFFER_LOG_PRINTF("%02X ", buf[i]);
+    while (millis() < deadline)
+    {
+      while (serial_gps.available()) {
+        uint8_t b = serial_gps.read();
+        if (idx == 0 && b != 0xB5) {
+          bytesSkippedForAck++; // count NMEA bytes while looking for ACK
+          continue;
+        }
+        buf[idx++] = b;
+        if (idx == sizeof(buf)) {
+          // Check for ACK (0x05 0x01)
+          bool isAck = (buf[0]==0xB5 && buf[1]==0x62 && buf[2]==0x05 && buf[3]==0x01 &&
+                        buf[4]==0x02 && buf[5]==0x00 && buf[6]==cls_ && buf[7]==id_);
+
+          // Check for NACK (0x05 0x00)
+          bool isNack = (buf[0]==0xB5 && buf[1]==0x62 && buf[2]==0x05 && buf[3]==0x00 &&
+                        buf[4]==0x02 && buf[5]==0x00 && buf[6]==cls_ && buf[7]==id_);
+
+          if (isAck) {
+            BUFFER_LOG_PRINTF(" ACK received %s (skipped %d NMEA bytes)\n", ubxCommand, bytesSkippedForAck);
+            return true;
+          } else if (isNack) {
+            BUFFER_LOG_PRINTF(" NACK received %s - command rejected (skipped %d NMEA bytes)\n", ubxCommand, bytesSkippedForAck);
+            BUFFER_LOG_PRINTF(" UBX frame rejected: ");
+            for (int i = 0; i < 10; i++) {
+              BUFFER_LOG_PRINTF("%02X ", buf[i]);
+            }
+            BUFFER_LOG_PRINTF("\n");
+            return false;
           }
-          BUFFER_LOG_PRINTF("\n");
-          return false;
-        }
 
-        // Log any other UBX responses we're seeing
-        if (buf[0]==0xB5 && buf[1]==0x62) {
-          BUFFER_LOG_PRINTF(" Other UBX response: %02X %02X len=%d\n", buf[2], buf[3], buf[4] | (buf[5] << 8));
-        }
+          // Log any other UBX responses we're seeing
+          if (buf[0]==0xB5 && buf[1]==0x62) {
+            BUFFER_LOG_PRINTF(" Other UBX response: %02X %02X (%s) len=%d\n", buf[2], buf[3], ubxCommand, buf[4] | (buf[5] << 8));
+          }
 
-        // slide window to resync
-        memmove(buf, buf+1, --idx);
+          // slide window to resync
+          memmove(buf, buf+1, --idx);
+        }
       }
     }
   }
@@ -335,19 +352,19 @@ bool pollMON_VER(uint32_t timeout_ms = 1000)
 
   // Read frames until timeout; collect class=0x0A id=0x04
   uint8_t cls,id;
-  uint8_t pl[400];  // MON-VER can be quite long
+  uint8_t payload[400];  // MON-VER can be quite long
   uint16_t len;
 
   uint32_t endBy = millis() + timeout_ms;
   while (millis() < endBy) {
-    if (!readUBXFrame(cls, id, pl, len, /*timeout per frame*/ 500)) break;
+    if (!readUBXFrame(cls, id, payload, len, /*timeout per frame*/ 500)) break;
     if (cls == 0x0A && id == 0x04) {
       BUFFER_LOG_PRINTF("MON-VER response: len=%d bytes\n", len);
 
       // Show raw payload for debugging
       BUFFER_LOG_PRINTF("Raw payload: ");
       for (int i = 0; i < len && i < 40; i++) {
-        BUFFER_LOG_PRINTF("%02X ", pl[i]);
+        BUFFER_LOG_PRINTF("%02X ", payload[i]);
       }
       BUFFER_LOG_PRINTF("\n");
 
@@ -357,12 +374,12 @@ bool pollMON_VER(uint32_t timeout_ms = 1000)
 
       if (len >= 30) {
         // Extract software version (first 30 bytes)
-        memcpy(swVer, pl, 30);
+        memcpy(swVer, payload, 30);
         swVer[30] = '\0';  // ensure null terminated
 
         if (len >= 40) {
           // Extract hardware version (next 10 bytes)
-          memcpy(hwVer, pl + 30, 10);
+          memcpy(hwVer, payload + 30, 10);
           hwVer[10] = '\0';  // ensure null terminated
           BUFFER_LOG_PRINTF("GPS Firmware: SW=[%s] HW=[%s]\n", swVer, hwVer);
         } else {
@@ -376,7 +393,7 @@ bool pollMON_VER(uint32_t timeout_ms = 1000)
           for (int i = 40; i < len; i += 30) {
             char ext[31] = {0};
             int copyLen = (len - i < 30) ? (len - i) : 30;
-            memcpy(ext, pl + i, copyLen);
+            memcpy(ext, payload + i, copyLen);
             ext[30] = '\0';
             extensions += String(ext);
             if (i + 30 < len) extensions += " "; // separator
@@ -389,23 +406,38 @@ bool pollMON_VER(uint32_t timeout_ms = 1000)
         detectedModule.swVersion = String(swVer);
         detectedModule.hwVersion = String(hwVer);
 
-        if (strstr(swVer, "T3,RomFw")) {
+        if (strstr(extensions.c_str(), "SAM-M10Q"))
+        {
+          detectedModule.type = GPS_MODULE_SAM_M10Q;
+          BUFFER_LOG_PRINTF("Module Type: SAM M10Q\n");
+          detectedModule.protocolVersion = 21;
+        }
+        else if (strstr(swVer, "T3,RomFw")) {
           detectedModule.type = GPS_MODULE_MTK_CLONE;
           BUFFER_LOG_PRINTF("Module Type: MTK Clone (fake u-blox)\n");
-        } else if (strstr(swVer, "ROM CORE 7.03") || strstr(swVer, "ROM CORE 6.02")) {
+          detectedModule.protocolVersion = 23;
+        } 
+        else if (strstr(swVer, "ROM CORE 7.03") || strstr(swVer, "ROM CORE 6.02")) 
+        {
           if (strstr(swVer, "LEA-6T") || strstr(swVer, "NEO-6T")) {
             detectedModule.type = GPS_MODULE_NEO_6T;
             BUFFER_LOG_PRINTF("Module Type: NEO-6T (Timing)\n");
-          } else {
+          } 
+          else 
+          {
             detectedModule.type = GPS_MODULE_NEO_6M;
             BUFFER_LOG_PRINTF("Module Type: NEO-6M (Standard)\n");
           }
           detectedModule.protocolVersion = 14;
-        } else if (strstr(swVer, "FWVER=HPG") || strstr(extensions.c_str(), "ZED-F9R")) {
+        } 
+        else if (strstr(swVer, "FWVER=HPG") || strstr(extensions.c_str(), "ZED-F9R")) 
+        {
           detectedModule.type = GPS_MODULE_ZED_F9R;
           detectedModule.protocolVersion = 27;
           BUFFER_LOG_PRINTF("Module Type: ZED-F9R (High Precision)\n");
-        } else {
+        } 
+        else 
+        {
           detectedModule.type = GPS_MODULE_UNKNOWN;
           BUFFER_LOG_PRINTF("Module Type: Unknown - please check compatibility\n");
         }
@@ -419,7 +451,6 @@ bool pollMON_VER(uint32_t timeout_ms = 1000)
   }
   return false;
 }
-
 
 // --- Minimal struct for CFG-PRT decoded data (UART style) ---
 struct UbxPortCfg {
@@ -442,47 +473,60 @@ bool pollCFG_PRT(UbxPortCfg *ports, size_t maxPorts, size_t &count, uint32_t tim
 
   // Read frames until timeout gap; collect only class=0x06 id=0x00 with len=20
   uint8_t cls,id;
-  uint8_t pl[32];
+  uint8_t payload[32];
   uint16_t len;
 
   uint32_t endBy = millis() + timeout_ms;
   while (millis() < endBy) {
-    if (!readUBXFrame(cls, id, pl, len, /*timeout per frame*/ 100)) break;
+    if (!readUBXFrame(cls, id, payload, len, /*timeout per frame*/ 100)) break;
     if (cls == 0x06 && id == 0x00 && len == 20) {
       if (count < maxPorts) {
         UbxPortCfg &o = ports[count++];
-        o.portID = pl[0];
+        o.portID = payload[0];
 
         // Debug: dump raw payload bytes
         BUFFER_LOG_PRINTF("Raw CFG-PRT payload (%d bytes): ", len);
         for (int i = 0; i < len; i++) {
-          BUFFER_LOG_PRINTF("%02X ", pl[i]);
+          BUFFER_LOG_PRINTF("%02X ", payload[i]);
         }
         BUFFER_LOG_PRINTF("\n");
 
         // Parse CFG-PRT based on detected module type
-        o.baud = (uint32_t)pl[8] | ((uint32_t)pl[9]<<8) | ((uint32_t)pl[10]<<16) | ((uint32_t)pl[11]<<24);
+        o.baud = (uint32_t)payload[8] | ((uint32_t)payload[9]<<8) | ((uint32_t)payload[10]<<16) | ((uint32_t)payload[11]<<24);
 
-        if (detectedModule.type == GPS_MODULE_ZED_F9R) {
+        if (detectedModule.type == GPS_MODULE_SAM_M10Q)
+        {
+          o.inProtoMask  = (uint16_t)payload[12] | ((uint16_t)payload[13]<<8);
+          o.outProtoMask = (uint16_t)payload[14] | ((uint16_t)payload[15]<<8);
+          BUFFER_LOG_PRINTF("SAM-M10Q parsing (standard offsets)\n");
+        }
+        else if (detectedModule.type == GPS_MODULE_ZED_F9R) 
+        {
           // ZED-F9R may have extended CFG-PRT structure
           // For now, use standard parsing but could be different
-          o.inProtoMask  = (uint16_t)pl[12] | ((uint16_t)pl[13]<<8);
-          o.outProtoMask = (uint16_t)pl[14] | ((uint16_t)pl[15]<<8);
+          o.inProtoMask  = (uint16_t)payload[12] | ((uint16_t)payload[13]<<8);
+          o.outProtoMask = (uint16_t)payload[14] | ((uint16_t)payload[15]<<8);
           BUFFER_LOG_PRINTF("ZED-F9R CFG-PRT parsing (standard offsets)\n");
-        } else if (detectedModule.type == GPS_MODULE_NEO_6M || detectedModule.type == GPS_MODULE_NEO_6T) {
+        } 
+        else if (detectedModule.type == GPS_MODULE_NEO_6M || detectedModule.type == GPS_MODULE_NEO_6T) 
+        {
           // NEO-6 series standard structure
-          o.inProtoMask  = (uint16_t)pl[12] | ((uint16_t)pl[13]<<8);
-          o.outProtoMask = (uint16_t)pl[14] | ((uint16_t)pl[15]<<8);
+          o.inProtoMask  = (uint16_t)payload[12] | ((uint16_t)payload[13]<<8);
+          o.outProtoMask = (uint16_t)payload[14] | ((uint16_t)payload[15]<<8);
           BUFFER_LOG_PRINTF("NEO-6 series CFG-PRT parsing\n");
-        } else if (detectedModule.type == GPS_MODULE_MTK_CLONE) {
+        } 
+        else if (detectedModule.type == GPS_MODULE_MTK_CLONE) 
+        {
           // MTK clone - protocol masks may not be meaningful
-          o.inProtoMask  = (uint16_t)pl[12] | ((uint16_t)pl[13]<<8);
-          o.outProtoMask = (uint16_t)pl[14] | ((uint16_t)pl[15]<<8);
+          o.inProtoMask  = (uint16_t)payload[12] | ((uint16_t)payload[13]<<8);
+          o.outProtoMask = (uint16_t)payload[14] | ((uint16_t)payload[15]<<8);
           BUFFER_LOG_PRINTF("MTK clone CFG-PRT parsing (may be unreliable)\n");
-        } else {
+        } 
+        else 
+        {
           // Unknown module - use standard parsing
-          o.inProtoMask  = (uint16_t)pl[12] | ((uint16_t)pl[13]<<8);
-          o.outProtoMask = (uint16_t)pl[14] | ((uint16_t)pl[15]<<8);
+          o.inProtoMask  = (uint16_t)payload[12] | ((uint16_t)payload[13]<<8);
+          o.outProtoMask = (uint16_t)payload[14] | ((uint16_t)payload[15]<<8);
           BUFFER_LOG_PRINTF("Unknown module CFG-PRT parsing (standard offsets)\n");
         }
 
@@ -503,7 +547,94 @@ bool pollCFG_PRT(UbxPortCfg *ports, size_t maxPorts, size_t &count, uint32_t tim
   return (count > 0);
 }
 
+constexpr uint32_t KEY_SBAS_ENA = 0x1036001D; // CFG-SIGNAL-SBAS_ENA
+
+// Returns true if payload parsed. keyOut/valueOut are valid on success.
+bool parseValgetPayload(const uint8_t* payload, size_t len,
+                        uint32_t& keyOut, uint32_t& valueOut)
+{
+  /*
+  UBX-CFG-VALGET response format for enable/disable response
+
+  B5 62             ; sync chars
+  06 8B             ; class=CFG (0x06), id=VALGET (0x8B)
+  0C 00             ; length = 12 bytes (for one key)
+  00 01 00 00       ; version=0, layers=RAM, reserved
+  1D 00 36 10       ; keyID = 0x1036001D (LE)
+  01 00 00 00       ; value = 0x01 (enabled)
+  <CK_A> <CK_B>     ; Fletcher checksum
+  */
+
+  // Minimal VALGET payload for 1 key = 12 bytes:
+  // [0]=version, [1]=layers, [2..3]=reserved,
+  // [4..7]=KeyID (LE), [8..11]=Value (LE)
+  if (!payload || len < 12) return false;
+  if (payload[0] != 0x00)   return false; // version must be 0
+
+  keyOut   = (uint32_t)payload[4] | ((uint32_t)payload[5] << 8) |
+             ((uint32_t)payload[6] << 16) | ((uint32_t)payload[7] << 24);
+  valueOut = (uint32_t)payload[8] | ((uint32_t)payload[9] << 8) |
+             ((uint32_t)payload[10] << 16) | ((uint32_t)payload[11] << 24);
+  return true;
+}
+
+// UBX-CFG-VALSET (0x06 0x8B)
+// header: version=0x00, layers=0x01 (RAM), rsvd[2]=0
+uint8_t UBX_CFG_SIGNAL_SBAS_ENA_VALSET[] = {
+  0x00, 0x01, 0x00, 0x00,   // version 0, layers=0x01(RAM), 2 bytes reserved
+  0x1D, 0x00, 0x36, 0x10    // key 0x10360001 (little-endian): CFG-SIGNAL-SBAS_ENA
+};
+
+
+
+// Example: check SBAS enable
+bool isSbasEnabledFromValget(const uint8_t* payload, size_t len)
+{
+  uint32_t key, val;
+  if (!parseValgetPayload(payload, len, key, val)) return false;
+  if (key != KEY_SBAS_ENA) return false;   // wrong key in reply
+  return (val & 0x01u) != 0;               // 1 = enabled, 0 = disabled
+}
+
+bool pollCFG_SBAS(bool& enabled, uint32_t timeout_ms = 300)
+{
+  bool sbasEnabled = false;
+  
+  while (serial_gps.available()) serial_gps.read();  // drain old bytes
+  serial_gps.write(UBX_CFG_SIGNAL_SBAS_ENA_VALSET, sizeof(UBX_CFG_SIGNAL_SBAS_ENA_VALSET));
+  serial_gps.flush();
+
+  // Read frames until timeout gap; collect only class=0x06 id=0x00 with len=20
+  uint8_t cls,id;
+  uint8_t payload[32];
+  uint16_t len;
+
+  uint32_t endBy = millis() + timeout_ms;
+  while (millis() < endBy) {
+    if (!readUBXFrame(cls, id, payload, len, /*timeout per frame*/ 100)) 
+      break;
+
+    if (cls == 0x06 && id == 0x8B && len == 12) 
+    {
+      sbasEnabled = isSbasEnabledFromValget(payload,len);
+      break;
+    }
+    // ignore unrelated frames (e.g., NMEA or other UBX) and keep reading until gap
+  }
+
+  return sbasEnabled;
+}
+
 // =================== Configuration payloads ===================
+
+// Set to 115000 baud
+// Build a UBX-CFG-VALSET that writes to RAM (+ optionally BBR/Flash)
+// Header: version=0x00, layers=RAM(0x01) [or 0x07 for RAM|BBR|Flash], 2 reserved bytes
+uint8_t UBX_CFG_BAUD_SET_VALSET[] = {
+  0x00, 0x01, 0x00, 0x00,                             // version, layers, rsvd
+  0x01,0x00,0x52,0x40,    // key 0x40520001
+  0x00,0xC2,0x01,0x00     // value 115200
+};
 
 // 1) CFG-NAV5 (0x06 0x24) — set Dynamic Model = Pedestrian, Fix mode = Auto 2D/3D
 // For u-blox 6, payload is 36 bytes.
@@ -561,21 +692,6 @@ const uint8_t CFG_MSG_ZED_ZDA_DIS[8]= { 0xF0, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00
 const uint8_t CFG_RATE_1HZ[6] = { 0xE8,0x03, 0x01,0x00, 0x01,0x00 };
 
 
-      
-// Set to 1Hz 
-// Build a UBX-CFG-VALSET that writes to RAM (+ optionally BBR/Flash)
-// Header: version=0x00, layers=RAM(0x01) [or 0x07 for RAM|BBR|Flash], 2 reserved bytes
-uint8_t UBX_CFG_RATE_VALSET[] = {
-  0x00, 0x01, 0x00, 0x00,                             // version, layers, rsvd
-  // CFG-RATE-MEAS (U4 key + U2 value)
-  0x01,0x00,0x21,0x30,  0xE8,0x03,                    // key 0x30210001, value 1000
-  // CFG-RATE-NAV (U4 key + U2 value)
-  0x02,0x00,0x21,0x30,  0x01,0x00,                    // key 0x30210002, value 1
-  // CFG-RATE-TIMEREF (U4 key + E1 value)
-  0x03,0x00,0x21,0x20,  0x01                          // key 0x20210003, value 1 (GPS)
-  // (no padding needed; VALSET packs items back-to-back)
-};
-
 // UBX-CFG-INFMSG-NMEA_UART1_VALSET (0x06 0x8A)
 // header: version=0x00, layers=0x01 (RAM), rsvd[2]=0
 uint8_t UBX_CFG_INFMSG_NMEA_UART1_VALSET[] = {
@@ -610,7 +726,15 @@ uint8_t UBX_CFG_NMEA_EMIT_NO_FIX[] = {
   0x22, 0x00, 0x93, 0x10, 0x00        // CFG-NMEA-FILT_POS = false (key 0x10930022)
 };
 
-// 6) CFG-CFG (0x06 0x09) — Save to BBR/Flash (where present)
+// UBX-CFG-VALSET (0x06 0x8A)
+// header: version=0x00, layers=0x01 (RAM), rsvd[2]=0
+uint8_t UBX_CFG_RATE_VALSET[] = {
+  0x00, 0x01, 0x00, 0x00,   // version 0, layers=0x01(RAM), 2 bytes reserved
+  0x01, 0x00, 0x21, 0x30,   // key 0x30210001 (little-endian):
+  0xE3, 0x03, 0x00, 0x00    // value - 1 Hz
+};
+
+// 6) CFG-CFG (0x06 0x09) — Save to BBR/Flash (where present - not SAM-M10Q)
 // len=12: [clearMaskLE][saveMaskLE][loadMaskLE]
 // Use a broad but common mask to cover ports/messages/rates/NMEA.
 const uint8_t CFG_CFG_SAVE[12] = {
@@ -629,15 +753,15 @@ bool sendCFG_MSG_enable(uint8_t msgClass, uint8_t msgId, const char* msgName, in
     if (detectedModule.type == GPS_MODULE_ZED_F9R) {
       // ZED-F9R: 8-byte format, rate1=UART1
       uint8_t payload[8] = { msgClass, msgId, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00 };
-      bool result = sendUBX(0x06, 0x01, payload, 8);
-      BUFFER_LOG_PRINTF("ZED-F9R %s Enable (8-byte): %s (attempt %i)\n", msgName, result ? "OK" : "FAIL",attempt);
+      bool result = sendUBX(0x06, 0x01, payload, 8,msgName);
+      BUFFER_LOG_PRINTF("%s - enable %s - (attempt %i)\n", result ? okAck : badAck,msgName, attempt);
       if (result)
         return result;
     } else {
-      // NEO-6 series: 3-byte format
+      // Other u-blox series: 3-byte format
       uint8_t payload[3] = { msgClass, msgId, 0x01 };
-      bool result = sendUBX(0x06, 0x01, payload, 3);
-      BUFFER_LOG_PRINTF("NEO-6 %s Enable (3-byte): %s (attempt %i)\n", msgName, result ? "OK" : "FAIL",attempt);
+      bool result = sendUBX(0x06, 0x01, payload, 3,msgName);
+      BUFFER_LOG_PRINTF("%s - enable %s - (attempt %i)\n", result ? okAck : badAck,msgName, attempt);
       if (result)
         return result;
     }
@@ -655,15 +779,15 @@ bool sendCFG_MSG_disable(uint8_t msgClass, uint8_t msgId, const char* msgName, i
     if (detectedModule.type == GPS_MODULE_ZED_F9R) {
       // ZED-F9R: 8-byte format, all rates = 0
       uint8_t payload[8] = { msgClass, msgId, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
-      bool result = sendUBX(0x06, 0x01, payload, 8);
-      BUFFER_LOG_PRINTF("ZED-F9R %s Disable (8-byte): %s (attempt %i)\n", msgName, result ? "OK" : "FAIL",attempt);
+      bool result = sendUBX(0x06, 0x01, payload, 8,msgName);
+      BUFFER_LOG_PRINTF("%s - disable %s - (attempt %i)\n", result ? okAck : badAck,msgName, attempt);
       if (result)
         return result;
     } else {
-      // NEO-6 series: 3-byte format
+      // Other u-blox series: 3-byte format
       uint8_t payload[3] = { msgClass, msgId, 0x00 };
-      bool result = sendUBX(0x06, 0x01, payload, 3);
-      BUFFER_LOG_PRINTF("NEO-6 %s Disable (3-byte): %s (attempt %i)\n", msgName, result ? "OK" : "FAIL",attempt);
+      bool result = sendUBX(0x06, 0x01, payload, 3,msgName);
+      BUFFER_LOG_PRINTF("%s - disable %s - (attempt %i)\n", result ? okAck : badAck,msgName, attempt);
       if (result)
         return result;
     }
@@ -678,19 +802,52 @@ bool configureUBLOXGps()
 {
   bool ok = true;
 
-  const char* okAck  = "OK - UBLOX - ";
-  const char* badAck = "BAD - UBLOX - ";
-
   const int maxAttempts=5;
-  int attempts = 0;
 
-  while (attempts < maxAttempts)
+  bool MON_VER_ok = false;
+  bool try115200 = true;
+  bool baud_ok = false;
+  bool skip_later_baud_change = false;
+
+  while (!MON_VER_ok || try115200)
   {
-    BUFFER_LOG_PRINTF("Poll MON-VER (firmware version) attempt %i\n");
-    if (!pollMON_VER()) {
-      BUFFER_LOG_PRINTLN("Failed to get GPS firmware version");
-      attempts++;
-      delay(50);
+    int attempts = 0;
+    while (attempts < maxAttempts)
+    {
+      BUFFER_LOG_PRINTF("Poll MON-VER (firmware version) attempt %i\n",attempts);
+      MON_VER_ok = pollMON_VER();
+
+      if (!MON_VER_ok) 
+      {
+        BUFFER_LOG_PRINTLN("Failed to get GPS firmware version at default Serial port baud");
+        attempts++;
+        delay(50);
+      }
+      else
+      {
+        MON_VER_ok = true;
+        ok &= MON_VER_ok;
+        break;
+      }
+    }
+
+    if (try115200)
+    {
+      // set baud rate to 115200 (it defaults to 9600 and it has no flash so needs replying every boot)
+      bool baud_ok = false;
+      baud_ok = sendUBX(0x06, 0x8A, UBX_CFG_BAUD_SET_VALSET, sizeof(UBX_CFG_BAUD_SET_VALSET),"SET BAUD TO 115200",false);
+      delay(100);
+      BUFFER_LOG_PRINTF("%s Set Baud Rate to 115200\n", (baud_ok ? okAck : badAck));
+      try115200 = false;
+      if (baud_ok)
+      {
+        serial_gps.end();
+        delay(100);
+        // UART1 for receiving data from GPS
+        serial_gps.setRxBufferSize(GPS_RX_BUFFER_SIZE); // must set before begin
+        serial_gps.begin(115200, SERIAL_8N1, GPS_RX_WHITE_GPIO, GPS_TX_GREY_GPIO);
+        skip_later_baud_change = true;
+      }
     }
     else
     {
@@ -698,11 +855,12 @@ bool configureUBLOXGps()
     }
   }
 
-  attempts=0;
+  int attempts=0;
 
   UbxPortCfg ports[6];
   size_t n=0;
 
+  bool gpsAt115200 = false;
   while (attempts < maxAttempts)
   {
     BUFFER_LOG_PRINTF("Poll CFG-PRT Attempt %i\n",attempts);
@@ -715,6 +873,11 @@ bool configureUBLOXGps()
         // Expect defaults: inProtoMask 0x0003 (UBX+NMEA), outProtoMask 0x0002 (NMEA)
         // baud is whatever it's set to (e.g., 9600 or 115200)
         BUFFER_LOG_PRINTF("portID=%i baud=%i in=0x%04X out=0x%04X\n",p.portID, p.baud, p.inProtoMask, p.outProtoMask);
+        if (p.baud == 115200)
+        {
+          // Assume Lemon has been rebooted and the GPS still retains previous configuration in RAM.
+          gpsAt115200 = true;          
+        }
       }
       break;
     }
@@ -726,6 +889,62 @@ bool configureUBLOXGps()
     }
   }
 
+    if (detectedModule.type == GPS_MODULE_SAM_M10Q)
+    {
+      // set baud rate to 115200 (it defaults to 9600 and it has no flash so needs replying every boot)
+      bool baud_ok = false;
+      if (!gpsAt115200)
+      {
+        baud_ok = sendUBX(0x06, 0x8A, UBX_CFG_BAUD_SET_VALSET, sizeof(UBX_CFG_BAUD_SET_VALSET),"SET BAUD TO 115200",false);
+        delay(100);
+        BUFFER_LOG_PRINTF("%s Set Baud Rate to 115200\n", (baud_ok ? okAck : badAck));
+      }
+      else
+      {
+
+      }
+
+      bool pollCFG_PRT_Result = false;
+
+      if (baud_ok)
+      {
+        serial_gps.end();
+        delay(100);
+        // UART1 for receiving data from GPS
+        serial_gps.setRxBufferSize(GPS_RX_BUFFER_SIZE); // must set before begin
+        serial_gps.begin(115200, SERIAL_8N1, GPS_RX_WHITE_GPIO, GPS_TX_GREY_GPIO);
+
+        attempts=0;
+        
+        while (attempts < maxAttempts)
+        {
+          BUFFER_LOG_PRINTF("Poll CFG-PRT Attempt %i\n",attempts);
+          pollCFG_PRT_Result = pollCFG_PRT(ports, 6, n);
+
+          if (pollCFG_PRT_Result) {
+            BUFFER_LOG_PRINTF("Got %i port configs\n",n); 
+
+            for (size_t i=0; i<n; ++i) {
+              UbxPortCfg p = ports[i];
+              // UART1
+              // Expect defaults: inProtoMask 0x0003 (UBX+NMEA), outProtoMask 0x0002 (NMEA)
+              // baud is whatever it's set to (e.g., 9600 or 115200)
+              BUFFER_LOG_PRINTF("portID=%i baud=%i in=0x%04X out=0x%04X\n",p.portID, p.baud, p.inProtoMask, p.outProtoMask);
+            }
+            break;
+          }
+          else
+          {
+            BUFFER_LOG_PRINTLN("Got 0 port configs"); 
+            attempts++;
+            delay(50);
+          }
+        }
+      }
+
+      ok &= pollCFG_PRT_Result;
+    }
+
   // Configure NMEA messages based on detected module type
   if (detectedModule.type == GPS_MODULE_MTK_CLONE) 
   {
@@ -736,13 +955,13 @@ bool configureUBLOXGps()
     // Allow NMEA output even when there is no fix (genuine u-blox modules)
     if (detectedModule.type != GPS_MODULE_ZED_F9R) {
       // Try CFG-NMEA for older modules (may not be supported)
-      ok &= sendUBX(0x06, 0x17, CFG_NMEA_ALLOW_NOFIX, sizeof(CFG_NMEA_ALLOW_NOFIX));
+      ok &= sendUBX(0x06, 0x17, CFG_NMEA_ALLOW_NOFIX, sizeof(CFG_NMEA_ALLOW_NOFIX),"ENABLE NO FIX MSGS");
       BUFFER_LOG_PRINTF("%s Allow No Fix messages (GGA/RMC) (CFG-NMEA): %s\n", (ok ? okAck : badAck), ok ? "OK" : "Not supported by this firmware");
     }
     else {
       // Stop the suppression of No Fix GGA/RMC messages
       // Normally they are simply not sent, resulting in a gap in messages.    
-      bool send_no_fix_result = sendUBX(0x06, 0x8A, UBX_CFG_NMEA_EMIT_NO_FIX, sizeof(UBX_CFG_NMEA_EMIT_NO_FIX));
+      bool send_no_fix_result = sendUBX(0x06, 0x8A, UBX_CFG_NMEA_EMIT_NO_FIX, sizeof(UBX_CFG_NMEA_EMIT_NO_FIX),"ENABLE NO FIX MSGS");
       ok &= send_no_fix_result;
       BUFFER_LOG_PRINTF("%s Allow No Fix messages (GGA/RMC)\n", (send_no_fix_result ? okAck : badAck));
     }
@@ -756,19 +975,27 @@ bool configureUBLOXGps()
     ok &= sendCFG_MSG_disable(0xF0, 0x05, "VTG",3);  // Disable VTG
     ok &= sendCFG_MSG_disable(0xF0, 0x08, "ZDA",3);  // Disable ZDA
     
-    // Set navigation rate = 1 Hz - ZED-9FR only
-    bool rate_ok = sendUBX(0x06, 0x8A, UBX_CFG_RATE_VALSET, sizeof(UBX_CFG_RATE_VALSET));
+
+    // Set navigation rate = 1 Hz - ZED-9FR and SAM-M10Q only
+    bool rate_ok = sendUBX(0x06, 0x8A, UBX_CFG_RATE_VALSET, sizeof(UBX_CFG_RATE_VALSET),"SET TO 1HZ");
     BUFFER_LOG_PRINTF("%s Set nav Rate to 1 Hz\n", (rate_ok ? okAck : badAck));
     ok &= rate_ok;
 
-    // Set dynamic model to Sea - ZED-9FR only
-    bool model_ok = sendUBX(0x06, 0x8A, UBX_CFG_SEA_MODEL_VALSET, sizeof(UBX_CFG_SEA_MODEL_VALSET));
-    BUFFER_LOG_PRINTF("%s Set dynamic model to 'Sea'\n", (model_ok ? okAck : badAck));
+    // Set dynamic model to Sea - ZED-9FR and SAM-M10Q only
+//    bool model_ok = sendUBX(0x06, 0x8A, UBX_CFG_SEA_MODEL_VALSET, sizeof(UBX_CFG_SEA_MODEL_VALSET),"DYNAMIC MODEL = SEA");
+//    BUFFER_LOG_PRINTF("%s Set dynamic model to 'Sea'\n", (model_ok ? okAck : badAck));
 
-    // Set dynamic model to Pedestrian  - ZED-9FR only
-//    bool model_ok = sendUBX(0x06, 0x8A, UBX_CFG_PEDESTRIAN_MODEL_VALSET, sizeof(UBX_CFG_PEDESTRIAN_MODEL_VALSET));
+    // Set dynamic model to Pedestrian  - ZED-9FR and SAM-M10Q only
+    bool model_ok = sendUBX(0x06, 0x8A, UBX_CFG_PEDESTRIAN_MODEL_VALSET, sizeof(UBX_CFG_PEDESTRIAN_MODEL_VALSET),"DYNAMIC MODEL = PEDESTRIAN");
+    BUFFER_LOG_PRINTF("%s Set dynamic model to 'Pedestrian'\n", (model_ok ? okAck : badAck));
 
-      ok &= model_ok;
+    bool sbas_enabled = sendUBX(0x06, 0x8B, UBX_CFG_SIGNAL_SBAS_ENA_VALSET, sizeof(UBX_CFG_SIGNAL_SBAS_ENA_VALSET),"SBAS CORRECTION ENABLED?");
+    BUFFER_LOG_PRINTF("%s Is SBAS Correction Enabled?\n", (model_ok ? okAck : badAck));
+
+    
+
+
+    ok &= model_ok;
   }
 
   serial_gps.flush();

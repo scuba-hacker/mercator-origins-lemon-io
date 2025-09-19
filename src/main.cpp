@@ -739,7 +739,7 @@ void initialiseUARTS()
 
   BUFFER_LOG_PRINTLN("###########################################################################");
 
-  BUFFER_LOG_PRINTLN("\nSetting ZED-FNR to Sea Model, 1 Hz, GGA+RMC only, NMEA even with NO FIX...");
+  BUFFER_LOG_PRINTLN("\nSetting GPS Module to Pedestrian Dynamic Model, 1 Hz, GGA+RMC only, Enable NMEA send NO FIX msgs...");
 
   bool ok = configureUBLOXGps();    // Populates the BUFFER_LOG with diagnostics
 

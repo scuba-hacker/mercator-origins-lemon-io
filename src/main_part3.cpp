@@ -743,8 +743,8 @@ enum e_q_upload_status uploadTelemetryToPrivateMQTT(MakoUplinkTelemetryForJson* 
   return uploadStatus;
 }
 
-#define BUILD_INCLUDE_MAIN_PART4
+#define BUILD_INCLUDE_MAIN_GPS
 
-#include "main_part4.cpp"
+#include "main_gps.cpp"
 
 #endif
