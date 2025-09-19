@@ -100,14 +100,15 @@ const char LOGS_PAGE_HTML[] PROGMEM = R"rawliteral(
             color: #000;
         }
         .btn-scroll {
-            padding: 8px 12px;
+            padding: 4px 8px;
             display: inline-flex;
             align-items: center;
             justify-content: center;
+            margin-top: 8px;
         }
         .btn-scroll img {
-            width: 48px;
-            height: 48px;
+            width: 28px;
+            height: 28px;
         }
         button:disabled {
             background: #666;
