@@ -92,6 +92,10 @@ const char STATS_HTML[] = R"rawliteral(
            background-color: #3498db;
            color: #fff;
        }
+       .button-brown {
+           background-color: #8B4513;
+           color: #fff;
+       }
    </style>
    </head>
    <body>
@@ -107,6 +111,13 @@ const char STATS_HTML[] = R"rawliteral(
            <button class="button button-purple" id="gpsOverrideNoFixSimToggleButton">Toggle GPS Override No FIX Sim</button>
            <button class="button button-black" id="logsButton">Logs</button>
            <button class="button button-amber" id="clearCountersButton">Clear Counters</button>
+
+            <br><br>
+
+           <button class="button button-brown" id="warmStartButton">Warm Start</button>
+           <button class="button button-brown" id="coldStartButton">Cold Start</button>
+           <button class="button button-brown" id="fixNeeds20SatsButton">FIX Needs 20 Sats</button>
+           <button class="button button-brown" id="fixNeeds4SatsButton">FIX Needs 4 Sats</button>
 
             <br><br>
 
@@ -404,6 +415,22 @@ const char STATS_HTML[] = R"rawliteral(
 
    document.getElementById("clearCountersButton").addEventListener("click", function() {
        handleButtonClick("clearCountersButton");
+   });
+
+   document.getElementById("warmStartButton").addEventListener("click", function() {
+       handleButtonClick("warmStartButton");
+   });
+
+   document.getElementById("coldStartButton").addEventListener("click", function() {
+       handleButtonClick("coldStartButton");
+   });
+
+   document.getElementById("fixNeeds20SatsButton").addEventListener("click", function() {
+       handleButtonClick("fixNeeds20SatsButton");
+   });
+
+   document.getElementById("fixNeeds4SatsButton").addEventListener("click", function() {
+       handleButtonClick("fixNeeds4SatsButton");
    });
 
    document.getElementById("showOnMapButton").addEventListener("click", function() {

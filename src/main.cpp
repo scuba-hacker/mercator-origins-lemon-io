@@ -1037,10 +1037,10 @@ void setup()
 
   delay(5000);    // allow time to connect to /logs page for checking GPS results
 
-  USB_SERIAL.println("++++++++++++++  BUFFER LOG ++++++++++++++++++");
-  USB_SERIAL.println(BUFFER_LOG_GET_BUFFER());
+  USB_SERIAL_PRINTLN("++++++++++++++  BUFFER LOG ++++++++++++++++++");
+  USB_SERIAL_PRINTLN(BUFFER_LOG_GET_BUFFER());
   BUFFER_LOG_RESET();
-  USB_SERIAL.println("++++++++++++++++++++++++++++++++++++++++++++");
+  USB_SERIAL_PRINTLN("++++++++++++++++++++++++++++++++++++++++++++");
 
   wideDisplayManager.clearDisplay();
 
@@ -1132,8 +1132,8 @@ void loop()
         if (gps.isSentenceGGA())
         {
           bool reallyHasFix = !overrideGPSToNoFixForTesting && gps.isSentenceContainingValidFix();
-          USB_SERIAL_PRINTF("\nDEBUG GGA: NMEA='%s', override=%d, isSentenceContainingValidFix=%d, reallyHasFix=%d\n",
-                           gps.getSentence(), overrideGPSToNoFixForTesting, gps.isSentenceContainingValidFix(), reallyHasFix);
+//          USB_SERIAL_PRINTF("\nDEBUG GGA: NMEA='%s', override=%d, isSentenceContainingValidFix=%d, reallyHasFix=%d\n",
+//                           gps.getSentence(), overrideGPSToNoFixForTesting, gps.isSentenceContainingValidFix(), reallyHasFix);
 
           // Update hasGPSFix for ALL GGA messages (not just ones with valid location)
           hasGPSFix = reallyHasFix && now < timeNextGoodFixExpectedBy;
@@ -1145,11 +1145,11 @@ void loop()
           // Update the isFix field in telemetry for ALL GGA messages
           latestLemonTelemetry.isFix = gpsFixStatusForTelemetry;
 
-          USB_SERIAL_PRINTF("CACHED FIX STATUS: reallyHasFix=%d -> gpsFixStatusForTelemetry=%d, hasGPSFix=%d\n",
-                           reallyHasFix, gpsFixStatusForTelemetry, hasGPSFix);
+//          USB_SERIAL_PRINTF("CACHED FIX STATUS: reallyHasFix=%d -> gpsFixStatusForTelemetry=%d, hasGPSFix=%d\n",
+//                           reallyHasFix, gpsFixStatusForTelemetry, hasGPSFix);
 
-          USB_SERIAL_PRINTF("\nCACHED FIX STATUS: gpsFixStatusForTelemetry=%d, latestLemonTelemetry.isFix=%d\n",
-                           gpsFixStatusForTelemetry, latestLemonTelemetry.isFix);
+//          USB_SERIAL_PRINTF("\nCACHED FIX STATUS: gpsFixStatusForTelemetry=%d, latestLemonTelemetry.isFix=%d\n",
+//                           gpsFixStatusForTelemetry, latestLemonTelemetry.isFix);
 
           if (reallyHasFix)
           {
@@ -1206,7 +1206,7 @@ void loop()
             char validFixRMC='-';
 
             // Send real GPS data normally
-            USB_SERIAL.printf("\nOriginal NMEA  %s\n",gps.getSentence()+1);
+            USB_SERIAL_PRINTF("\nOriginal NMEA  %s\n",gps.getSentence()+1);
 
             serial_mako_gopro.write(customiseNMEASentence(gps.getSentence(), networkManager.getShowOnMapRequestIndex()));
 
@@ -1485,7 +1485,7 @@ void loop()
   if (now > timeNextGoodFixExpectedBy)
   {
     // No GPS fix received within expected time, set fix status to false for telemetry
-    if (gpsFixStatusForTelemetry != false)
+    if (gpsFixStatusForTelemetry)
     {
       USB_SERIAL_PRINTLN("GPS FIX TIMEOUT: No GPS fix within 3 seconds, setting telemetry fix status to false");
       gpsFixStatusForTelemetry = false;
@@ -1515,7 +1515,7 @@ void loop()
   // *************  END CODE FOR SEND LEMON STATUS TO THE ARDUINO CALLED LANTERN
 
   // This is for test - shows value on display, good to make sure reed switches are being read ok.
-  latestLanternReedState = checkForLanternLatestReedEvent();
+//  latestLanternReedState = checkForLanternLatestReedEvent();
 
   // Update status display every 500 ms
   static uint32_t lastStatusUpdate = 0;

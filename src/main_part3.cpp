@@ -80,7 +80,8 @@ bool populateHeadWithMakoTelemetry(BlockHeader& headBlock, const bool validPream
         uplink_checksum = *((uint16_t*)(blockBuffer + uplinkMessageLength - 2));
       else
       {
-        USB_SERIAL_PRINTF("decodeUplink bad msg length %%2!=0 %hu  Rx Time: %lu\n", uplinkMessageLength, uplinkRxMicroSeconds);
+        if (writeTelemetryLogToSerial)
+          USB_SERIAL_PRINTF("decodeUplink bad msg length %%2!=0 %hu  Rx Time: %lu\n", uplinkMessageLength, uplinkRxMicroSeconds);
 
         headBlock.resetPayload();
 
@@ -98,13 +99,16 @@ bool populateHeadWithMakoTelemetry(BlockHeader& headBlock, const bool validPream
       // hardcoding needs to be removed and replaced with length check according to msgtype
       if (uplinkMessageLengthBad || uplink_checksum_bad)
       {
-        if (uplinkMessageLengthBad)
-          USB_SERIAL_PRINTF("decodeUplink bad msg length %hu && checksum bad %hu  Rx Time: %lu\n", uplinkMessageLength, uplink_checksum, uplinkRxMicroSeconds);
-        else if (uplinkMessageLengthBad)
-          USB_SERIAL_PRINTF("decodeUplink bad msg length only %hu  Rx Time: %lu\n", uplinkMessageLength, uplinkRxMicroSeconds);
-        else if (uplink_checksum_bad)
-          USB_SERIAL_PRINTF("decodeUplink bad msg checksum only %hu  Rx Time: %lu\n", uplink_checksum, uplinkRxMicroSeconds);
-        
+        if (writeTelemetryLogToSerial)
+        {
+          if (uplinkMessageLengthBad)
+            USB_SERIAL_PRINTF("decodeUplink bad msg length %hu && checksum bad %hu  Rx Time: %lu\n", uplinkMessageLength, uplink_checksum, uplinkRxMicroSeconds);
+          else if (uplinkMessageLengthBad)
+            USB_SERIAL_PRINTF("decodeUplink bad msg length only %hu  Rx Time: %lu\n", uplinkMessageLength, uplinkRxMicroSeconds);
+          else if (uplink_checksum_bad)
+            USB_SERIAL_PRINTF("decodeUplink bad msg checksum only %hu  Rx Time: %lu\n", uplink_checksum, uplinkRxMicroSeconds);
+        }
+
         // clear blockBuffer
         headBlock.resetPayload();
 
@@ -185,12 +189,14 @@ void populateHeadWithLemonTelemetryAndCommit(BlockHeader& headBlock)
     bool isPipelineFull=false;
     telemetryPipeline.commitPopulatedHeadBlock(headBlock, isPipelineFull);
   
-    USB_SERIAL_PRINTF("Commit head block: maxpipeblocklength=%hu longestpipe=%hu pipelineLength=%hu TH=%hu,%hu\n",telemetryPipeline.getMaximumPipelineLength(),telemetryPipeline.getMaximumDepth(),telemetryPipeline.getPipelineLength(),telemetryPipeline.getTailBlockIndex(),telemetryPipeline.getHeadBlockIndex());
+    if (writeTelemetryLogToSerial)
+      USB_SERIAL_PRINTF("Commit head block: maxpipeblocklength=%hu longestpipe=%hu pipelineLength=%hu TH=%hu,%hu\n",telemetryPipeline.getMaximumPipelineLength(),telemetryPipeline.getMaximumDepth(),telemetryPipeline.getPipelineLength(),telemetryPipeline.getTailBlockIndex(),telemetryPipeline.getHeadBlockIndex());
   }
   else
   {
     // payload too large to fit into block
-    USB_SERIAL_PRINTF("Combined Mako (%hu) and Lemon (%lu) payloads too large (%hu) to fit into telemetry block (%hu)\n",uplinkMessageLength,sizeof(LemonTelemetryForStorage),totalMakoAndLemonLength,blockMaxPayload);
+    if (writeTelemetryLogToSerial)
+      USB_SERIAL_PRINTF("Combined Mako (%hu) and Lemon (%lu) payloads too large (%hu) to fit into telemetry block (%hu)\n",uplinkMessageLength,sizeof(LemonTelemetryForStorage),totalMakoAndLemonLength,blockMaxPayload);
   }
 }
 
@@ -242,11 +248,13 @@ void getNextTelemetryMessagesUploadedToPrivateMQTT()
       
       g_offlineStorageThrottleApplied = false;
       
-      USB_SERIAL_PRINTF("tail block committed:  pipelineLength=%hu TH=%hu,%hu\n",telemetryPipeline.getPipelineLength(),telemetryPipeline.getTailBlockIndex(),telemetryPipeline.getHeadBlockIndex());
+      if (writeTelemetryLogToSerial)
+        USB_SERIAL_PRINTF("tail block committed:  pipelineLength=%hu TH=%hu,%hu\n",telemetryPipeline.getPipelineLength(),telemetryPipeline.getTailBlockIndex(),telemetryPipeline.getHeadBlockIndex());
     }
     else
     {
-      USB_SERIAL_PRINTF("tail block NOT committed\n");
+      if (writeTelemetryLogToSerial)
+        USB_SERIAL_PRINTF("tail block NOT committed\n");
 
       break;    // do not attempt any more tail pulls this event cycle
     }
@@ -265,8 +273,9 @@ void populateCurrentLemonTelemetry(LemonTelemetryForJson& l, TinyGPSPlus& g)
   l.gps_satellites =             g.satellites.value();
   l.isFix = gpsFixStatusForTelemetry;
 
-  USB_SERIAL_PRINTF("\nPOPULATE TELEMETRY: using gpsFixStatusForTelemetry=%d, set l.isFix=%d\n",
-                   gpsFixStatusForTelemetry, l.isFix);
+  if (writeTelemetryLogToSerial)
+    USB_SERIAL_PRINTF("\nPOPULATE TELEMETRY: using gpsFixStatusForTelemetry=%d, set l.isFix=%d\n",
+                    gpsFixStatusForTelemetry, l.isFix);
 
   getM5ImuSensorData(l);
 }
@@ -312,7 +321,8 @@ void constructLemonTelemetryForStorage(struct LemonTelemetryForStorage& s, const
   s.one_byte_is_fix_padding = 0;
   s.two_byte_zero_padding = 0;      // (108)
 
-  USB_SERIAL_PRINTF("\nSTORAGE: l.isFix=%d -> s.is_fix=%d\n", l.isFix, s.is_fix);
+  if (writeTelemetryLogToSerial)
+    USB_SERIAL_PRINTF("\nSTORAGE: l.isFix=%d -> s.is_fix=%d\n", l.isFix, s.is_fix);
 }
 
 //  uint32_t  l.privateMQTTUploadCount;
@@ -425,7 +435,9 @@ bool decodeIntoLemonTelemetryForUpload(uint8_t* msg, const uint16_t length, stru
   
   l.isFix = decode_uint8(msg);
 
-  USB_SERIAL_PRINTF("\nDECODE: decoded is_fix=%d -> l.isFix=%d\n", (int)*(msg-1), l.isFix);
+  
+  if (writeTelemetryLogToSerial)
+    USB_SERIAL_PRINTF("\nDECODE: decoded is_fix=%d -> l.isFix=%d\n", (int)*(msg-1), l.isFix);
   return true;
 }
 
@@ -574,7 +586,8 @@ void sendCeaseFixMessagesNMEAMessage(bool cease, const char* context)
 
 void buildUplinkTelemetryMessageV6a(char* payload, const struct MakoUplinkTelemetryForJson& m, const struct LemonTelemetryForJson& l)
 {
-  USB_SERIAL_PRINTF("\nMQTT JSON: using l.isFix=%d for is_fix field\n", l.isFix);
+  if (writeTelemetryLogToSerial)
+    USB_SERIAL_PRINTF("\nMQTT JSON: using l.isFix=%d for is_fix field\n", l.isFix);
 
   currentPrivateMQTTUploadAt = millis();
   privateMQTTUploadDutyCycle = currentPrivateMQTTUploadAt - lastPrivateMQTTUploadAt;

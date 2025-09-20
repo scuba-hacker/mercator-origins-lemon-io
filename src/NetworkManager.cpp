@@ -17,6 +17,12 @@ extern bool sendOneReEnableFixCommand;
 extern bool sendOneCeaseFixCommand;
 extern bool overrideGPSToNoFixForTesting;
 extern bool fastStartup;
+
+// GPS functions from main_gps.cpp
+extern bool gpsSendWarmStartCommand();
+extern bool gpsSendColdStartCommand();
+extern bool gpsTriggerNoFixBySatCountHighForFix();
+extern bool gpsTriggerNormalSatCountForFix();
 // Static instance pointer for callbacks
 NetworkManager* NetworkManager::instance = nullptr;
 
@@ -704,7 +710,25 @@ void NetworkManager::setupWebServerRoutes() {
                 overrideGPSToNoFixForTesting = !overrideGPSToNoFixForTesting;
                 USB_SERIAL_PRINT("GPS Overide No FIX simulation toggled to: ");
                 USB_SERIAL_PRINTLN(overrideGPSToNoFixForTesting ? "ACTIVE" : "INACTIVE");
-            }        
+            } else if (pButton->value() == String("warmStartButton")) {
+                USB_SERIAL_PRINTLN(">>> Warm Start button pressed <<<");
+                bool result = gpsSendWarmStartCommand();
+                USB_SERIAL_PRINTF("Warm Start command result: %s\n", result ? "SUCCESS" : "FAILED");
+            } else if (pButton->value() == String("coldStartButton")) {
+                USB_SERIAL_PRINTLN(">>> Cold Start button pressed <<<");
+                bool result = gpsSendColdStartCommand();
+                USB_SERIAL_PRINTF("Cold Start command result: %s\n", result ? "SUCCESS" : "FAILED");
+            } else if (pButton->value() == String("fixNeeds20SatsButton")) {
+                USB_SERIAL_PRINTLN(">>> FIX Needs 20 Sats button pressed <<<");
+                bool result = gpsTriggerNoFixBySatCountHighForFix();
+                USB_SERIAL_PRINTF("FIX Needs 20 Sats command result: %s\n", result ? "SUCCESS" : "FAILED");
+            } else if (pButton->value() == String("fixNeeds4SatsButton")) {
+                USB_SERIAL_PRINTLN(">>> FIX Needs 4 Sats button pressed <<<");
+                bool result = gpsTriggerNormalSatCountForFix();
+                USB_SERIAL_PRINTF("FIX Needs 4 Sats command result: %s\n", result ? "SUCCESS" : "FAILED");
+            } else {
+                USB_SERIAL_PRINTF(">>> UNKNOWN BUTTON PRESSED: '%s' <<<\n", pButton->value().c_str());
+            }
         }
         else {
             request->send(200, "text/plain", "invalid");
@@ -782,11 +806,11 @@ void NetworkManager::onWebSocketEvent(AsyncWebSocket *server, AsyncWebSocketClie
             USB_SERIAL_PRINTF("WebSocket: Client disconnected - remaining clients: %d\n", ws ? ws->count() : 0);
             break;
         case WS_EVT_DATA:
-            USB_SERIAL_PRINTF("WebSocket: Received data from client\n");
+//            USB_SERIAL_PRINTF("WebSocket: Received data from client\n");
             handleWebSocketMessage(arg, data, len);
             break;
         case WS_EVT_PONG:
-            USB_SERIAL_PRINTF("WebSocket: Received PONG\n");
+//            USB_SERIAL_PRINTF("WebSocket: Received PONG\n");
             break;
         case WS_EVT_ERROR:
             USB_SERIAL_PRINTF("WebSocket: Error occurred\n");
@@ -796,17 +820,17 @@ void NetworkManager::onWebSocketEvent(AsyncWebSocket *server, AsyncWebSocketClie
 
 void NetworkManager::handleWebSocketMessage(void *arg, uint8_t *data, size_t len) {
     AwsFrameInfo *info = (AwsFrameInfo*)arg;
-    USB_SERIAL_PRINTF("WebSocket: Message received - len=%d, final=%d, index=%d, info->len=%d, opcode=%d\n", 
-                      len, info->final, info->index, info->len, info->opcode);
+//    USB_SERIAL_PRINTF("WebSocket: Message received - len=%d, final=%d, index=%d, info->len=%d, opcode=%d\n", 
+  //                    len, info->final, info->index, info->len, info->opcode);
     
     if (info->final && info->index == 0 && info->len == len && info->opcode == WS_TEXT) {
         data[len] = 0;
-        USB_SERIAL_PRINTF("WebSocket: Processing message: %s\n", (char*)data);
+//        USB_SERIAL_PRINTF("WebSocket: Processing message: %s\n", (char*)data);
         
         if (getStatsCallback) {
-            USB_SERIAL_PRINTF("WebSocket: Calling getStats callback\n");
+//            USB_SERIAL_PRINTF("WebSocket: Calling getStats callback\n");
             String stats = getStatsCallback();
-            USB_SERIAL_PRINTF("WebSocket: Stats result length: %d\n", stats.length());
+//            USB_SERIAL_PRINTF("WebSocket: Stats result length: %d\n", stats.length());
             notifyWebSocketClients(stats);
         } else {
             USB_SERIAL_PRINTF("WebSocket: ERROR - getStatsCallback is NULL!\n");
@@ -818,7 +842,7 @@ void NetworkManager::handleWebSocketMessage(void *arg, uint8_t *data, size_t len
 
 void NetworkManager::notifyWebSocketClients(const String& sensorReadings) {
     if (ws) {
-        USB_SERIAL_PRINTF("WebSocket: Sending data to %d clients (length: %d)\n", ws->count(), sensorReadings.length());
+//        USB_SERIAL_PRINTF("WebSocket: Sending data to %d clients (length: %d)\n", ws->count(), sensorReadings.length());
         ws->textAll(sensorReadings);
     } else {
         USB_SERIAL_PRINTF("WebSocket: ERROR - ws is null!\n");
@@ -827,24 +851,24 @@ void NetworkManager::notifyWebSocketClients(const String& sensorReadings) {
 
 void NetworkManager::setGetStatsCallback(std::function<String()> callback) {
     getStatsCallback = callback; 
-    USB_SERIAL_PRINTF("NetworkManager: getStatsCallback has been set\n");
+//    USB_SERIAL_PRINTF("NetworkManager: getStatsCallback has been set\n");
     
     // Test the callback immediately to ensure it works
     if (getStatsCallback) {
         String testStats = getStatsCallback();
-        USB_SERIAL_PRINTF("NetworkManager: Test callback result length: %d\n", testStats.length());
+//        USB_SERIAL_PRINTF("NetworkManager: Test callback result length: %d\n", testStats.length());
         if (testStats.length() > 0) {
-            USB_SERIAL_PRINTF("NetworkManager: Test callback result preview: %.100s\n", testStats.c_str());
+//            USB_SERIAL_PRINTF("NetworkManager: Test callback result preview: %.100s\n", testStats.c_str());
         }
     }
 }
 
 void NetworkManager::sendStatsWebSocketNotification() {
-    USB_SERIAL_PRINTF("WebSocket: sendStatsWebSocketNotification() called - client count: %d\n", getWebSocketClientCount());
+//    USB_SERIAL_PRINTF("WebSocket: sendStatsWebSocketNotification() called - client count: %d\n", getWebSocketClientCount());
     if (getStatsCallback) {
-        USB_SERIAL_PRINTF("WebSocket: Calling getStats and notifying clients\n");
+//        USB_SERIAL_PRINTF("WebSocket: Calling getStats and notifying clients\n");
         String stats = getStatsCallback();
-        USB_SERIAL_PRINTF("WebSocket: Generated stats length: %d\n", stats.length());
+//        USB_SERIAL_PRINTF("WebSocket: Generated stats length: %d\n", stats.length());
         notifyWebSocketClients(stats);
     } else {
         USB_SERIAL_PRINTF("WebSocket: ERROR - getStatsCallback is not set!\n");

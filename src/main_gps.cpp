@@ -753,16 +753,25 @@ uint8_t UBX_CFG_RATE_VALSET[] = {
 // UBX-CFG-RST (0x06 0x04)
 // Cold Start - Clear all aiding data (ephemeris, almanac, position, time)
 uint8_t UBX_CFG_RST_COLDSTART[] = {
-  0xFF, 0xFF,   // navBbrMask = 0xFFFF (clear all BBR data)
-  0x02,         // resetMode = 0x02 (controlled GNSS restart)
-  0x00          // reserved1 = 0x00
+  0xB5, 0x62,  // Header 0xB5 0x62
+  0x06, 0x04,  // UFX-CFG-RST is command 0x06 0x04
+  0x04, 0x00,  // length = 4
+  0xFF, 0xFF,  // navBbrMask = 0xFFFF (clear all BBR data)
+  0x02,        // resetMode = 0x02 (controlled GNSS restart)
+  0x00,        // reserved1 = 0x00
+  0x0A, 0x4C   // Checksum (CK_A, CK_B)
 };
 
-// UBX-CFG-RST (0x06 0x04) – warm start: clear only ephemeris
+// UBX-CFG-RST (0x06 0x04)
+// Warm start: clear only ephemeris
 uint8_t UBX_CFG_RST_WARMSTART[] = {
+  0xB5, 0x62,  // Header 0xB5 0x62
+  0x06, 0x04,  // UFX-CFG-RST is command 0x06 0x04
+  0x04, 0x00,  // length = 4
   0x01, 0x00,  // navBbrMask = 0x0001 (clear eph only)
   0x02,        // resetMode  = 0x02 (controlled GNSS restart)
-  0x00         // reserved1  = 0x00
+  0x00,        // reserved1  = 0x00
+  0x07, 0x11   // Checksum (CK_A, CK_B)
 };
 
 // 6) CFG-CFG (0x06 0x09) — Save to BBR/Flash (where present - not SAM-M10Q)
@@ -1023,9 +1032,6 @@ bool configureUBLOXGps()
     bool sbas_enabled = sendUBX(0x06, 0x8B, UBX_CFG_SIGNAL_SBAS_ENA_VALSET, sizeof(UBX_CFG_SIGNAL_SBAS_ENA_VALSET),"SBAS CORRECTION ENABLED?");
     BUFFER_LOG_PRINTF("%s Is SBAS Correction Enabled?\n", (model_ok ? okAck : badAck));
 
-    
-
-
     ok &= model_ok;
   }
 
@@ -1033,5 +1039,39 @@ bool configureUBLOXGps()
 
   return ok;
 }
+
+bool gpsSendColdStartCommand()
+{
+  uart_write_bytes(UART_NUMBER_GPS, UBX_CFG_RST_COLDSTART, sizeof(UBX_CFG_RST_COLDSTART));
+  USB_SERIAL_PRINTF("UBX_CFG_RST_COLDSTART: Sent Cold Start Command\n");
+  return true;
+}
+
+bool gpsSendWarmStartCommand()
+{
+  uart_write_bytes(UART_NUMBER_GPS, UBX_CFG_RST_WARMSTART, sizeof(UBX_CFG_RST_WARMSTART));
+  USB_SERIAL_PRINTF("UBX_CFG_RST_WARMSTART: Sent Warm Start Command\n");
+  return true;
+}
+
+bool gpsSendMinimumSatellitesForNavCommand(int satellites)
+{
+  bool ok = sendUBX(0x06, 0x17, CFG_NMEA_ALLOW_NOFIX, sizeof(CFG_NMEA_ALLOW_NOFIX),"TRIGGER COLD START",false);
+  USB_SERIAL_PRINTF("%s Sent %i Min Satellites for Fix Command\n", (ok ? okAck : badAck), satellites);
+  return ok;
+}
+
+bool gpsTriggerNoFixBySatCountHighForFix()
+{
+  const int veryHighSatelliteCountForFix = 20;
+  return gpsSendMinimumSatellitesForNavCommand(veryHighSatelliteCountForFix);
+}
+
+bool gpsTriggerNormalSatCountForFix()
+{
+  const int defaultSatCountForFix = 4;
+  return gpsSendMinimumSatellitesForNavCommand(defaultSatCountForFix);
+}
+
 
 #endif

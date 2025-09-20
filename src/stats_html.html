@@ -86,6 +86,10 @@
            background-color: #3498db;
            color: #fff;
        }
+       .button-brown {
+           background-color: #8B4513;
+           color: #fff;
+       }
    </style>
    </head>
    <body>
@@ -104,6 +108,13 @@
 
             <br><br>
 
+           <button class="button button-brown" id="warmStartButton">Warm Start</button>
+           <button class="button button-brown" id="coldStartButton">Cold Start</button>
+           <button class="button button-brown" id="fixNeeds20SatsButton">FIX Needs 20 Sats</button>
+           <button class="button button-brown" id="fixNeeds4SatsButton">FIX Needs 4 Sats</button>
+
+            <br><br>
+            
           <select id="sortedWaypointsDropdown">
                <!-- Options will be populated dynamically -->
            </select>
@@ -400,6 +411,22 @@
        handleButtonClick("clearCountersButton");
    });
 
+   document.getElementById("warmStartButton").addEventListener("click", function() {
+       handleButtonClick("warmStartButton");
+   });
+
+   document.getElementById("coldStartButton").addEventListener("click", function() {
+       handleButtonClick("coldStartButton");
+   });
+
+   document.getElementById("fixNeeds20SatsButton").addEventListener("click", function() {
+       handleButtonClick("fixNeeds20SatsButton");
+   });
+
+   document.getElementById("fixNeeds4SatsButton").addEventListener("click", function() {
+       handleButtonClick("fixNeeds4SatsButton");
+   });
+
    document.getElementById("showOnMapButton").addEventListener("click", function() {
         handleButtonClick("showOnMapButton");
     });
@@ -502,7 +529,7 @@
    // Sort the array alphabetically
    waypoints.sort();
 
-     // Get the drop-down element
+                 // Get the drop-down element
    var dropdown1 = document.getElementById("sortedWaypointsDropdown");
    var dropdown2 = document.getElementById("sortedWaypointsDropdown2");
 
