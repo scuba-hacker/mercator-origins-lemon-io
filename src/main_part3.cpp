@@ -256,12 +256,17 @@ void getNextTelemetryMessagesUploadedToPrivateMQTT()
 // TinyGPSPlus must be non-const as act of getting lat and lng resets the updated flag
 void populateCurrentLemonTelemetry(LemonTelemetryForJson& l, TinyGPSPlus& g)
 {
+  extern bool gpsFixStatusForTelemetry;
   l.gps_lat =  g.location.lat(); l.gps_lng = g.location.lng();
   l.gps_hdop = g.hdop.hdop();    l.gps_course_deg = g.course.deg(); l.gps_knots = g.speed.knots();
   l.gps_hour = g.time.hour();    l.gps_minute =  g.time.minute();   l.gps_second =  g.time.second();
   l.gps_day =  g.date.day();     l.gps_month =  g.date.month();
   l.gps_year = g.date.year();
   l.gps_satellites =             g.satellites.value();
+  l.isFix = gpsFixStatusForTelemetry;
+
+  USB_SERIAL_PRINTF("\nPOPULATE TELEMETRY: using gpsFixStatusForTelemetry=%d, set l.isFix=%d\n",
+                   gpsFixStatusForTelemetry, l.isFix);
 
   getM5ImuSensorData(l);
 }
@@ -277,34 +282,37 @@ void constructLemonTelemetryForStorage(struct LemonTelemetryForStorage& s, const
 {
   s.gps_lat = l.gps_lat;  s.gps_lng = l.gps_lng;          // must be on 8 byte boundary 
   s.goodUplinkMessageCount = goodUplinkMessageCount;      // GLOBAL
-  s.badUplinkMessageCount = badUplinkMessageCount;      // GLOBAL
-//  s.badLengthUplinkMsgCount = badLengthUplinkMsgCount;      // GLOBAL
-//  s.badChkSumUplinkMsgCount = badChkSumUplinkMsgCount;      // GLOBAL  
+  s.badUplinkMessageCount = badUplinkMessageCount;        // GLOBAL
   s.consoleDownlinkMsgCount = consoleDownlinkMsgCount;    // GLOBAL
   s.telemetry_timestamp = lastGoodUplinkMessage;          // GLOBAL
-  s.fixCount = fixCount;                                  // GLOBAL
+  s.fixCount = fixCount;                                  // GLOBAL  (36)
+
   s.vBusVoltage = (uint16_t)(0.11);
   s.vBusCurrent = (uint16_t)(0.11);
-  s.vBatVoltage = (uint16_t)(0.11);
-  s.uplinkMessageMissingCount = (uint16_t)(uplinkMessageMissingCount);          // 40
+  s.vBatVoltage = (uint16_t)(0.11);                       // (42)
+  s.uplinkMessageMissingCount = (uint16_t)(uplinkMessageMissingCount);          // 
   s.uplinkMessageLength = uplinkMessageLength;            // GLOBAL
   s.gps_hdop = (uint16_t)(l.gps_hdop * 10.0);
   s.gps_course_deg = (uint16_t)(l.gps_course_deg * 10.0);
-  s.gps_knots = (uint16_t)(l.gps_knots * 10.0);            // 48
+  s.gps_knots = (uint16_t)(l.gps_knots * 10.0);            // (52)
   
   s.downlink_send_duration = l.downlink_send_duration; 
   s.uplink_preamble_latency = l.uplink_preamble_latency; 
-  s.uplink_rx_latency = l.uplink_rx_latency;
+  s.uplink_rx_latency = l.uplink_rx_latency;                // (64)
   s.imu_lin_acc_x = l.imu_lin_acc_x; s.imu_lin_acc_y = l.imu_lin_acc_y; s.imu_lin_acc_z = l.imu_lin_acc_z;
   s.imu_rot_acc_x = l.imu_rot_acc_x; s.imu_rot_acc_y = l.imu_rot_acc_y; s.imu_rot_acc_z = l.imu_rot_acc_z;
-  s.uplinkBadMessagePercentage = uplinkBadMessagePercentage;      // 88
+  s.uplinkBadMessagePercentage = uplinkBadMessagePercentage;      // (92)
 
   s.KBFromMako = KBFromMako;                             // GLOBAL
-  s.gps_hour = l.gps_hour; s.gps_minute = l.gps_minute;  s.gps_second = l.gps_second;
+  s.gps_hour = l.gps_hour; s.gps_minute = l.gps_minute;  s.gps_second = l.gps_second;  // (100)
   s.gps_day = l.gps_day; s.gps_month = l.gps_month; s.gps_satellites = (uint8_t)l.gps_satellites;
-  s.gps_year =  l.gps_year;         // 100     
+  s.gps_year =  l.gps_year;         // (104)
 
-  s.four_byte_zero_padding = 0;     // 104
+  s.is_fix = l.isFix;
+  s.one_byte_is_fix_padding = 0;
+  s.two_byte_zero_padding = 0;      // (108)
+
+  USB_SERIAL_PRINTF("\nSTORAGE: l.isFix=%d -> s.is_fix=%d\n", l.isFix, s.is_fix);
 }
 
 //  uint32_t  l.privateMQTTUploadCount;
@@ -382,8 +390,6 @@ bool decodeIntoLemonTelemetryForUpload(uint8_t* msg, const uint16_t length, stru
   l.gps_lng = decode_double(msg);         
   l.goodUplinkMessageCount = decode_uint32(msg);
   l.badUplinkMessageCount = decode_uint32(msg);
-//  l.badLengthUplinkMsgCount = decode_uint32(msg);
-//  l.badChkSumUplinkMsgCount = decode_uint32(msg); 
   l.consoleDownlinkMsgCount = decode_uint32(msg);
   l.telemetry_timestamp = decode_uint32(msg);
   l.fixCount = decode_uint32(msg);
@@ -394,7 +400,7 @@ bool decodeIntoLemonTelemetryForUpload(uint8_t* msg, const uint16_t length, stru
   l.uplinkMessageLength = decode_uint16(msg);
   l.gps_hdop = ((float)decode_uint16(msg)) / 10.0;
   l.gps_course_deg = ((float)decode_uint16(msg)) / 10.0;
-  l.gps_knots = ((float)decode_uint16(msg)) / 10.0;        // 44
+  l.gps_knots = ((float)decode_uint16(msg)) / 10.0;
 
   l.downlink_send_duration = decode_uint32(msg);
   l.uplink_preamble_latency = decode_uint32(msg);
@@ -406,7 +412,7 @@ bool decodeIntoLemonTelemetryForUpload(uint8_t* msg, const uint16_t length, stru
   l.imu_rot_acc_x = decode_float(msg);
   l.imu_rot_acc_y = decode_float(msg);
   l.imu_rot_acc_z = decode_float(msg);
-  l.uplinkBadMessagePercentage = decode_float(msg);   // 88
+  l.uplinkBadMessagePercentage = decode_float(msg);
 
   l.KBFromMako = decode_float(msg);
   l.gps_hour = decode_uint8(msg);
@@ -415,8 +421,11 @@ bool decodeIntoLemonTelemetryForUpload(uint8_t* msg, const uint16_t length, stru
   l.gps_day = decode_uint8(msg);
   l.gps_month = decode_uint8(msg);
   l.gps_satellites = decode_uint8(msg);
-  l.gps_year = decode_uint16(msg);    // 100
+  l.gps_year = decode_uint16(msg);
   
+  l.isFix = decode_uint8(msg);
+
+  USB_SERIAL_PRINTF("\nDECODE: decoded is_fix=%d -> l.isFix=%d\n", (int)*(msg-1), l.isFix);
   return true;
 }
 
@@ -565,13 +574,15 @@ void sendCeaseFixMessagesNMEAMessage(bool cease, const char* context)
 
 void buildUplinkTelemetryMessageV6a(char* payload, const struct MakoUplinkTelemetryForJson& m, const struct LemonTelemetryForJson& l)
 {
+  USB_SERIAL_PRINTF("\nMQTT JSON: using l.isFix=%d for is_fix field\n", l.isFix);
+
   currentPrivateMQTTUploadAt = millis();
   privateMQTTUploadDutyCycle = currentPrivateMQTTUploadAt - lastPrivateMQTTUploadAt;
 
   uint32_t live_metrics_count = 75; // as of 9 May 2023
   
   sprintf(payload,
-          "{\"UTC_time\":\"%02d:%02d:%02d\",\"UTC_date\":\"%02d:%02d:%02d\",\"lemon_on_mins\":%lu,\"coordinates\":[%f,%f],\"depth\":%f,"
+          "{\"UTC_time\":\"%02d:%02d:%02d\",\"UTC_date\":\"%02d:%02d:%02d\",\"lemon_on_mins\":%lu,\"coordinates\":[%f,%f],\"is_fix\":%i,\"depth\":%f,"
           "\"water_pressure\":%f,\"water_temperature\":%f,\"enclosure_temperature\":%f,\"enclosure_humidity\":%f,\"enclosure_air_pressure\":%f,"
           "\"magnetic_heading_compensated\":%f,\"heading_to_target\":%f,\"distance_to_target\":%f,\"journey_course\":%f,\"journey_distance\":%f,"
           "\"mako_screen_display\":\"%s\",\"mako_on_mins\":%lu,\"mako_user_action\":%d,\"mako_rx_bad_checksum_msgs\":%hu,"
@@ -604,8 +615,9 @@ void buildUplinkTelemetryMessageV6a(char* payload, const struct MakoUplinkTeleme
 
           l.gps_hour, l.gps_minute, l.gps_second,
           l.gps_day, l.gps_month, l.gps_year,
+
           currentPrivateMQTTUploadAt / 1000 / 60,   // lemon on minutes
-          l.gps_lat, l.gps_lng,
+          l.gps_lat, l.gps_lng, l.isFix,
           m.depth, m.water_pressure, m.water_temperature,
           m.enclosure_temperature, m.enclosure_humidity, m.enclosure_air_pressure,
           m.magnetic_heading_compensated, m.heading_to_target, m.distance_to_target,
@@ -643,8 +655,6 @@ void buildUplinkTelemetryMessageV6a(char* payload, const struct MakoUplinkTeleme
           
           l.goodUplinkMessageCount,
           l.badUplinkMessageCount,
-//          l.badLengthUplinkMsgCount,
-//          l.badChkSumUplinkMsgCount,
           l.uplinkMessageLength,
           privateMQTTUploadCount,
           privateMQTTMessageLength,             ///  ????

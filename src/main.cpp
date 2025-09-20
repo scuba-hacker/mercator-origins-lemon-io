@@ -377,6 +377,9 @@ uint32_t noFixCount = 0;  // Count of GGA messages with NO FIX
 uint32_t passedChecksumCount = 0;
 bool processUplinkMessage = true;
 
+// Cached GPS fix status specifically for telemetry - updated only when GPS messages are processed
+bool gpsFixStatusForTelemetry = false;
+
 // GPS status tracking for comprehensive display
 uint32_t gpsMessagesReceived = 0;
 uint32_t gpsFailedChecksumCount = 0;
@@ -492,6 +495,7 @@ struct LemonTelemetryForJson
 {
   double    gps_lat;
   double    gps_lng;
+  bool      isFix;
   uint32_t  goodUplinkMessageCount;
   uint32_t  badUplinkMessageCount;
 //  uint32_t  badLengthUplinkMsgCount;
@@ -1128,8 +1132,24 @@ void loop()
         if (gps.isSentenceGGA())
         {
           bool reallyHasFix = !overrideGPSToNoFixForTesting && gps.isSentenceContainingValidFix();
-          USB_SERIAL_PRINTF("\nDEBUG: overrideGPSToNoFixForTesting=%d, isSentenceContainingValidFix=%d, reallyHasFix=%d\n",
-                           overrideGPSToNoFixForTesting, gps.isSentenceContainingValidFix(), reallyHasFix);
+          USB_SERIAL_PRINTF("\nDEBUG GGA: NMEA='%s', override=%d, isSentenceContainingValidFix=%d, reallyHasFix=%d\n",
+                           gps.getSentence(), overrideGPSToNoFixForTesting, gps.isSentenceContainingValidFix(), reallyHasFix);
+
+          // Update hasGPSFix for ALL GGA messages (not just ones with valid location)
+          hasGPSFix = reallyHasFix && now < timeNextGoodFixExpectedBy;
+
+          // Cache GPS fix status specifically for telemetry (use real fix status, not time-based expiry)
+          gpsFixStatusForTelemetry = reallyHasFix;
+
+          // Update the isFix field in telemetry for ALL GGA messages
+          latestLemonTelemetry.isFix = gpsFixStatusForTelemetry;
+
+          USB_SERIAL_PRINTF("CACHED FIX STATUS: reallyHasFix=%d -> gpsFixStatusForTelemetry=%d, hasGPSFix=%d\n",
+                           reallyHasFix, gpsFixStatusForTelemetry, hasGPSFix);
+
+          USB_SERIAL_PRINTF("\nCACHED FIX STATUS: gpsFixStatusForTelemetry=%d, latestLemonTelemetry.isFix=%d\n",
+                           gpsFixStatusForTelemetry, latestLemonTelemetry.isFix);
+
           if (reallyHasFix)
           {
             fixCount++;
@@ -1145,7 +1165,7 @@ void loop()
         // Must extract longitude and latitude for the updated flag to be set on next location update.
         if (gps.location.isValid() && gps.location.isUpdated() && gps.isSentenceFixMsgType())
         {
-          hasGPSFix    = !overrideGPSToNoFixForTesting && gps.isSentenceContainingValidFix() && now < timeNextGoodFixExpectedBy;
+          // hasGPSFix already set correctly above for GGA messages, don't overwrite it
 
           if (now > timeOfNextLemonStatus)
           {
@@ -1267,6 +1287,21 @@ void loop()
 
           // first byte in getSentence() is currently always newline
           USB_SERIAL_PRINTF("NO GPS FIX - MESSAGE RECEIVED: %s  %s\n",msgType + (msgType[0] == '\n' ? 1 : 0),gps.getSentence());
+
+          // Process NO FIX messages for telemetry if they are GGA messages
+          if (gps.isSentenceGGA())
+          {
+            USB_SERIAL_PRINTLN("Processing NO FIX GGA message for telemetry");
+
+            // Populate telemetry for NO FIX messages (using cached GPS fix status)
+            populateCurrentLemonTelemetry(latestLemonTelemetry, gps);
+            populateFinalLemonTelemetry(latestLemonTelemetry);
+
+            // Create and commit telemetry for NO FIX messages
+            BlockHeader headBlock = telemetryPipeline.getHeadBlockForPopulating();
+            populateHeadWithLemonTelemetryAndCommit(headBlock);
+            USB_SERIAL_PRINTLN("NO FIX: Committed telemetry to pipeline");
+          }
         }
       }
       else

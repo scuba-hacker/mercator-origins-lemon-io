@@ -638,8 +638,6 @@ void processExtendedCommand(const String& command) {
   }
 }
 
-// sizeof is 108 rounded to 112 without badLengthUplinkMsgCount and badChkSumUplinkMsgCount
-// add these in and sizeof is 116 rounded to 120 to keep on 8 byte boundary
 struct LemonTelemetryForStorage 
 // 108 bytes defined, but sizeof is rounded to 112 to keep on 8 byte boundary as there is a double present
 // The sizeof struct is rounded up to the largest sizeof primitive that is present.
@@ -648,19 +646,17 @@ struct LemonTelemetryForStorage
   double    gps_lng;              // 
   uint32_t  goodUplinkMessageCount;
   uint32_t  badUplinkMessageCount;
-//  uint32_t  badLengthUplinkMsgCount;
-//  uint32_t  badChkSumUplinkMsgCount;
   uint32_t  consoleDownlinkMsgCount;
   uint32_t  telemetry_timestamp;       
-  uint32_t  fixCount;                   // 36
+  uint32_t  fixCount;                   // (36)
   uint16_t  vBusVoltage;
   uint16_t  vBusCurrent;
   uint16_t  vBatVoltage;
-  uint16_t  uplinkMessageMissingCount;          // 44   
+  uint16_t  uplinkMessageMissingCount;  // (44) 
   uint16_t  uplinkMessageLength;
   uint16_t  gps_hdop;
   uint16_t  gps_course_deg;
-  uint16_t  gps_knots;            // 52
+  uint16_t  gps_knots;                  // (52)
   
   uint32_t  downlink_send_duration;   // must be on 4 byte boundary
   uint32_t  uplink_preamble_latency;
@@ -671,7 +667,7 @@ struct LemonTelemetryForStorage
   float     imu_rot_acc_x;
   float     imu_rot_acc_y;
   float     imu_rot_acc_z;
-  float     uplinkBadMessagePercentage;      // 92
+  float     uplinkBadMessagePercentage;      // (92)
 
   float     KBFromMako;               
   uint8_t   gps_hour;
@@ -683,9 +679,10 @@ struct LemonTelemetryForStorage
   uint8_t   gps_satellites;
   uint16_t  gps_year;           // 104
 
-  uint32_t  four_byte_zero_padding;     // 108
+  uint8_t   is_fix;
+  uint8_t   one_byte_is_fix_padding;
+  uint16_t  two_byte_zero_padding;  // 108
 };
-
 
 uint32_t getSizeOfLemonTelemetryForStorage()
 {
