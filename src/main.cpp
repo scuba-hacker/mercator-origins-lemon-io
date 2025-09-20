@@ -1157,8 +1157,9 @@ void loop()
           if (reallyHasFix)
           {
             fixCount++;
-            // Reset GPS fix timeout for any valid GGA fix (ensures timeout doesn't trigger incorrectly)
-            timeNextGoodFixExpectedBy = now + maxTimeBeforeAlertNoFix;
+            // Reset GPS fix timeout for any valid GGA fix (only when not overriding GPS to no fix for testing)
+            if (!overrideGPSToNoFixForTesting)
+              timeNextGoodFixExpectedBy = now + maxTimeBeforeAlertNoFix;
             USB_SERIAL_PRINTF("\nGGA FIX: %lu  GGA NO FIX: %lu  Total GPS Msg: %lu Bad GPS Msg: %lu\n", fixCount, noFixCount, gps.passedChecksum(), gps.failedChecksum());
           }
           else
@@ -1511,6 +1512,12 @@ void loop()
       USB_SERIAL_PRINTLN("GPS FIX TIMEOUT: No GPS fix within 3 seconds, setting telemetry fix status to false");
       gpsFixStatusForTelemetry = false;
       latestLemonTelemetry.isFix = gpsFixStatusForTelemetry;
+
+      // Trigger telemetry upload even when GPS stops sending messages completely
+      processUplinkMessage = true;
+      uplinkMessageListenTimer = millis();
+      downlinkSendMessageDurationMicroSeconds = micros();
+      USB_SERIAL_PRINTLN("GPS TIMEOUT: Triggering telemetry upload for timeout condition");
     }
   }
 
