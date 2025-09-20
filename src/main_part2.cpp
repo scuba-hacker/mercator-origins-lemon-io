@@ -231,7 +231,7 @@ char* customiseNMEASentence(char* sentence, int showOnMapIndex)
   }
 
   // if change has been made, recalculate checksum and populate
-  if (overrideForNoInternetConnection || overrideLocation || overrideForTarget)
+  if (overrideForNoInternetConnection || overrideLocation || overrideForTarget || overrideGPSToNoFixForTesting)
   {
     unsigned char checksum = 0;
     // Start after the '$' character
