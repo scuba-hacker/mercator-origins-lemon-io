@@ -716,6 +716,22 @@ uint8_t UBX_CFG_SEA_MODEL_VALSET[] = {
   0x05                      // value 0x05 (Sea)
 };
 
+// UBX-CFG-VALSET: set INFIL_MINSV = 20 (RAM only)
+// Force NO FIX output
+// Force GPS FIX to only be calculated for >= 20 satellites
+uint8_t UBX_CFG_VALSET_INFIL_MINSV[] = {
+  0x00, 0x01, 0x00, 0x00,   // version=0, layer=RAM (0x01), reserved
+  0x13, 0x00, 0x31, 0x10,   // key = 0x10310013 (little endian)
+  0x14                      // value = 20 (0x14)
+};
+
+// UBX-CFG-VALGET: query INFIL_MINSV (from RAM + BBR + Flash)
+// Get current minimum number of satellites to form a fix - default is 4.
+uint8_t UBX_CFG_VALGET_INFIL_MINSV[] = {
+  0x00, 0x07, 0x00, 0x00,   // version=0, layers=RAM+BBR+Flash (0x07), reserved
+  0x13, 0x00, 0x31, 0x10    // key = 0x10310013
+};
+
 // UBX-CFG-VALSET (0x06 0x8A)
 // header: version=0x00, layers=0x01 (RAM), rsvd[2]=0
 // Emit no fix messages when there is no fix, instead of no message at all
@@ -732,6 +748,21 @@ uint8_t UBX_CFG_RATE_VALSET[] = {
   0x00, 0x01, 0x00, 0x00,   // version 0, layers=0x01(RAM), 2 bytes reserved
   0x01, 0x00, 0x21, 0x30,   // key 0x30210001 (little-endian):
   0xE3, 0x03, 0x00, 0x00    // value - 1 Hz
+};
+
+// UBX-CFG-RST (0x06 0x04)
+// Cold Start - Clear all aiding data (ephemeris, almanac, position, time)
+uint8_t UBX_CFG_RST_COLDSTART[] = {
+  0xFF, 0xFF,   // navBbrMask = 0xFFFF (clear all BBR data)
+  0x02,         // resetMode = 0x02 (controlled GNSS restart)
+  0x00          // reserved1 = 0x00
+};
+
+// UBX-CFG-RST (0x06 0x04) – warm start: clear only ephemeris
+uint8_t UBX_CFG_RST_WARMSTART[] = {
+  0x01, 0x00,  // navBbrMask = 0x0001 (clear eph only)
+  0x02,        // resetMode  = 0x02 (controlled GNSS restart)
+  0x00         // reserved1  = 0x00
 };
 
 // 6) CFG-CFG (0x06 0x09) — Save to BBR/Flash (where present - not SAM-M10Q)

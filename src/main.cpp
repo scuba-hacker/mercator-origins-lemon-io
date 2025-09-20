@@ -372,7 +372,8 @@ enum e_q_upload_status
   Q_UNDEFINED_ERROR = 254
 };
 
-uint32_t fixCount = 0;
+uint32_t fixCount = 0;  // Count of GGA messages with valid FIX
+uint32_t noFixCount = 0;  // Count of GGA messages with NO FIX
 uint32_t passedChecksumCount = 0;
 bool processUplinkMessage = true;
 
@@ -389,7 +390,6 @@ bool diveInProgress = false;
 
 String getStats();
 
-int nofix_msg_loop_count = 0;
 template <typename T> struct vector
 {
   T x, y, z;
@@ -580,8 +580,6 @@ bool makoReportsLeak = false;
 void checkMakoJSONForAlarms(struct MakoUplinkTelemetryForJson& m);
 
 uint16_t calcUplinkChecksum(char* buffer, uint16_t length);
-void sendFakeGPSData_No_Fix(const char* context);
-void sendFakeGPSData_No_GPS(const char* context);
 bool configureUBLOXGps(); 
 void sendCeaseFixMessagesNMEAMessage(bool cease, const char* context);
 void toggleOTAActive();
@@ -1064,8 +1062,6 @@ double tempFloat=0.0;
 double humidFloat=0.0;
 bool newTempHumidRead=false;
 
-uint32_t sendNextFakeGPSMessageAt = 0;
-const uint32_t periodBetweenFakeGPSMessages = 950;
 
 const uint32_t timeoutUntilNoGPSDetected = 10000;
 
@@ -1128,6 +1124,24 @@ void loop()
     {
       if (gps.encode(gpsPacket.data[i]))
       {
+        // Count GGA messages specifically (accounting for simulation) - moved here to count ALL GGA messages
+        if (gps.isSentenceGGA())
+        {
+          bool reallyHasFix = !overrideGPSToNoFixForTesting && gps.isSentenceContainingValidFix();
+          USB_SERIAL_PRINTF("\nDEBUG: overrideGPSToNoFixForTesting=%d, isSentenceContainingValidFix=%d, reallyHasFix=%d\n",
+                           overrideGPSToNoFixForTesting, gps.isSentenceContainingValidFix(), reallyHasFix);
+          if (reallyHasFix)
+          {
+            fixCount++;
+            USB_SERIAL_PRINTF("\nGGA FIX: %lu  GGA NO FIX: %lu  Total GPS Msg: %lu Bad GPS Msg: %lu\n", fixCount, noFixCount, gps.passedChecksum(), gps.failedChecksum());
+          }
+          else
+          {
+            noFixCount++;
+            USB_SERIAL_PRINTF("\nGGA NO FIX: %lu  GGA FIX: %lu  Total GPS Msg: %lu Bad GPS Msg: %lu%s\n", noFixCount, fixCount, gps.passedChecksum(), gps.failedChecksum(), overrideGPSToNoFixForTesting ? " [SIMULATED]" : "");
+          }
+        }
+
         // Must extract longitude and latitude for the updated flag to be set on next location update.
         if (gps.location.isValid() && gps.location.isUpdated() && gps.isSentenceFixMsgType())
         {
@@ -1142,13 +1156,7 @@ void loop()
           if (hasGPSFix)
             timeNextGoodFixExpectedBy = now + maxTimeBeforeAlertNoFix;
 
-          // These will be updated - variables declared as static in GPS loss detection section
-
-          // only enter here on GPRMC and GPGGA msgs with M5 GPS unit, 0.5 sec between each message.
-          // GNRMC followed by GNGGA messages for NEO-6M, no perceptible gap between GNRMC and GNGGA.
-          // 1 second between updates on the same message type for M5.
-          // Only require uplink message for GGA.
-
+          // Only require uplink message for GGA, whether FIX or NO FIX.
           //////////////////////////////////////////////////////////
           // send message to outgoing serial connection to mako gopro
           if (forceGPSMissingGGARMCForTesting && (gps.isSentenceGGA() || gps.isSentenceRMC()))
@@ -1230,24 +1238,12 @@ void loop()
             downlinkSendMessageDurationMicroSeconds = micros();
           }
 
-          uint32_t newFixCount = gps.sentencesWithFix();
           uint32_t newPassedChecksum = gps.passedChecksum();
           uint32_t newFailedChecksum = gps.failedChecksum();
 
           // Update comprehensive GPS statistics
           gpsMessagesReceived = newPassedChecksum + newFailedChecksum;
           gpsFailedChecksumCount = newFailedChecksum;
-
-          if (newFixCount > fixCount)
-          {
-            fixCount = newFixCount;
-            USB_SERIAL_PRINTF("\nFix: %lu Good GPS Msg: %lu Bad GPS Msg: %lu\n", fixCount, newPassedChecksum, gps.failedChecksum());
-          }
-
-          if (nofix_msg_loop_count > -1)
-          {
-            nofix_msg_loop_count = -1;
-          }
 
           updateButtonsAndBuzzer();
 
@@ -1265,17 +1261,12 @@ void loop()
         }
         else
         {
-          if (nofix_msg_loop_count > -1)
-          {
-            // Mesages are being received but no valid location fix has been seen since startup
-            // Increment message count until first fix received.
-            nofix_msg_loop_count++;
-            static char msgType[10];
-            strncpy(msgType,gps.getSentence(),8);
+          // Log all NO FIX messages for debugging
+          static char msgType[10];
+          strncpy(msgType,gps.getSentence(),8);
 
-            // first byte in getSentence() is currently always newline
-            USB_SERIAL_PRINTF("NO GPS FIX - MESSAGE RECEIVED: %s  %s\n",msgType + (msgType[0] == '\n' ? 1 : 0),gps.getSentence());
-          }
+          // first byte in getSentence() is currently always newline
+          USB_SERIAL_PRINTF("NO GPS FIX - MESSAGE RECEIVED: %s  %s\n",msgType + (msgType[0] == '\n' ? 1 : 0),gps.getSentence());
         }
       }
       else
@@ -1287,38 +1278,7 @@ void loop()
   // *************  END CODE FOR RECEIVING GPS MESSAGE
 
   // *************  START CODE FOR TELEMETRY PROCESSING FOR GPS MESSAGE RECEIVED
-  // Always ensure MQTT upload happens regardless of GPS state - send fake GPS data when needed
-/*
-  if (now > sendNextFakeGPSMessageAt)
-  {
-    if (nofix_msg_loop_count > 0) 
-    {
-      sendLemonStatus(LC_NO_FIX);
-      sendFakeGPSData_No_Fix(" conditional: now > sendNextFakeGPSMessageAt && nofix_msg_loop_count > 0");
-      // Force process uplink message to ensure MQTT continues during GPS outage
-      processUplinkMessage = true;
-      uplinkMessageListenTimer = millis();
-    }
-    else if (nofix_msg_loop_count != -1) 
-    {
-      sendLemonStatus(LC_NO_GPS);
-      sendFakeGPSData_No_GPS("conditional: now > sendNextFakeGPSMessageAt && nofix_msg_loop_count != -1");
-      // Force process uplink message to ensure MQTT continues before first GPS fix
-      processUplinkMessage = true;
-      uplinkMessageListenTimer = millis();
-    }
-    else if (now > timeNextGoodFixExpectedBy) // GPS fix lost after initial fix
-    {
-      sendLemonStatus(LC_NO_FIX);
-      sendFakeGPSData_No_Fix("conditional: now > sendNextFakeGPSMessageAt && now > timeNextGoodFixExpectedBy");    
-      // Force process uplink message to ensure MQTT continues after GPS fix loss
-      processUplinkMessage = true;
-      uplinkMessageListenTimer = millis();
-    }
-    
-    sendNextFakeGPSMessageAt = now + periodBetweenFakeGPSMessages;
-  }
-*/
+  // GPS module now sends real NO FIX messages, so fake GPS logic is no longer needed
 
   // Always allow telemetry processing - removed the 'else' to enable MQTT before GPS fix
   {
@@ -1432,7 +1392,7 @@ void loop()
 
         processUplinkMessage = false; // finished processing the uplink message
       }
-      else if ((nofix_msg_loop_count >= 0 || now > timeNextGoodFixExpectedBy) && (millis() - uplinkMessageListenTimer) > uplinkMessageLingerPeriodMs)
+      else if (now > timeNextGoodFixExpectedBy && (millis() - uplinkMessageListenTimer) > uplinkMessageLingerPeriodMs)
       {
         // No GPS fix available or GPS fix lost - create telemetry message with zero'd Mako data
         USB_SERIAL_PRINTLN("11.0 No GPS fix - creating telemetry with zero'd Mako data");
@@ -1512,7 +1472,7 @@ void loop()
   if (now > lastStatusUpdate + wideScreenOLEDUpdatePeriod)
   {
     // Calculate GPS statistics
-    uint32_t gpsNoFixCount = gpsMessagesReceived - fixCount;
+    uint32_t gpsNoFixCount = noFixCount;  // Use explicit GGA NO FIX counter
     double gpsHdop = gps.hdop.hdop();
     uint8_t gpsSatellites = gps.satellites.value();
     

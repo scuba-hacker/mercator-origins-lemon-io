@@ -532,22 +532,7 @@ uint16_t calcUplinkChecksum(char* buffer, uint16_t length)
 
 // u-Blox GPS does not send a 'no fix' GGA or RMC message - they are simply not sent.
 // This is an issue because it means that there is no message to send the diver.
-// So send a fake message so that Mako can tell that Lemon/GPS is still there and
-// that Fix is lost.
-void sendFakeGPSData_No_Fix(const char* context)
-{
-  // issue is that there is an A instead of a V in field 3. 
-  const char* fake_no_fix = "$GPRMC,235316.000,A,4003.9040,N,10512.5792,W,0.09,144.75,141112,,*19\n";
-  USB_SERIAL_PRINTF("**** SEND TO MAKO **** sendFakeGPSData_No_Fix %s\n",context);
-  serial_mako_gopro.write(fake_no_fix);
-}
-
-void sendFakeGPSData_No_GPS(const char* context)
-{
-  const char* fake_no_gps = "$GPRMC,092204.999,A,4250.5589,S,14718.5084,E,0.00,89.68,211200,,*25\n";
-  USB_SERIAL_PRINTF("**** SEND TO MAKO **** sendFakeGPSData_No_GPS %s\n",context);
-  serial_mako_gopro.write(fake_no_gps);
-}
+// Fake GPS functions removed - GPS module now sends real NO FIX messages
 
 void sendCeaseFixMessagesNMEAMessage(bool cease, const char* context)
 {
@@ -728,8 +713,8 @@ enum e_q_upload_status uploadTelemetryToPrivateMQTT(MakoUplinkTelemetryForJson* 
         uploadStatus = Q_NO_WIFI_CONNECTION;
         USB_SERIAL_PRINTLN("Private MQTT No Wifi\n");
       } else {
-        uploadStatus = Q_MQTT_CLIENT_CONNECT_ERROR;
-        USB_SERIAL_PRINTF("Private MQTT Client error - not connected\n");
+        uploadStatus = Q_SUCCESS_NO_SEND;
+        USB_SERIAL_PRINTF("Private MQTT - pending send window\n");
       }
     }
   }

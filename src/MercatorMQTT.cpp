@@ -125,8 +125,6 @@ MQTTConnectionResult MercatorMQTT::publish(const char* topic, const char* payloa
         return MQTTConnectionResult::WIFI_NOT_CONNECTED;
     }
     
-    lastUploadAt = millis();
-    
     if (useTLS) {
         AsyncMqttClient* client = getActiveAsyncClient();
         if (!client->connected()) {
@@ -137,6 +135,7 @@ MQTTConnectionResult MercatorMQTT::publish(const char* topic, const char* payloa
         
         uint16_t packetId = client->publish(topic, qos, false, payload);
         if (packetId != 0) {
+            lastUploadAt = millis();  // Only update timestamp on successful upload
             return MQTTConnectionResult::SUCCESS;
         } else {
             return MQTTConnectionResult::SEND_ERROR;
@@ -149,6 +148,7 @@ MQTTConnectionResult MercatorMQTT::publish(const char* topic, const char* payloa
         
         bool result = client->publish(topic, payload, qos);
         if (result) {
+            lastUploadAt = millis();  // Only update timestamp on successful upload
             return MQTTConnectionResult::SUCCESS;
         } else {
             return MQTTConnectionResult::SEND_ERROR;

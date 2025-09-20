@@ -130,6 +130,10 @@ const char STATS_HTML[] = R"rawliteral(
                    <p class="reading"><span id="fixCount"></span></p>
                </div>
                <div class="card">
+                   <p class="card-title">No Fixes</p>
+                   <p class="reading"><span id="noFixCount"></span></p>
+               </div>
+               <div class="card">
                    <p class="card-title">GPS MISSING FIX Simulation</p>
                    <p class="reading"><span id="gpsMissingMsgsSimActive"></span></p>
                </div>

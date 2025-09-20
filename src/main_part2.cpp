@@ -749,6 +749,7 @@ struct MakoUplinkTelemetryForJson
 String getStats()
 {
   readings["fixCount"] = fixCount;
+  readings["noFixCount"] = noFixCount;
   readings["gpsMissingMsgsSimActive"] = (forceGPSMissingGGARMCForTesting ? "ACTIVE" : "INACTIVE");
   readings["gpsOverrideNoFixSimActive"] = (overrideGPSToNoFixForTesting ? "ACTIVE" : "INACTIVE");
   readings["goodUplinkMessageCount"] = goodUplinkMessageCount;
@@ -762,9 +763,9 @@ String getStats()
   readings["pipelineDraining"] = (telemetryPipeline.isPipelineDraining() ? "Yes" : "No");
   readings["pipelineLength"] = telemetryPipeline.getPipelineLength();
   readings["offlineThrottleApplied"] = (g_offlineStorageThrottleApplied ? "Yes" : "No");  
-  readings["last_private_mqtt_upload_at"] = (float)((int)((float)(privateMQTT.getLastUploadTime())/100.0))/10.0;
-  readings["last_head_committed_at"] = (float)((int)((float)(last_head_committed_at)/100.0))/10.0;
-  readings["lastCheckForInternetConnectivityAt"] = (float)((int)((float)(lastCheckForInternetConnectivityAt)/100.0))/10.0;
+  readings["last_private_mqtt_upload_at"] = (int)(privateMQTT.getLastUploadTime() / 1000);
+  readings["last_head_committed_at"] = (int)(last_head_committed_at / 1000);
+  readings["lastCheckForInternetConnectivityAt"] = (int)(lastCheckForInternetConnectivityAt / 1000);
 
   readings["min_sens_read"] = latestMakoStats.minimum_sensor_read_time;
   readings["sens_read"] = latestMakoStats.sensor_aquisition_time;
@@ -1069,7 +1070,7 @@ bool checkForValidPreambleOnUplink()
     }
     else
     {
-      if (accumulateMissedMessageCount && nofix_msg_loop_count == -1)  // (must be at least 10 seconds since power on and first fix received)
+      if (accumulateMissedMessageCount)  // (must be at least 10 seconds since power on)
         uplinkMessageMissingCount++;
     }
   }
