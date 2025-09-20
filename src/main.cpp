@@ -4,6 +4,7 @@
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 bool writeLogToSerial = true;
 bool writeTelemetryLogToSerial = false; // writeLogToSerial must also be true if this is set to true
+bool writeMakoMsgDecodingLogToSerial = false; // writeLogToSerial must also be true if this is set to true
 
 // set USE_WEB_SERIAL in SerialConfig.h if required
 #include "SerialConfig.h"
@@ -1128,10 +1129,12 @@ void loop()
     {
       if (gps.encode(gpsPacket.data[i]))
       {
+        // Calculate GPS fix status for all sentence types (needed for timeout reset)
+        bool reallyHasFix = !overrideGPSToNoFixForTesting && gps.isSentenceContainingValidFix();
+
         // Count GGA messages specifically (accounting for simulation) - moved here to count ALL GGA messages
         if (gps.isSentenceGGA())
         {
-          bool reallyHasFix = !overrideGPSToNoFixForTesting && gps.isSentenceContainingValidFix();
 //          USB_SERIAL_PRINTF("\nDEBUG GGA: NMEA='%s', override=%d, isSentenceContainingValidFix=%d, reallyHasFix=%d\n",
 //                           gps.getSentence(), overrideGPSToNoFixForTesting, gps.isSentenceContainingValidFix(), reallyHasFix);
 
@@ -1154,6 +1157,8 @@ void loop()
           if (reallyHasFix)
           {
             fixCount++;
+            // Reset GPS fix timeout for any valid GGA fix (ensures timeout doesn't trigger incorrectly)
+            timeNextGoodFixExpectedBy = now + maxTimeBeforeAlertNoFix;
             USB_SERIAL_PRINTF("\nGGA FIX: %lu  GGA NO FIX: %lu  Total GPS Msg: %lu Bad GPS Msg: %lu\n", fixCount, noFixCount, gps.passedChecksum(), gps.failedChecksum());
           }
           else
@@ -1174,7 +1179,8 @@ void loop()
             timeOfNextLemonStatus = now + lemonStatusDutyCycle;
           }
 
-          if (hasGPSFix)
+          // Reset the GPS fix timeout whenever we receive ANY valid GPS fix (GGA or RMC)
+          if (reallyHasFix)
             timeNextGoodFixExpectedBy = now + maxTimeBeforeAlertNoFix;
 
           // Only require uplink message for GGA, whether FIX or NO FIX.
@@ -1339,14 +1345,18 @@ void loop()
 
         bool validPreambleFound = checkForValidPreambleInReceiveBuffer(makoPacket, preambleStart);
 
-        if (validPreambleFound)
-          USB_SERIAL_PRINTLN("3.0 preamble: Found");
-        else
-          USB_SERIAL_PRINTLN("3.1 preamble: ******** MISSING *********");
+        if (writeMakoMsgDecodingLogToSerial)
+        {
+          if (validPreambleFound)
+            USB_SERIAL_PRINTLN("3.0 preamble: Found");
+          else
+            USB_SERIAL_PRINTLN("3.1 preamble: ******** MISSING *********");
+        }
 
         if (validPreambleFound && (makoPacket.length - preambleStart) >= makoHardcodedUplinkMessageLength)
         {
-          USB_SERIAL_PRINTLN("4.0 Decoding Mako Message");
+          if (writeMakoMsgDecodingLogToSerial)
+            USB_SERIAL_PRINTLN("4.0 Decoding Mako Message");
 
           uplinkMessageListenTimer = millis() - uplinkMessageListenTimer;
 
@@ -1379,13 +1389,15 @@ void loop()
           
           if (!messageValidatedOk)
           {
-            USB_SERIAL_PRINTLN("5.0 Message Not Validated ok");
+            if (writeMakoMsgDecodingLogToSerial)
+              USB_SERIAL_PRINTLN("5.0 Message Not Validated ok");
             processUplinkMessage = false;
             return;
           }
           else
           {
-            USB_SERIAL_PRINTLN("5.1 Message IS Validated ok");
+            if (writeMakoMsgDecodingLogToSerial)
+              USB_SERIAL_PRINTLN("5.1 Message IS Validated ok");
           }
 
 
@@ -1402,18 +1414,21 @@ void loop()
             last_head_committed_at = timeNow;
       
             populateFinalLemonTelemetry(latestLemonTelemetry);
-            USB_SERIAL_PRINTLN("6.1 Populated final lemon telemetry");
+            if (writeMakoMsgDecodingLogToSerial)
+              USB_SERIAL_PRINTLN("6.1 Populated final lemon telemetry");
 
             // 4.2 Populate the head block with the binary Lemon telemetry data and commit to the telemetry pipeline.
             populateHeadWithLemonTelemetryAndCommit(headBlock);
-            USB_SERIAL_PRINTLN("6.2 Populated Head with lemon Telemetry and Commit");
+            if (writeMakoMsgDecodingLogToSerial)
+              USB_SERIAL_PRINTLN("6.2 Populated Head with lemon Telemetry and Commit");
           }
           else
           {
             // do not commit the head block - throw away the entire message
           }
 
-          USB_SERIAL_PRINTLN("7.1 Sending next msg to mqtt");
+          if (writeMakoMsgDecodingLogToSerial)
+            USB_SERIAL_PRINTLN("7.1 Sending next msg to mqtt");
           // 5. Send the next message(s) from pipeline to private MQTT
           getNextTelemetryMessagesUploadedToPrivateMQTT();
           
@@ -1422,7 +1437,8 @@ void loop()
         }
         else if (packetReceived)
         {
-          USB_SERIAL_PRINTLN("9.1 Uplink msg missed count incremented - place 1");
+          if (writeMakoMsgDecodingLogToSerial)
+            USB_SERIAL_PRINTLN("9.1 Uplink msg missed count incremented - place 1");
           // Packet was received but preamble invalid or message too short
           incrementUplinkMessageMissedCount();
         }
@@ -1432,7 +1448,8 @@ void loop()
       else if (now > timeNextGoodFixExpectedBy && (millis() - uplinkMessageListenTimer) > uplinkMessageLingerPeriodMs)
       {
         // No GPS fix available or GPS fix lost - create telemetry message with zero'd Mako data
-        USB_SERIAL_PRINTLN("11.0 No GPS fix - creating telemetry with zero'd Mako data");
+        if (writeMakoMsgDecodingLogToSerial)
+          USB_SERIAL_PRINTLN("11.0 No GPS fix - creating telemetry with zero'd Mako data");
         
         // Get the next free head block to populate in the telemetry pipeline
         BlockHeader headBlock = telemetryPipeline.getHeadBlockForPopulating();
@@ -1448,16 +1465,21 @@ void loop()
           last_head_committed_at = timeNow;
           
           populateFinalLemonTelemetry(latestLemonTelemetry);
-          USB_SERIAL_PRINTLN("11.1 Populated final lemon telemetry (no GPS fix)");
+          if (writeMakoMsgDecodingLogToSerial)
+            USB_SERIAL_PRINTLN("11.1 Populated final lemon telemetry (no GPS fix)");
           
           // Populate head block with Lemon telemetry data and commit
           populateHeadWithLemonTelemetryAndCommit(headBlock);
-          USB_SERIAL_PRINTLN("11.2 Populated Head with lemon Telemetry and Commit (no GPS fix)");
+          if (writeMakoMsgDecodingLogToSerial)
+            USB_SERIAL_PRINTLN("11.2 Populated Head with lemon Telemetry and Commit (no GPS fix)");
           
-          USB_SERIAL_PRINTLN("11.3 Sending next msg to mqtt (no GPS fix)");
+          if (writeMakoMsgDecodingLogToSerial)
+            USB_SERIAL_PRINTLN("11.3 Sending next msg to mqtt (no GPS fix)");
+
           // Send the next message(s) from pipeline to private MQTT
           getNextTelemetryMessagesUploadedToPrivateMQTT();
-          USB_SERIAL_PRINTLN("11.4 Sent next msg to mqtt (no GPS fix)");
+          if (writeMakoMsgDecodingLogToSerial)
+            USB_SERIAL_PRINTLN("11.4 Sent next msg to mqtt (no GPS fix)");
         }
         
         processUplinkMessage = false; // finished processing
@@ -1467,7 +1489,8 @@ void loop()
         // Timeout waiting for Mako response - only count as missed if we were actually waiting
         if (processUplinkMessage)
         {
-          USB_SERIAL_PRINTLN("10.1 Uplink msg missed count incremented - place 2");
+          if (writeMakoMsgDecodingLogToSerial)
+            USB_SERIAL_PRINTLN("10.1 Uplink msg missed count incremented - place 2");
           incrementUplinkMessageMissedCount();
         }
         processUplinkMessage = false; // stop waiting
@@ -1475,8 +1498,6 @@ void loop()
     }
   }
   // *************  END CODE FOR TELEMETRY PROCESSING FOR GPS MESSAGE RECEIVED
-
-
 
   // *************  START CODE FOR SEND LEMON STATUS TO THE ARDUINO CALLED LANTERN
   now = millis();

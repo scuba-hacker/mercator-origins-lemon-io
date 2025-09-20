@@ -586,9 +586,6 @@ void sendCeaseFixMessagesNMEAMessage(bool cease, const char* context)
 
 void buildUplinkTelemetryMessageV6a(char* payload, const struct MakoUplinkTelemetryForJson& m, const struct LemonTelemetryForJson& l)
 {
-  if (writeTelemetryLogToSerial)
-    USB_SERIAL_PRINTF("\nMQTT JSON: using l.isFix=%d for is_fix field\n", l.isFix);
-
   currentPrivateMQTTUploadAt = millis();
   privateMQTTUploadDutyCycle = currentPrivateMQTTUploadAt - lastPrivateMQTTUploadAt;
 

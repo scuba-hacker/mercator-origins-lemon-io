@@ -939,7 +939,8 @@ bool checkForValidPreambleInReceiveBuffer(MakoDataPacket& makoPacket, int& pream
                   break;
               }
           }
-          USB_SERIAL_PRINTF("2.0 preamble: Found MBJ...%s pattern, data starts at position %d\n", uplink_preamble_second_segment, preambleStart);
+          if (writeMakoMsgDecodingLogToSerial)
+            USB_SERIAL_PRINTF("2.0 preamble: Found MBJ...%s pattern, data starts at position %d\n", uplink_preamble_second_segment, preambleStart);
       }
   }
   return validPreambleFound;
@@ -981,25 +982,25 @@ bool checkForValidPreambleOnUplink()
       char next = serial_mako_gopro.read();
       if (next == *nextByteToFind)
       {
-        if (writeTelemetryLogToSerial)
+        if (writeMakoMsgDecodingLogToSerial)
           *nextCharIndexForSerialOutput++ = (isalnum(next) ? next : '?');
 
         nextByteToFind++;
       }
       else
       {
-        if (writeTelemetryLogToSerial)
+        if (writeMakoMsgDecodingLogToSerial)
           *nextCharIndexForSerialOutput++ = (isalnum(next) ? next : (next == 0 ? '0' : '?'));
 
         nextByteToFind = uplink_preamble_first_segment;    // make sure contiguous preamble found, reset search for first char of preamble
       }
 
-      if (writeTelemetryLogToSerial)
+      if (writeMakoMsgDecodingLogToSerial)
         if (nextCharIndexForSerialOutput == preambleMBJ + preambleMBJSize-10)
           nextCharIndexForSerialOutput = preambleMBJ;
     }
 
-    if (writeTelemetryLogToSerial)
+    if (writeMakoMsgDecodingLogToSerial)
     {
       *nextCharIndexForSerialOutput++ = '\n';  *nextCharIndexForSerialOutput++ = '\0';
 
@@ -1023,36 +1024,36 @@ bool checkForValidPreambleOnUplink()
         char next = serial_mako_gopro.read();
         if (next == *nextSecondSegmentByteToFind)
         {
-          if (writeTelemetryLogToSerial)
+          if (writeMakoMsgDecodingLogToSerial)
             *nextCharIndexForSerialOutput++ = (isalnum(next) ? next : '?');
           nextSecondSegmentByteToFind++;
         }
         else
         {
-          if (writeTelemetryLogToSerial)
+          if (writeMakoMsgDecodingLogToSerial)
             *nextCharIndexForSerialOutput++ = (isalnum(next) ? next : (next == 0 ? '\0' : '?'));
           nextSecondSegmentByteToFind = uplink_preamble_second_segment;    // make sure contiguous preamble found, reset search for first char of preamble
         }
 
-        if (writeTelemetryLogToSerial)
+        if (writeMakoMsgDecodingLogToSerial)
           if (nextCharIndexForSerialOutput == preambleAEJ + preambleAEJSize-10)
             nextCharIndexForSerialOutput = preambleAEJ;
       }
     }
     else
     {
-      if (writeTelemetryLogToSerial)
+      if (writeMakoMsgDecodingLogToSerial)
         USB_SERIAL_PRINTF("\nTimeout: Not Found preamble null terminator for MBJ\n");
     }
 
-    if (writeTelemetryLogToSerial)
+    if (writeMakoMsgDecodingLogToSerial)
     {
       *nextCharIndexForSerialOutput++ = '\n';  *nextCharIndexForSerialOutput++ = '\0';
       USB_SERIAL_PRINTF("%s", preambleAEJ);
 
       if (*nextSecondSegmentByteToFind != 0)
       {
-        if (writeLogToSerial && writeTelemetryLogToSerial)
+        if (writeMakoMsgDecodingLogToSerial)
           USB_SERIAL_PRINTF("    AEJ Timeout\n");
       }
     }
@@ -1062,7 +1063,7 @@ bool checkForValidPreambleOnUplink()
       validPreambleFound = true;
       
       // message pre-amble found - read the rest of the received message.
-      if (writeTelemetryLogToSerial)
+      if (writeMakoMsgDecodingLogToSerial)
         USB_SERIAL_PRINT("\nPre-Amble Found\n");
     }
     else
