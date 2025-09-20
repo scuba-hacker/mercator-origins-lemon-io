@@ -719,10 +719,19 @@ uint8_t UBX_CFG_SEA_MODEL_VALSET[] = {
 // UBX-CFG-VALSET: set INFIL_MINSV = 20 (RAM only)
 // Force NO FIX output
 // Force GPS FIX to only be calculated for >= 20 satellites
-uint8_t UBX_CFG_VALSET_INFIL_MINSV[] = {
+uint8_t UBX_CFG_VALSET_INFIL_MINSV_20[] = {
   0x00, 0x01, 0x00, 0x00,   // version=0, layer=RAM (0x01), reserved
   0x13, 0x00, 0x31, 0x10,   // key = 0x10310013 (little endian)
   0x14                      // value = 20 (0x14)
+};
+
+// UBX-CFG-VALSET: set INFIL_MINSV = 20 (RAM only)
+// Force NO FIX output
+// Force GPS FIX to only be calculated for >= 20 satellites
+uint8_t UBX_CFG_VALSET_INFIL_MINSV_4[] = {
+  0x00, 0x01, 0x00, 0x00,   // version=0, layer=RAM (0x01), reserved
+  0x13, 0x00, 0x31, 0x10,   // key = 0x10310013 (little endian)
+  0x04                      // value = 20 (0x14)
 };
 
 // UBX-CFG-VALGET: query INFIL_MINSV (from RAM + BBR + Flash)
@@ -1054,23 +1063,18 @@ bool gpsSendWarmStartCommand()
   return true;
 }
 
-bool gpsSendMinimumSatellitesForNavCommand(int satellites)
-{
-  bool ok = sendUBX(0x06, 0x17, CFG_NMEA_ALLOW_NOFIX, sizeof(CFG_NMEA_ALLOW_NOFIX),"TRIGGER COLD START",false);
-  USB_SERIAL_PRINTF("%s Sent %i Min Satellites for Fix Command\n", (ok ? okAck : badAck), satellites);
-  return ok;
-}
-
 bool gpsTriggerNoFixBySatCountHighForFix()
 {
-  const int veryHighSatelliteCountForFix = 20;
-  return gpsSendMinimumSatellitesForNavCommand(veryHighSatelliteCountForFix);
+  bool ok = sendUBX(0x06, 0x17, UBX_CFG_VALSET_INFIL_MINSV_20, sizeof(UBX_CFG_VALSET_INFIL_MINSV_20),"Set Min Satellites 20 - force no fix",false);
+  USB_SERIAL_PRINTF("%s Sent %i Min Satellites 20 for Fix Command\n", (ok ? okAck : badAck));
+  return ok;
 }
 
 bool gpsTriggerNormalSatCountForFix()
 {
-  const int defaultSatCountForFix = 4;
-  return gpsSendMinimumSatellitesForNavCommand(defaultSatCountForFix);
+  bool ok = sendUBX(0x06, 0x17, UBX_CFG_VALSET_INFIL_MINSV_4, sizeof(UBX_CFG_VALSET_INFIL_MINSV_4),"Set Min Satellites 4",false);
+  USB_SERIAL_PRINTF("%s Sent %i Min Satellites 4 for Fix Command\n", (ok ? okAck : badAck));
+  return ok;
 }
 
 
