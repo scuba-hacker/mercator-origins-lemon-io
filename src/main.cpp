@@ -1139,7 +1139,8 @@ void loop()
           hasGPSFix = reallyHasFix && now < timeNextGoodFixExpectedBy;
 
           // Cache GPS fix status specifically for telemetry (use real fix status, not time-based expiry)
-          gpsFixStatusForTelemetry = reallyHasFix;
+          // But respect simulation override - if override is active, force to false
+          gpsFixStatusForTelemetry = overrideGPSToNoFixForTesting ? false : reallyHasFix;
 
           // Update the isFix field in telemetry for ALL GGA messages
           latestLemonTelemetry.isFix = gpsFixStatusForTelemetry;
@@ -1312,6 +1313,7 @@ void loop()
   }
   // *************  END CODE FOR RECEIVING GPS MESSAGE
 
+
   // *************  START CODE FOR TELEMETRY PROCESSING FOR GPS MESSAGE RECEIVED
   // GPS module now sends real NO FIX messages, so fake GPS logic is no longer needed
 
@@ -1475,8 +1477,22 @@ void loop()
   // *************  END CODE FOR TELEMETRY PROCESSING FOR GPS MESSAGE RECEIVED
 
 
+
   // *************  START CODE FOR SEND LEMON STATUS TO THE ARDUINO CALLED LANTERN
   now = millis();
+
+  // Handle timeout for telemetry GPS fix status (3 second timeout)
+  if (now > timeNextGoodFixExpectedBy)
+  {
+    // No GPS fix received within expected time, set fix status to false for telemetry
+    if (gpsFixStatusForTelemetry != false)
+    {
+      USB_SERIAL_PRINTLN("GPS FIX TIMEOUT: No GPS fix within 3 seconds, setting telemetry fix status to false");
+      gpsFixStatusForTelemetry = false;
+      latestLemonTelemetry.isFix = gpsFixStatusForTelemetry;
+    }
+  }
+
   if (now > timeOfNextLemonStatus)
   {
     if (now > timeNextGoodFixExpectedBy)
