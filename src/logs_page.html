@@ -337,7 +337,7 @@
         let autoScroll = false;
         let logBuffer = [];
         const MAX_LOG_BUFFER_SIZE = 100000;
-        const console = document.getElementById('console');
+        const consoleElement = document.getElementById('console');
         const status = document.getElementById('status');
         const autoScrollBtn = document.getElementById('autoScrollBtn');
 
@@ -388,11 +388,11 @@
             checkForSelectionChange();
 
             // Only update console if not paused
-            if (console.dataset.paused !== 'true') {
-                console.textContent += timestampedData;
+            if (consoleElement.dataset.paused !== 'true') {
+                consoleElement.textContent += timestampedData;
 
                 if (autoScroll) {
-                    console.scrollTop = console.scrollHeight;
+                    consoleElement.scrollTop = consoleElement.scrollHeight;
                 }
             }
 
@@ -413,7 +413,7 @@
         }
 
         function clearConsole() {
-            console.textContent = '';
+            consoleElement.textContent = '';
 
             // Force memory cleanup
             logBuffer.length = 0;  // Clear array efficiently
@@ -425,8 +425,8 @@
             }
 
             // Reset paused state
-            console.dataset.paused = 'false';
-            console.style.borderColor = '#444';
+            consoleElement.dataset.paused = 'false';
+            consoleElement.style.borderColor = '#444';
 
             console.log('Console cleared - buffer reset');
         }
@@ -435,25 +435,25 @@
         function checkForSelectionChange() {
             const selection = window.getSelection();
             const hasSelection = selection.rangeCount > 0 && !selection.isCollapsed;
-            const currentlyPaused = console.dataset.paused === 'true';
+            const currentlyPaused = consoleElement.dataset.paused === 'true';
 
             if (hasSelection && !currentlyPaused) {
                 // User just made a selection - pause updates
-                console.dataset.paused = 'true';
-                console.style.borderColor = '#ffa500'; // Orange border to indicate paused updates
+                consoleElement.dataset.paused = 'true';
+                consoleElement.style.borderColor = '#ffa500'; // Orange border to indicate paused updates
             } else if (!hasSelection && currentlyPaused) {
                 // User cleared selection - resume updates
-                console.dataset.paused = 'false';
-                console.style.borderColor = '#444';
+                consoleElement.dataset.paused = 'false';
+                consoleElement.style.borderColor = '#444';
 
                 // Rebuild console content from buffer to catch up
                 const maxDisplayLines = 100000;
                 const linesToShow = logBuffer.length > maxDisplayLines ?
                     logBuffer.slice(-maxDisplayLines) : logBuffer;
-                console.textContent = linesToShow.join('');
+                consoleElement.textContent = linesToShow.join('');
 
                 if (autoScroll) {
-                    console.scrollTop = console.scrollHeight;
+                    consoleElement.scrollTop = consoleElement.scrollHeight;
                 }
             }
         }
@@ -483,11 +483,11 @@
         }
 
         function scrollToTop() {
-            console.scrollTop = 0;
+            consoleElement.scrollTop = 0;
         }
 
         function scrollToBottom() {
-            console.scrollTop = console.scrollHeight;
+            consoleElement.scrollTop = consoleElement.scrollHeight;
         }
 
         function toggleAutoScroll() {
@@ -496,10 +496,10 @@
         }
 
     async function copyConsole() {
-        const text = console.textContent || '';
-        if (!text) { 
-            alert('Console is empty'); 
-            return; 
+        const text = consoleElement.textContent || '';
+        if (!text) {
+            alert('Console is empty');
+            return;
         }
 
         // Prefer modern Clipboard API (requires HTTPS or localhost)
@@ -575,7 +575,7 @@
 
         // Custom resize functionality for console edges
         function initCustomResize() {
-            const console = document.getElementById('console');
+            const consoleEl = document.getElementById('console');
             const leftHandle = document.querySelector('.console-resize-left');
             const rightHandle = document.querySelector('.console-resize-right');
             const bottomHandle = document.querySelector('.console-resize-bottom');
@@ -589,8 +589,8 @@
                 currentHandle = handleType;
                 startX = e.clientX;
                 startY = e.clientY;
-                startWidth = parseInt(window.getComputedStyle(console).width, 10);
-                startHeight = parseInt(window.getComputedStyle(console).height, 10);
+                startWidth = parseInt(window.getComputedStyle(consoleEl).width, 10);
+                startHeight = parseInt(window.getComputedStyle(consoleEl).height, 10);
                 e.preventDefault();
                 e.stopPropagation();
             }
@@ -622,17 +622,17 @@
                 if (currentHandle === 'left') {
                     const newWidth = startWidth - (e.clientX - startX);
                     if (newWidth >= 300) {
-                        console.style.width = newWidth + 'px';
+                        consoleEl.style.width = newWidth + 'px';
                     }
                 } else if (currentHandle === 'right') {
                     const newWidth = startWidth + (e.clientX - startX);
                     if (newWidth >= 300) {
-                        console.style.width = newWidth + 'px';
+                        consoleEl.style.width = newWidth + 'px';
                     }
                 } else if (currentHandle === 'bottom') {
                     const newHeight = startHeight + (e.clientY - startY);
                     if (newHeight >= 200) {
-                        console.style.height = newHeight + 'px';
+                        consoleEl.style.height = newHeight + 'px';
                     }
                 }
             });
@@ -663,11 +663,11 @@
             });
 
             // Also check on mouse/key events that might change selection
-            console.addEventListener('mouseup', () => setTimeout(checkForSelectionChange, 10));
-            console.addEventListener('keyup', () => setTimeout(checkForSelectionChange, 10));
+            consoleElement.addEventListener('mouseup', () => setTimeout(checkForSelectionChange, 10));
+            consoleElement.addEventListener('keyup', () => setTimeout(checkForSelectionChange, 10));
 
             // Initialize paused state
-            console.dataset.paused = 'false';
+            consoleElement.dataset.paused = 'false';
 
             // Restore console size from cookies
             restoreConsoleSize();
@@ -682,7 +682,7 @@
                     clearTimeout(window.resizeSaveTimeout);
                     window.resizeSaveTimeout = setTimeout(saveConsoleSize, 500);
                 });
-                resizeObserver.observe(console);
+                resizeObserver.observe(consoleElement);
             } else {
                 // Fallback for older browsers - use mutation observer
                 const observer = new MutationObserver((mutations) => {
@@ -694,7 +694,7 @@
                         }
                     });
                 });
-                observer.observe(console, { attributes: true, attributeFilter: ['style'] });
+                observer.observe(consoleElement, { attributes: true, attributeFilter: ['style'] });
             }
         });
 
@@ -759,14 +759,190 @@
             window.location.href = '/update';
         }
 
+        let autoRetryInterval = null;
+        let isAutoRetrying = false;
+        let retryCount = 0;
+
         function reloadPage() {
-            window.location.reload();
+            console.log('reloadPage() called, isAutoRetrying:', isAutoRetrying);
+
+            if (isAutoRetrying) {
+                console.log('Stopping auto-retry');
+                stopAutoRetry();
+                return;
+            }
+
+            console.log('Starting auto-retry');
+            startAutoRetry();
+        }
+
+        function startAutoRetry() {
+            console.log('startAutoRetry() called');
+
+            // Store retry state in localStorage (more persistent than sessionStorage)
+            localStorage.setItem('autoRetryEnabled', 'true');
+            localStorage.setItem('autoRetryStartTime', Date.now().toString());
+
+            // Initialize retry count
+            retryCount = 0;
+            localStorage.setItem('retryCount', retryCount.toString());
+
+            isAutoRetrying = true;
+            updateReloadButton();
+
+            console.log('Auto-retry enabled, button should be orange now');
+
+            // Start the retry interval immediately
+            console.log('Setting up 2-second interval');
+            autoRetryInterval = setInterval(() => {
+                retryCount++;
+                localStorage.setItem('retryCount', retryCount.toString());
+                console.log('Interval fired - attempting reload #' + retryCount);
+                updateReloadButton(); // Update button with new count
+                attemptReload();
+            }, 2000);
+
+            // Also do immediate first reload after short delay to show button change
+            setTimeout(() => {
+                retryCount++;
+                localStorage.setItem('retryCount', retryCount.toString());
+                console.log('Initial reload attempt #' + retryCount);
+                updateReloadButton(); // Update button with new count
+                attemptReload();
+            }, 500);
+        }
+
+        function stopAutoRetry() {
+            console.log('stopAutoRetry() called');
+
+            // Clear retry state
+            localStorage.removeItem('autoRetryEnabled');
+            localStorage.removeItem('autoRetryStartTime');
+            localStorage.removeItem('lastReloadAttempt');
+            localStorage.removeItem('retryCount');
+
+            if (autoRetryInterval) {
+                console.log('Clearing interval');
+                clearInterval(autoRetryInterval);
+                autoRetryInterval = null;
+            }
+
+            isAutoRetrying = false;
+            retryCount = 0;
+            updateReloadButton();
+
+            console.log('Auto-retry stopped, button should be pink now');
+        }
+
+        function attemptReload() {
+            console.log('attemptReload() - reloading page now');
+
+            // Store attempt time before reload
+            localStorage.setItem('lastReloadAttempt', Date.now().toString());
+
+            // Force reload from server
+            window.location.reload(true);
+        }
+
+        function updateReloadButton() {
+            console.log('updateReloadButton() called, isAutoRetrying:', isAutoRetrying, 'retryCount:', retryCount);
+
+            const reloadBtn = document.querySelector('.btn-reload');
+            if (!reloadBtn) {
+                console.error('Reload button not found!');
+                return;
+            }
+
+            if (isAutoRetrying) {
+                if (retryCount > 0) {
+                    reloadBtn.textContent = `Stop Auto-Retry (${retryCount})`;
+                    reloadBtn.title = `Auto-retrying every 2 seconds. Attempt #${retryCount}. Click to stop.`;
+                } else {
+                    reloadBtn.textContent = 'Stop Auto-Retry';
+                    reloadBtn.title = 'Auto-retrying every 2 seconds. Click to stop.';
+                }
+                reloadBtn.style.background = '#ff5722';
+                console.log('Button updated to ORANGE with retry count:', retryCount);
+            } else {
+                reloadBtn.textContent = 'Reload';
+                reloadBtn.style.background = '#e91e63';
+                reloadBtn.title = 'Click to reload with auto-retry';
+                console.log('Button updated to PINK (Reload)');
+            }
+        }
+
+        // Check if we should resume auto-retry after page load
+        function checkResumeAutoRetry() {
+            console.log('checkResumeAutoRetry() called');
+
+            const autoRetryEnabled = localStorage.getItem('autoRetryEnabled');
+            const startTime = localStorage.getItem('autoRetryStartTime');
+
+            console.log('autoRetryEnabled from storage:', autoRetryEnabled);
+            console.log('startTime from storage:', startTime);
+
+            if (autoRetryEnabled === 'true' && startTime) {
+                const now = Date.now();
+                const timeSinceStart = now - parseInt(startTime);
+
+                console.log(`Auto-retry was active. Time since start: ${timeSinceStart}ms`);
+
+                // If less than 60 seconds since start, resume auto-retry
+                if (timeSinceStart < 60000) {
+                    console.log('Resuming auto-retry after page load');
+
+                    // Wait a bit to see if page loads successfully
+                    setTimeout(() => {
+                        // Check if WebSocket is connected (page loaded successfully)
+                        if (ws && ws.readyState === WebSocket.OPEN) {
+                            console.log('WebSocket connected - page loaded successfully, stopping auto-retry');
+                            stopAutoRetry();
+                        } else {
+                            console.log('WebSocket not connected - resuming auto-retry');
+                            resumeAutoRetry();
+                        }
+                    }, 2000);
+                } else {
+                    console.log('Auto-retry timeout reached (60s), stopping');
+                    stopAutoRetry();
+                }
+            } else {
+                console.log('No auto-retry state found, normal operation');
+            }
+        }
+
+        function resumeAutoRetry() {
+            console.log('resumeAutoRetry() called');
+
+            // Restore retry count from localStorage
+            const storedRetryCount = localStorage.getItem('retryCount');
+            if (storedRetryCount) {
+                retryCount = parseInt(storedRetryCount);
+                console.log('Restored retry count:', retryCount);
+            } else {
+                retryCount = 0;
+            }
+
+            isAutoRetrying = true;
+            updateReloadButton();
+
+            // Resume the retry interval
+            autoRetryInterval = setInterval(() => {
+                retryCount++;
+                localStorage.setItem('retryCount', retryCount.toString());
+                console.log('Resumed interval fired - attempting reload #' + retryCount);
+                updateReloadButton(); // Update button with new count
+                attemptReload();
+            }, 2000);
         }
 
 
 
         // Auto-connect on load
         connect();
+
+        // Check if we need to resume auto-retry after page load
+        checkResumeAutoRetry();
 
         // Cleanup WebSocket connection when page unloads
         function closeWebSocket() {

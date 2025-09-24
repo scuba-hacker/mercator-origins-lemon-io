@@ -119,7 +119,7 @@ const char STATS_HTML[] = R"rawliteral(
            <button class="button button-brown" id="coldStartButton">Cold Start</button>
            <button class="button button-brown" id="hotStartButton">Hot Start</button>
            <button class="button button-brown" id="fixNeeds20SatsButton">FIX Needs 20 Sats</button>
-           <button class="button button-brown" id="fixNeeds4SatsButton">FIX Needs 4 Sats</button>
+           <button class="button button-brown" id="fixNeeds4SatsButton">FIX Needs 3 Sats</button>
 
             <br><br>
             

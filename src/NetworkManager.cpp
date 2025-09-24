@@ -738,9 +738,9 @@ void NetworkManager::setupWebServerRoutes() {
                 pendingGPSTriggerNoFixBySatCountHigh = true;
                 USB_SERIAL_PRINTLN("FIX Needs 20 Sats command scheduled for main loop");
             } else if (pButton->value() == String("fixNeeds4SatsButton")) {
-                USB_SERIAL_PRINTLN(">>> FIX Needs 4 Sats button pressed <<<");
+                USB_SERIAL_PRINTLN(">>> FIX Needs 3 Sats button pressed <<<");
                 pendingGPSTriggerNormalSatCount = true;
-                USB_SERIAL_PRINTLN("FIX Needs 4 Sats command scheduled for main loop");
+                USB_SERIAL_PRINTLN("FIX Needs 3 Sats command scheduled for main loop");
             } else if (pButton->value() == String("minFixSatsButton")) {
                 USB_SERIAL_PRINTLN(">>> Min Fix Sats button pressed <<<");
                 pendingGPSGetMinFixSats = true;

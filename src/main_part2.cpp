@@ -748,9 +748,9 @@ char satsLabel[] = "00 / 00";
 String getStats()
 {
   satsLabel[0] = '0' + (minimumSatellitesForFix / 10);
-  satsLabel[1] = '0' + minimumSatellitesForFix;
+  satsLabel[1] = '0' + (minimumSatellitesForFix % 10);
   satsLabel[5] = '0' + (gps.satellites.peek() / 10);
-  satsLabel[6] = '0' + gps.satellites.peek();
+  satsLabel[6] = '0' + (gps.satellites.peek() % 10);
 
   readings["fixCount"] = fixCount;
   readings["noFixCount"] = noFixCount;

@@ -1123,13 +1123,15 @@ void sendPendingGPSUBXCommands()
     USB_SERIAL_PRINTLN(">>> Main loop: Processing FIX Needs 20 Sats command <<<");
     bool result = gpsTriggerNoFixBySatCountHighForFix();
     USB_SERIAL_PRINTF("FIX Needs 20 Sats command result: %s\n", result ? "SUCCESS" : "FAILED");
+    pendingGPSGetMinFixSats = true; // trigger a get to update the internal variable minimumSatellitesForFix
   }
 
   if (pendingGPSTriggerNormalSatCount) {
     pendingGPSTriggerNormalSatCount = false;
-    USB_SERIAL_PRINTLN(">>> Main loop: Processing FIX Needs 4 Sats command <<<");
+    USB_SERIAL_PRINTLN(">>> Main loop: Processing FIX Needs 3 Sats command <<<");
     bool result = gpsTriggerNormalSatCountForFix();
-    USB_SERIAL_PRINTF("FIX Needs 4 Sats command result: %s\n", result ? "SUCCESS" : "FAILED");
+    USB_SERIAL_PRINTF("FIX Needs 3 Sats command result: %s\n", result ? "SUCCESS" : "FAILED");
+    pendingGPSGetMinFixSats = true; // trigger a get to update the internal variable minimumSatellitesForFix
   }
 
   if (pendingGPSGetMinFixSats) {
