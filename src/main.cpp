@@ -16,6 +16,10 @@ bool sendOneReEnableFixCommand = false;
 bool sendOneCeaseFixCommand = false;
 bool fastStartup = true;
 
+// Thread-safe GPS command flags (set by web handlers, processed by main loop)
+volatile bool pendingGPSTriggerNoFixBySatCountHigh = false;
+volatile bool pendingGPSTriggerNormalSatCount = false;
+
 bool enableWebSerialFrame=false;    // stats page iframe - use /logs instead
 
 /**
@@ -351,6 +355,11 @@ uint32_t timeNextGoodFixExpectedBy = 0;
 uint32_t timeNextGPSByteExpectedBy = 0;
 bool hasGPSFix = false;
 
+bool gpsSendColdStartCommand();
+bool gpsSendWarmStartCommand();
+bool gpsTriggerNoFixBySatCountHighForFix();
+bool gpsTriggerNormalSatCountForFix();
+
 enum e_user_action
 {
   NO_USER_ACTION = 0x0000,
@@ -675,6 +684,13 @@ void gpsRxTask(void *arg)
       int bytesRead = uart_read_bytes(UART_NUMBER_GPS, packet.data, sizeof(packet.data), GPS_RX_TIMEOUT);
       if (bytesRead > 0)
       {
+        for (int i=0; i < bytesRead; i++)
+        {
+          // throw away any packets that contain binary data, ie UBX frame
+          if (*(packet.data+i) < 32 || *(packet.data+i) > 127)
+            continue;            
+        }
+
         packet.length = bytesRead;
         // Send packet to main loop via FreeRTOS queue (don't block if queue is full)
         if (xQueueSend(gpsQueue, &packet, 0) != pdTRUE)
@@ -1087,6 +1103,23 @@ void loop()
 
   // Process serial commands for testing
   processSerialCommands();
+
+  // Process thread-safe GPS command flags (set by web button handlers)
+  if (pendingGPSTriggerNoFixBySatCountHigh) {
+    pendingGPSTriggerNoFixBySatCountHigh = false;
+    USB_SERIAL_PRINTLN(">>> Main loop: Processing FIX Needs 20 Sats command <<<");
+bool result = gpsTriggerNoFixBySatCountHighForFix();
+//    bool result=true;
+    USB_SERIAL_PRINTF("FIX Needs 20 Sats command result: %s\n", result ? "SUCCESS" : "FAILED");
+  }
+
+  if (pendingGPSTriggerNormalSatCount) {
+    pendingGPSTriggerNormalSatCount = false;
+    USB_SERIAL_PRINTLN(">>> Main loop: Processing FIX Needs 4 Sats command <<<");
+ bool result = gpsTriggerNormalSatCountForFix();
+ //   bool result=true;
+    USB_SERIAL_PRINTF("FIX Needs 4 Sats command result: %s\n", result ? "SUCCESS" : "FAILED");
+  }
 
   updateButtonsAndBuzzer();
 

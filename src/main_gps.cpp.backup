@@ -107,7 +107,6 @@ bool sendUBX(uint8_t cls_, uint8_t id_, const uint8_t *payload, uint16_t len, co
               // Valid checksum - process ACK/NACK
               if (isAck) {
                 BUFFER_LOG_PRINTF(" ACK received %s (skipped %d NMEA bytes)\n", ubxCommand, bytesSkippedForAck);
-                BUFFER_LOG_PRINTF("UBX frame accepted - GOOD ACK FOR %s\n", ubxCommand);
                 return true;
               } else {
                 BUFFER_LOG_PRINTF(" NACK received %s - command rejected (skipped %d NMEA bytes)\n", ubxCommand, bytesSkippedForAck);
@@ -139,29 +138,6 @@ bool sendUBX(uint8_t cls_, uint8_t id_, const uint8_t *payload, uint16_t len, co
   }
   BUFFER_LOG_PRINTF(" TIMEOUT (skipped %d NMEA bytes, no ACK received)\n", bytesSkippedForAck);
   return false; // timeout
-}
-
-// --- Check if frame was a UBX-ACK-NAK and print it ---
-bool checkUBXNak(uint8_t cls_, uint8_t id_, const uint8_t *payload, uint16_t len)
-{
-  bool nakMsg = false;
-  if (cls_ == 0x05 && id_ == 0x00) { // ACK-NAK
-    if (len == 2) {
-      uint8_t nakCls = payload[0];
-      uint8_t nakId  = payload[1];
-      BUFFER_LOG_PRINTF("UBX NAK received for cls=0x%02X id=0x%02X\n",
-                        nakCls, nakId);
-      nakMsg = true;
-    } else {
-      BUFFER_LOG_PRINTF("UBX NAK received with unexpected length=%u\n", len);
-      for (uint16_t i = 0; i < len; i++) {
-        BUFFER_LOG_PRINTF(" %02X", payload[i]);
-      }
-      BUFFER_LOG_PRINTF("\n");
-    }
-  }
-
-  return nakMsg;
 }
 
 // --- Read a single UBX frame (returns payload and class/id). Verifies checksum. ---
@@ -260,215 +236,11 @@ bool readUBXFrame(uint8_t &cls_, uint8_t &id_, uint8_t *payload, uint16_t &len,
   ubxChecksum(cls_, id_, payload, len, vcka, vckb);
   bool checksumOk = (cka == vcka && ckb == vckb);
 
-  BUFFER_LOG_PRINTF("UBX frame received: cls=0x%02X id=0x%02X len=%d chk=%s (skipped %d NMEA bytes)\n",
+  BUFFER_LOG_PRINTF("UBX frame: cls=0x%02X id=0x%02X len=%d chk=%s (skipped %d NMEA bytes)\n",
                     cls_, id_, len, checksumOk ? "OK" : "FAIL", bytesSkipped);
-
-  checkUBXNak(cls_, id_, payload, len);
 
   return checksumOk;
 }
-
-// ---- Send UBX VALSET and wait for ACK-ACK specifically for VALSET commands ----
-bool sendUBXValSet(uint8_t cls_, uint8_t id_, const uint8_t *payload, uint16_t len, const char* ubxCommand, bool waitAck = true) {
-  uint8_t cka, ckb;
-  ubxChecksum(cls_, id_, payload, len, cka, ckb);
-
-  // Debug: Show command being sent
-  BUFFER_LOG_PRINTF("Sending UBX VALSET cmd 0x%02X 0x%02X (%s) len=%d: ", cls_, id_, ubxCommand, len);
-  for (int i = 0; i < len && i < 20; i++) {  // Show first 20 bytes
-    BUFFER_LOG_PRINTF("%02X ", payload[i]);
-  }
-  if (len > 20) BUFFER_LOG_PRINTF("...");
-  BUFFER_LOG_PRINTF(" CK=%02X%02X\n", cka, ckb);
-
-  // UBX header + body
-  serial_gps.write(0xB5); serial_gps.write(0x62);
-  serial_gps.write(cls_); serial_gps.write(id_);
-  serial_gps.write((uint8_t)(len & 0xFF));
-  serial_gps.write((uint8_t)(len >> 8));
-  if (len && payload) serial_gps.write(payload, len);
-  serial_gps.write(cka); serial_gps.write(ckb);
-  serial_gps.flush();
-
-  if (!waitAck) return true;
-
-  // VALSET commands typically need longer timeouts
-  uint32_t UBLOX_ACK_TIMEOUT_MS = 150;
-  
-  uint8_t buf[10]; uint8_t idx = 0;
-  int bytesSkippedForAck = 0;
-  int attempts = 0;
-  const int maxAttempts = 3;
-
-  while (idx == 0 && attempts < maxAttempts) {
-    attempts++;
-    BUFFER_LOG_PRINTF("Waiting for VALSET ACK for cmd 0x%02X 0x%02X (%s) attempt %i...", cls_, id_, ubxCommand, attempts);
-
-    const uint32_t deadline = millis() + UBLOX_ACK_TIMEOUT_MS;
-
-    while (millis() < deadline) {
-      while (serial_gps.available()) {
-        uint8_t b = serial_gps.read();
-        if (idx == 0 && b != 0xB5) {
-          bytesSkippedForAck++;
-          continue;
-        }
-        buf[idx++] = b;
-
-        if (idx == sizeof(buf)) {
-          // Check for both 0x05 (ACK class) and 0x06 (CFG class) ACKs
-          bool isAck = ((buf[0]==0xB5 && buf[1]==0x62 && buf[2]==0x05 && buf[3]==0x01) ||
-                       (buf[0]==0xB5 && buf[1]==0x62 && buf[2]==0x06 && buf[3]==0x01)) &&
-                       buf[4]==0x02 && buf[5]==0x00 && buf[6]==cls_ && buf[7]==id_;
-          
-          // Check for both 0x05 (ACK class) and 0x06 (CFG class) NACKs
-          bool isNack = ((buf[0]==0xB5 && buf[1]==0x62 && buf[2]==0x05 && buf[3]==0x00) ||
-                        (buf[0]==0xB5 && buf[1]==0x62 && buf[2]==0x06 && buf[3]==0x00)) &&
-                        buf[4]==0x02 && buf[5]==0x00 && buf[6]==cls_ && buf[7]==id_;
-          
-          if (isAck || isNack) {
-            // Verify checksum
-            uint8_t expectedCK_A, expectedCK_B;
-            uint8_t ackClass = buf[2];
-            uint8_t ackId = isAck ? 0x01 : 0x00;
-            ubxChecksum(ackClass, ackId, &buf[6], 2, expectedCK_A, expectedCK_B);
-            
-            if (buf[8] == expectedCK_A && buf[9] == expectedCK_B) {
-              if (isAck) {
-                BUFFER_LOG_PRINTF(" VALSET ACK received (class 0x%02X) %s (skipped %d NMEA bytes)\n", ackClass, ubxCommand, bytesSkippedForAck);
-                return true;
-              } else {
-                BUFFER_LOG_PRINTF(" VALSET NACK received (class 0x%02X) %s - command rejected (skipped %d NMEA bytes)\n", ackClass, ubxCommand, bytesSkippedForAck);
-                return false;
-              }
-            } else {
-              BUFFER_LOG_PRINTF(" Invalid VALSET ACK/NACK checksum: got %02X%02X, expected %02X%02X\n",
-                              buf[8], buf[9], expectedCK_A, expectedCK_B);
-            }
-          }
-          
-          // Slide window to resync
-          memmove(buf, buf+1, idx-1);
-          idx--;
-        }
-      }
-    }
-  }
-  BUFFER_LOG_PRINTF(" VALSET TIMEOUT (skipped %d NMEA bytes, no ACK received)\n", bytesSkippedForAck);
-  return false;
-}
-
-// ---- Unified function that handles both regular UBX and VALSET commands ----
-bool sendUBXUnified(uint8_t cls_, uint8_t id_, const uint8_t *payload, uint16_t len, const char* ubxCommand, bool waitAck = true) {
-  uint8_t cka, ckb;
-  ubxChecksum(cls_, id_, payload, len, cka, ckb);
-
-  // Debug: Show command being sent
-  BUFFER_LOG_PRINTF("Sending UBX cmd 0x%02X 0x%02X (%s) len=%d: ", cls_, id_, ubxCommand, len);
-  for (int i = 0; i < len && i < 20; i++) {  // Show first 20 bytes
-    BUFFER_LOG_PRINTF("%02X ", payload[i]);
-  }
-  if (len > 20) BUFFER_LOG_PRINTF("...");
-  BUFFER_LOG_PRINTF(" CK=%02X%02X\n", cka, ckb);
-
-  // UBX header + body
-  serial_gps.write(0xB5); serial_gps.write(0x62);
-  serial_gps.write(cls_); serial_gps.write(id_);
-  serial_gps.write((uint8_t)(len & 0xFF));
-  serial_gps.write((uint8_t)(len >> 8));
-  if (len && payload) serial_gps.write(payload, len);
-  serial_gps.write(cka); serial_gps.write(ckb);
-  serial_gps.flush();
-
-  if (!waitAck) return true;
-
-  // ---- Dynamic timeouts based on command type ----
-  uint32_t UBLOX_ACK_TIMEOUT_MS = 50;
-  bool isValSetCommand = (cls_ == 0x06 && (id_ == 0x8A || id_ == 0x8B)); // VALSET or VALGET
-
-  if (isValSetCommand) {
-    UBLOX_ACK_TIMEOUT_MS = 150;
-    BUFFER_LOG_PRINTF(" [VAL command detected, using 150ms timeout]");
-  }
-
-  uint8_t buf[10]; uint8_t idx = 0;
-  int bytesSkippedForAck = 0;
-  int attempts = 0;
-  const int maxAttempts = 3;
-
-  while (idx == 0 && attempts < maxAttempts) {
-    attempts++;
-    BUFFER_LOG_PRINTF("Waiting for ACK for cmd 0x%02X 0x%02X (%s) attempt %i...", cls_, id_, ubxCommand, attempts);
-
-    const uint32_t deadline = millis() + UBLOX_ACK_TIMEOUT_MS;
-
-    while (millis() < deadline) {
-      while (serial_gps.available()) {
-        uint8_t b = serial_gps.read();
-        if (idx == 0 && b != 0xB5) {
-          bytesSkippedForAck++;
-          continue;
-        }
-        buf[idx++] = b;
-
-        if (idx == sizeof(buf)) {
-          // For VALSET/VALGET: check both 0x05 (ACK class) and 0x06 (CFG class)
-          // For other commands: check only 0x05 (ACK class)
-          bool checkCfgClass = isValSetCommand;
-          
-          bool isAck = (buf[0]==0xB5 && buf[1]==0x62 && buf[2]==0x05 && buf[3]==0x01 &&
-                       buf[4]==0x02 && buf[5]==0x00 && buf[6]==cls_ && buf[7]==id_) ||
-                      (checkCfgClass && buf[0]==0xB5 && buf[1]==0x62 && buf[2]==0x06 && buf[3]==0x01 &&
-                       buf[4]==0x02 && buf[5]==0x00 && buf[6]==cls_ && buf[7]==id_);
-          
-          bool isNack = (buf[0]==0xB5 && buf[1]==0x62 && buf[2]==0x05 && buf[3]==0x00 &&
-                        buf[4]==0x02 && buf[5]==0x00 && buf[6]==cls_ && buf[7]==id_) ||
-                       (checkCfgClass && buf[0]==0xB5 && buf[1]==0x62 && buf[2]==0x06 && buf[3]==0x00 &&
-                        buf[4]==0x02 && buf[5]==0x00 && buf[6]==cls_ && buf[7]==id_);
-          
-          if (isAck || isNack) {
-            // Verify checksum
-            uint8_t expectedCK_A, expectedCK_B;
-            uint8_t ackClass = buf[2];
-            uint8_t ackId = isAck ? 0x01 : 0x00;
-            ubxChecksum(ackClass, ackId, &buf[6], 2, expectedCK_A, expectedCK_B);
-            
-            if (buf[8] == expectedCK_A && buf[9] == expectedCK_B) {
-              if (isAck) {
-                BUFFER_LOG_PRINTF(" ACK received (class 0x%02X) %s (skipped %d NMEA bytes)\n", ackClass, ubxCommand, bytesSkippedForAck);
-                BUFFER_LOG_PRINTF("UBX frame accepted - GOOD ACK FOR %s\n", ubxCommand);
-                return true;
-              } else {
-                BUFFER_LOG_PRINTF(" NACK received (class 0x%02X) %s - command rejected (skipped %d NMEA bytes)\n", ackClass, ubxCommand, bytesSkippedForAck);
-                BUFFER_LOG_PRINTF(" UBX frame rejected: ");
-                for (int i = 0; i < 10; i++) {
-                  BUFFER_LOG_PRINTF("%02X ", buf[i]);
-                }
-                BUFFER_LOG_PRINTF("\n");
-                return false;
-              }
-            } else {
-              BUFFER_LOG_PRINTF(" Invalid ACK/NACK checksum: got %02X%02X, expected %02X%02X - sliding window\n",
-                              buf[8], buf[9], expectedCK_A, expectedCK_B);
-            }
-          } else {
-            // Log other UBX responses we're seeing
-            if (buf[0]==0xB5 && buf[1]==0x62) {
-              BUFFER_LOG_PRINTF(" Other UBX response: %02X %02X len=%d\n", buf[2], buf[3], buf[4] | (buf[5] << 8));
-            }
-          }
-          
-          // Slide window to resync
-          memmove(buf, buf+1, idx-1);
-          idx--;
-        }
-      }
-    }
-  }
-  BUFFER_LOG_PRINTF(" TIMEOUT (skipped %d NMEA bytes, no ACK received)\n", bytesSkippedForAck);
-  return false;
-}
-
 
 // =================== Configuration payloads ===================
 
@@ -614,12 +386,16 @@ uint8_t EX_UBX_CFG_VALSET_INFIL_MINSV_20[] = {
   0x14,                   // value = 20
 
   // Checksum (must be recalculated!)
-  0x80, 0xDD              // CK_A, CK_B
+  0x6C, 0x5E              // CK_A, CK_B
 };
 
 // Set 20 satellites for fix 
 uint8_t UBX_CFG_VALSET_INFIL_MINSV_20[] = {
-  0x00, 0x01, 0x00, 0x00, // version=0, layer=BBR(0x01), rsvd[2]
+  0x06, 0x8A,             // Class=CFG(0x06), ID=VALSET(0x8A)
+  0x09, 0x00,             // Length = 9 bytes
+
+  // Payload (9 bytes)
+  0x00, 0x01, 0x00, 0x00, // version=0, layer=RAM(0x01), rsvd[2]
   0xA1, 0x00, 0x11, 0x20, // key = 0x201100a1 (CFG-NAVSPG-INFIL_MINSVS)
   0x14,                   // value = 20 satellites
 };
@@ -631,7 +407,7 @@ uint8_t EX_UBX_CFG_VALSET_INFIL_MINSV_4[] = {
   0x09, 0x00,             // Length = 9 bytes
 
   // Payload (9 bytes)
-  0x00, 0x01, 0x00, 0x00, // version=0, layer=BBR(0x01), rsvd[2]
+  0x00, 0x01, 0x00, 0x00, // version=0, layer=RAM(0x01), rsvd[2]
   0xA1, 0x00, 0x11, 0x20, // key = 0x201100a1 (CFG-NAVSPG-INFIL_MINSVS)
   0x4,                   // value = 4 satellites
 
@@ -641,7 +417,11 @@ uint8_t EX_UBX_CFG_VALSET_INFIL_MINSV_4[] = {
 
 // Set 4 satellites for fix 
 uint8_t UBX_CFG_VALSET_INFIL_MINSV_4[] = {
-  0x00, 0x01, 0x00, 0x00, // version=0, layer=BBR(0x01), rsvd[2]
+  0x06, 0x8A,             // Class=CFG(0x06), ID=VALSET(0x8A)
+  0x09, 0x00,             // Length = 9 bytes
+
+  // Payload (9 bytes)
+  0x00, 0x01, 0x00, 0x00, // version=0, layer=RAM(0x01), rsvd[2]
   0xA1, 0x00, 0x11, 0x20, // key = 0x201100a1 (CFG-NAVSPG-INFIL_MINSVS)
   0x4,                   // value = 4
 };
@@ -649,48 +429,45 @@ uint8_t UBX_CFG_VALSET_INFIL_MINSV_4[] = {
 // RAW - get number of satellites for fix
 uint8_t EX_UBX_CFG_VALGET_INFIL_MINSV[] = {
   0xB5, 0x62,             // Sync chars
-  0x06, 0x8B,             // Class=CFG(0x06), ID=VALGET(0x8B)
+  0x06, 0x88,             // Class=CFG(0x06), ID=VALGET(0x88)
   0x08, 0x00,             // Length = 8 bytes
 
   // Payload (8 bytes)
-  0x00, 0x00, 0x00, 0x00, // version=0, layer=0x00 RAM, rsvd[2]
+  0x00, 0x01, 0x00, 0x00, // version=0, layer=RAM(0x01), rsvd[2]
   0xA1, 0x00, 0x11, 0x20, // key = 0x201100a1 (CFG-NAVSPG-INFIL_MINSVS)
-  0x6B, 0x57              // CK_A, CK_B
+  0x80, 0xDD              // CK_A, CK_B
 };
 
 // Get number of satellites for fix
 uint8_t UBX_CFG_VALGET_INFIL_MINSV[] = {
-  0x06, 0x8B,             // Class=CFG(0x06), ID=VALGET(0x88)
+  0x06, 0x88,             // Class=CFG(0x06), ID=VALGET(0x88)
   0x08, 0x00,             // Length = 8 bytes
 
   // Payload (8 bytes)
-  0x00, 0x00, 0x00, 0x00, // version=0, layer=0x00 RAM, rsvd[2]
+  0x00, 0x01, 0x00, 0x00, // version=0, layer=RAM(0x01), rsvd[2]
   0xA1, 0x00, 0x11, 0x20, // key = 0x201100a1 (CFG-NAVSPG-INFIL_MINSVS)
 };
 
 // UBX-CFG-VALSET (0x06 0x8B)
 uint8_t UBX_CFG_SIGNAL_SBAS_ENA_ENABLE[] = {
-    0x00, 0x1, 0x00, 0x00, // version=0, layers=RAM, reserved
+    0x00, 0x01, 0x00, 0x00, // version=0, layers=RAM, reserved
     0x20, 0x00, 0x31, 0x10, // key = 0x10310020 (CFG-SIGNAL-SBAS_ENA)
     0x01                    // value = 1 (enable SBAS) ← MISSING FROM YOUR ARRAY
 };
 
 // UBX-CFG-VALGET (0x06 0x8B)
-// Get SBAS enable status from Default (RAM)
-uint8_t EX_UBX_CFG_VALGET_SBAS_ENA[] = {
+// Get SBAS enable status from RAM
+uint8_t UBX_CFG_VALGET_SBAS_ENA[] = {
     0xB5, 0x62,             // Sync chars
     0x06, 0x8B,             // Class=CFG(0x06), ID=VALGET(0x8B)
     0x08, 0x00,             // Length = 8 bytes
     // Payload (8 bytes)
     0x00,                   // version = 0
-    0x00,                   // layer = 0x00 RAM for SAM-M10Q
-
+    0x01,                   // layer = RAM(0x01)
     0x00, 0x00,             // position = 0 (reserved)
     0x20, 0x00, 0x31, 0x10, // key = 0x10310020 (CFG-SIGNAL-SBAS_ENA)
-    0xFA, 0x83              // Checksum
+    0xFB, 0x8A              // Checksum (MISSING)
 };
-//    0x07,                   // layer = default (will default to Ram for SAM-M10Q)
-//    0x01, 0xB4              // Checksum for 0x07 layer
 
 // UBX-MON-VER poll message (no payload)
 const uint8_t UBX_MON_VER_POLL[] = { 
@@ -698,9 +475,6 @@ const uint8_t UBX_MON_VER_POLL[] = {
   0x0A,0x04, 
   0x00,0x00, 
   0x0E,0x34 };
-
-const int maxPayloadSize = 400;
-uint8_t payload[maxPayloadSize];  // MON-VER can be quite long - keep array off the heap
 
 // --- Poll MON-VER to get firmware version ---
 bool pollMON_VER(uint32_t timeout_ms = 1000)
@@ -712,6 +486,8 @@ bool pollMON_VER(uint32_t timeout_ms = 1000)
 
   // Read frames until timeout; collect class=0x0A id=0x04
   uint8_t cls,id;
+  const int maxPayloadSize = 400;
+  uint8_t payload[maxPayloadSize];  // MON-VER can be quite long
   uint16_t len;
 
   uint32_t endBy = millis() + timeout_ms;
@@ -849,57 +625,54 @@ bool pollCFG_PRT(UbxPortCfg *ports, size_t maxPorts, size_t &count, uint32_t tim
   return (count > 0);
 }
 
+constexpr uint32_t KEY_SBAS_ENA = 0x10310020; // Change from 0x1036001D
+
 // Returns true if payload parsed. keyOut/valueOut are valid on success.
 bool parseValgetPayload(const uint8_t* payload, size_t len,
-                        uint32_t& keyOut, uint32_t& valueOut) {
-    if (!payload || len < 9) return false;  // Min 9 bytes for v1 response
-    
-    if (payload[0] == 0x01) {  // Version 1 response format
-        keyOut = (uint32_t)payload[4] | ((uint32_t)payload[5] << 8) |
-                 ((uint32_t)payload[6] << 16) | ((uint32_t)payload[7] << 24);
-        valueOut = payload[8];  // Single byte value
-        return true;
-    }
-    return false;  // Version 0 shouldn't appear in responses
+                        uint32_t& keyOut, uint32_t& valueOut)
+{
+  /*
+  UBX-CFG-VALGET response format for enable/disable response
+
+  B5 62             ; sync chars
+  06 8B             ; class=CFG (0x06), id=VALGET (0x8B)
+  0C 00             ; length = 12 bytes (for one key)
+  00 01 00 00       ; version=0, layers=RAM, reserved
+  1D 00 36 10       ; keyID = 0x1036001D (LE)
+  01 00 00 00       ; value = 0x01 (enabled)
+  <CK_A> <CK_B>     ; Fletcher checksum
+  */
+
+  // Minimal VALGET payload for 1 key = 12 bytes:
+  // [0]=version, [1]=layers, [2..3]=reserved,
+  // [4..7]=KeyID (LE), [8..11]=Value (LE)
+  if (!payload || len < 12) return false;
+  if (payload[0] != 0x00)   return false; // version must be 0
+
+  keyOut   = (uint32_t)payload[4] | ((uint32_t)payload[5] << 8) |
+             ((uint32_t)payload[6] << 16) | ((uint32_t)payload[7] << 24);
+  valueOut = (uint32_t)payload[8] | ((uint32_t)payload[9] << 8) |
+             ((uint32_t)payload[10] << 16) | ((uint32_t)payload[11] << 24);
+  return true;
 }
 
-constexpr uint32_t KEY_SBAS_ENA = 0x10310020;
 
 // Example: check SBAS enable
-bool isSbasEnabledFromValget(bool& enabled, const uint8_t* payload, size_t len)
+bool isSbasEnabledFromValget(const uint8_t* payload, size_t len)
 {
-  enabled = false;
-
-  uint32_t key, val;  
-  if (!parseValgetPayload(payload, len, key, val)) 
-  {
-    BUFFER_LOG_PRINTF("isSbasEnabledFromValget: failed to parseValgetPayload\n");
-    return false; // failed to parse reply payload
-  }
-
-  if (key != KEY_SBAS_ENA) 
-  {
-    BUFFER_LOG_PRINTF("isSbasEnabledFromValget: Valget payload has wrong key\n");
-    return false;   // wrong key in reply
-  }
-
-  enabled = (val & 0x01u) != 0;               // 1 = enabled, 0 = disabled
-
-  BUFFER_LOG_PRINTF("isSbasEnabledFromValget: Good response message. SBAS is %s\n", enabled ? "enabled" : "disabled");
-
-  return true;
+  uint32_t key, val;
+  if (!parseValgetPayload(payload, len, key, val)) return false;
+  if (key != KEY_SBAS_ENA) return false;   // wrong key in reply
+  return (val & 0x01u) != 0;               // 1 = enabled, 0 = disabled
 }
 
 bool pollCFG_SBAS(bool& enabled, uint32_t timeout_ms = 300)
 {
-  bool responseError = true;
-  enabled = false;
-
+  bool sbasEnabled = false;
+  
   while (serial_gps.available()) serial_gps.read();  // drain old bytes
-  serial_gps.write(EX_UBX_CFG_VALGET_SBAS_ENA, sizeof(EX_UBX_CFG_VALGET_SBAS_ENA));
+  serial_gps.write(UBX_CFG_VALGET_SBAS_ENA, sizeof(UBX_CFG_VALGET_SBAS_ENA));
   serial_gps.flush();
-
-  BUFFER_LOG_PRINTF("pollCFG_SBAS: Send Get SBAS status request\n");
 
   // Read frames until timeout gap; collect only class=0x06 id=0x00 with len=20
   uint8_t cls,id;
@@ -909,159 +682,17 @@ bool pollCFG_SBAS(bool& enabled, uint32_t timeout_ms = 300)
   uint32_t endBy = millis() + timeout_ms;
   while (millis() < endBy) {
     if (!readUBXFrame(cls, id, payload, len, /*timeout per frame*/ 100)) 
-    {
-      BUFFER_LOG_PRINTF("pollCFG_SBAS: readUBXFrame returned false\n");
       break;
-    }
 
-    if (cls == 0x06 && id == 0x8B && len == 9) 
+    if (cls == 0x06 && id == 0x8B && len == 12) 
     {
-      responseError = !isSbasEnabledFromValget(enabled, payload,len);
+      sbasEnabled = isSbasEnabledFromValget(payload,len);
       break;
-    }
-    else
-    {
-      BUFFER_LOG_PRINTF("pollCFG_SBAS: Unexpected ubx message response: class 0x%02X id 0x%02X len=%d, expected: class=0x06 id=0x8B len=9\nUnexpected Response (without checksum): ",cls,id,len);
-
-      int len0 = len & 0x00FF;
-      int len1 = len >> 8;
-      BUFFER_LOG_PRINTF("0xB5 0x62 0x%02X 0x%02X 0x%02X 0x%02X ",cls,id,len0,len1);
-      for (int i=0; i<len; i++)
-        BUFFER_LOG_PRINTF("0x%02X ",payload[i]);
-
-      BUFFER_LOG_PRINTF("\nFrom sent message: ");
-
-      for (int i=0; i<sizeof(EX_UBX_CFG_VALGET_SBAS_ENA); i++)
-        BUFFER_LOG_PRINTF("0x%02X ",EX_UBX_CFG_VALGET_SBAS_ENA[i]);
-
-      BUFFER_LOG_PRINTF("\n");
-
-      if (checkUBXNak(cls, id, payload, len))
-        responseError = true;
     }
     // ignore unrelated frames (e.g., NMEA or other UBX) and keep reading until gap
   }
-  
-  BUFFER_LOG_PRINTF("pollCFG_SBAS: Parsing of response %s\n",responseError ? "BAD" : "OK");
 
-  if (!responseError)
-    BUFFER_LOG_PRINTF("pollCFG_SBAS: SBAS is %s\n",enabled ? "enabled" : "disabled");
-
-  return !responseError;
-}
-
-constexpr uint32_t KEY_MINSVS_ENA = 0x201100a1;
-
-bool getMinSatCountFromValget(int& satCount, const uint8_t* payload, size_t len)
-{
-  satCount = -1;
-
-  uint32_t key, val;  
-  if (!parseValgetPayload(payload, len, key, val)) 
-  {
-    BUFFER_LOG_PRINTF("getMinSatCountFromValget: failed to parseValgetPayload\n");
-    return false; // failed to parse reply payload
-  }
-
-  if (key != KEY_MINSVS_ENA) 
-  {
-    BUFFER_LOG_PRINTF("getMinSatCountFromValget: Valget payload has wrong key\n");
-    return false;   // wrong key in reply
-  }
-
-  satCount = val;
-
-  BUFFER_LOG_PRINTF("getMinSatCountFromValget: Good response message. satCount is %d\n", satCount);
-
-  return true;
-}
-
-bool pollCFG_MinSatellites(int& satCount, uint32_t timeout_ms = 3000)
-{
-  bool responseError = true;
-  satCount = -1;
-
-  while (serial_gps.available()) serial_gps.read();  // drain old bytes
-  serial_gps.write(EX_UBX_CFG_VALGET_INFIL_MINSV, sizeof(EX_UBX_CFG_VALGET_INFIL_MINSV));
-  serial_gps.flush();
-
-  BUFFER_LOG_PRINTF("pollCFG_MinSatellites: Send Get MINSV status request\n");
-
-  // Read frames until timeout gap; collect only class=0x06 id=0x00 with len=20
-  uint8_t cls,id;
-  uint8_t payload[32];
-  uint16_t len;
-
-  uint32_t endBy = millis() + timeout_ms;
-  while (millis() < endBy) {
-    if (!readUBXFrame(cls, id, payload, len, 1000)) // timeout per frame = 1000ms
-    {
-      BUFFER_LOG_PRINTF("pollCFG_MinSatellites: readUBXFrame returned false\n");
-      break;
-    }
-
-    // ADD THIS: Better logging of what we received
-    BUFFER_LOG_PRINTF("Received frame: cls=0x%02X id=0x%02X len=%d\n", cls, id, len);
-  
-    // This class and id is the CFG-VALGET response message
-    if (cls == 0x06 && id == 0x8B && len >= 9) 
-    {
-      responseError = !getMinSatCountFromValget(satCount, payload,len);
-      break;
-    }
-    else if (cls == 0x06 && id == 0x00) // CFG-NAK
-    {
-        if (len >= 2) {
-            BUFFER_LOG_PRINTF("pollCFG_MinSatellites: Received CFG-NAK for class 0x%02X id 0x%02X\n", payload[0], payload[1]);
-        } else {
-            BUFFER_LOG_PRINTF("pollCFG_MinSatellites: Received CFG-NAK (malformed, len=%d)\n", len);
-        }
-        responseError = true;
-        break;
-    }
-    else if (cls == 0x06 && id == 0x01) // CFG-ACK
-    {
-        if (len >= 2) {
-            BUFFER_LOG_PRINTF("pollCFG_MinSatellites: Received unexpected CFG-ACK for class 0x%02X id 0x%02X\n", payload[0], payload[1]);
-        }
-        // Continue waiting for actual VALGET response
-    }
-    else
-    {
-      BUFFER_LOG_PRINTF("pollCFG_MinSatellites: Unexpected ubx message response: class 0x%02X id 0x%02X len=%d, expected: class=0x06 id=0x8B len=9\nUnexpected Response (without checksum): ",cls,id,len);
-
-      int len0 = len & 0x00FF;
-      int len1 = len >> 8;
-      BUFFER_LOG_PRINTF("0xB5 0x62 0x%02X 0x%02X 0x%02X 0x%02X ",cls,id,len0,len1);
-      for (int i=0; i<len; i++)
-        BUFFER_LOG_PRINTF("0x%02X ",payload[i]);
-
-      BUFFER_LOG_PRINTF("\nFrom sent message: ");
-
-      for (int i=0; i<sizeof(EX_UBX_CFG_VALGET_INFIL_MINSV); i++)
-        BUFFER_LOG_PRINTF("0x%02X ",EX_UBX_CFG_VALGET_INFIL_MINSV[i]);
-
-      BUFFER_LOG_PRINTF("\n");
-
-      if (checkUBXNak(cls, id, payload, len))
-        responseError = true;
-    }
-    // ignore unrelated frames (e.g., NMEA or other UBX) and keep reading until gap
-  }
-  
-  // ADD THIS: Better timeout messaging
-  if (millis() >= endBy) {
-      BUFFER_LOG_PRINTF("pollCFG_MinSatellites: Timeout occurred after %dms, no valid response received\n", timeout_ms);
-  }
-    
-  BUFFER_LOG_PRINTF("pollCFG_MinSatellites: Parsing of response %s\n",responseError ? "BAD" : "OK");
-
-  if (!responseError)
-    BUFFER_LOG_PRINTF("pollCFG_MinSatellites: Minimum visible satellites for fix is %d\n",satCount);
-  else
-    BUFFER_LOG_PRINTF("pollCFG_MinSatellites: Coult not get Minimum visible satellites for fix\n");
-
-  return !responseError;
+  return sbasEnabled;
 }
 
 // ------------------- Module-specific command helpers -------------------
@@ -1149,7 +780,6 @@ bool configureUBLOXGps()
       {
         MON_VER_ok = true;
         ok &= MON_VER_ok;
-    //    BUFFER_LOG_PRINTF("After doing pollMon_Ver the 'ok' combined result is %d\n", ok);
         break;
       }
     }
@@ -1215,12 +845,16 @@ bool configureUBLOXGps()
     if (detectedModule.type == GPS_MODULE_SAM_M10Q)
     {
       // set baud rate to 115200 (it defaults to 9600 and it has no flash so needs replying every boot)
-      bool baud_ok = true;
+      bool baud_ok = false;
       if (!gpsAt115200)
       {
         baud_ok = sendUBX(0x06, 0x8A, UBX_CFG_BAUD_SET_VALSET, sizeof(UBX_CFG_BAUD_SET_VALSET),"SET BAUD TO 115200",false);
         delay(100);
         BUFFER_LOG_PRINTF("%s Set Baud Rate to 115200\n", (baud_ok ? okAck : badAck));
+      }
+      else
+      {
+
       }
 
       bool pollCFG_PRT_Result = false;
@@ -1262,7 +896,6 @@ bool configureUBLOXGps()
       }
 
       ok &= pollCFG_PRT_Result;
-  //    BUFFER_LOG_PRINTF("After doing pollCFG_PRT the 'ok' combined result is %d\n", ok);
     }
 
   // Configure NMEA messages based on detected module type
@@ -1279,8 +912,6 @@ bool configureUBLOXGps()
     ok &= send_no_fix_result;
     BUFFER_LOG_PRINTF("%s Allow No Fix messages (GGA/RMC)\n", (send_no_fix_result ? okAck : badAck));
 
-//    BUFFER_LOG_PRINTF("After setting no fix messages to send, the 'ok' combined result is %d\n", ok);
-
     // Configure NMEA message rates using module-specific format - 3 retries on failure
     ok &= sendCFG_MSG_enable(0xF0, 0x00,  "GGA",3);  // Enable GGA
     ok &= sendCFG_MSG_enable(0xF0, 0x04,  "RMC",3);  // Enable RMC
@@ -1295,61 +926,18 @@ bool configureUBLOXGps()
     BUFFER_LOG_PRINTF("%s Set nav Rate to 1 Hz\n", (rate_ok ? okAck : badAck));
     ok &= rate_ok;
 
-    BUFFER_LOG_PRINTF("After setting nav rate the 'ok' combined result is %d\n", ok);
-
     // Set dynamic model to Sea - ZED-9FR and SAM-M10Q only
 //    bool model_ok = sendUBX(0x06, 0x8A, UBX_CFG_SEA_MODEL_VALSET, sizeof(UBX_CFG_SEA_MODEL_VALSET),"DYNAMIC MODEL = SEA");
 //    BUFFER_LOG_PRINTF("%s Set dynamic model to 'Sea'\n", (model_ok ? okAck : badAck));
 
     // Set dynamic model to Pedestrian  - ZED-9FR and SAM-M10Q only
-    bool ped_ok = sendUBX(0x06, 0x8A, UBX_CFG_PEDESTRIAN_MODEL_VALSET, sizeof(UBX_CFG_PEDESTRIAN_MODEL_VALSET),"DYNAMIC MODEL = PEDESTRIAN");
-    BUFFER_LOG_PRINTF("%s Set dynamic model to 'Pedestrian'\n", (ped_ok ? okAck : badAck));
+    bool model_ok = sendUBX(0x06, 0x8A, UBX_CFG_PEDESTRIAN_MODEL_VALSET, sizeof(UBX_CFG_PEDESTRIAN_MODEL_VALSET),"DYNAMIC MODEL = PEDESTRIAN");
+    BUFFER_LOG_PRINTF("%s Set dynamic model to 'Pedestrian'\n", (model_ok ? okAck : badAck));
 
-//    BUFFER_LOG_PRINTF("After setting dynamic model the 'ped_ok' and 'ok' combined result are %d %d\n", ped_ok,ok);
+    bool sbas_enabled = sendUBX(0x06, 0x8B, UBX_CFG_VALGET_SBAS_ENA, sizeof(UBX_CFG_VALGET_SBAS_ENA),"SBAS CORRECTION ENABLED?");
+    BUFFER_LOG_PRINTF("%s Is SBAS Correction Enabled?\n", (model_ok ? okAck : badAck));
 
-    ok &= ped_ok;
-
-    // get SBAS enabled status
-    bool enabled = false;
-    bool sbas_ok = pollCFG_SBAS(enabled);
-    
-    ok &= sbas_ok;
-
-//    BUFFER_LOG_PRINTF("After getting SBAS the 'sbas_ok' and 'ok' combined result are %d %d\n", sbas_ok,ok);
-
-    if (ok)
-      BUFFER_LOG_PRINTF("%s Get SBAS enabled status: %s\n", okAck, (enabled ? "enabled" : "disabled"));
-    else
-      BUFFER_LOG_PRINTF("%s Get SBAS enabled status failed\n", badAck);
-
-    int satCount = -1;
-    bool responseOk = pollCFG_MinSatellites(satCount);
-
-    if (responseOk)
-      BUFFER_LOG_PRINTF("%s Get Min Visible Sat Count: %d\n", okAck, satCount);
-    else
-      BUFFER_LOG_PRINTF("%s Get Min Visible Sat Count failed\n", badAck);
-
-
-    bool setSatCountHigh = gpsTriggerNoFixBySatCountHighForFix();
-    BUFFER_LOG_PRINTF("%s - Set sat count high (20)\n", setSatCountHigh ? okAck : badAck);
-
-    responseOk = pollCFG_MinSatellites(satCount);
-
-    if (responseOk)
-      BUFFER_LOG_PRINTF("%s Get Min Visible Sat Count: %d\n", okAck, satCount);
-    else
-      BUFFER_LOG_PRINTF("%s Get Min Visible Sat Count failed\n", badAck);
-
-    bool setSatCountNormal = gpsTriggerNormalSatCountForFix();
-    BUFFER_LOG_PRINTF("%s - Set sat count normal (4)\n", setSatCountNormal ? okAck : badAck);
-
-    responseOk = pollCFG_MinSatellites(satCount);
-
-    if (responseOk)
-      BUFFER_LOG_PRINTF("%s Get Min Visible Sat Count: %d\n", okAck, satCount);
-    else
-      BUFFER_LOG_PRINTF("%s Get Min Visible Sat Count failed\n", badAck);
+    ok &= model_ok;
   }
 
   serial_gps.flush();
@@ -1360,14 +948,14 @@ bool configureUBLOXGps()
 bool gpsSendColdStartCommand()
 {
   uart_write_bytes(UART_NUMBER_GPS, UBX_CFG_RST_COLDSTART, sizeof(UBX_CFG_RST_COLDSTART));
-  BUFFER_LOG_PRINTF("UBX_CFG_RST_COLDSTART: Sent Cold Start Command\n");
+  USB_SERIAL_PRINTF("UBX_CFG_RST_COLDSTART: Sent Cold Start Command\n");
   return true;
 }
 
 bool gpsSendWarmStartCommand()
 {
   uart_write_bytes(UART_NUMBER_GPS, UBX_CFG_RST_WARMSTART, sizeof(UBX_CFG_RST_WARMSTART));
-  BUFFER_LOG_PRINTF("UBX_CFG_RST_WARMSTART: Sent Warm Start Command\n");
+  USB_SERIAL_PRINTF("UBX_CFG_RST_WARMSTART: Sent Warm Start Command\n");
   return true;
 }
 
@@ -1382,24 +970,24 @@ uint32_t extract_uptime_ms(uint8_t* ubx_response) {
 
 bool gpsTriggerNoFixBySatCountHighForFix()
 {
-  bool ok = sendUBXUnified(0x06, 0x8A, UBX_CFG_VALSET_INFIL_MINSV_20, sizeof(UBX_CFG_VALSET_INFIL_MINSV_20),"Set Min Satellites 20 - force no fix",false);
-  BUFFER_LOG_PRINTF("%s Sent Min Satellites 20 for Fix Command\n", (ok ? okAck : badAck));
-  return ok;
+//  uart_write_bytes(UART_NUMBER_GPS, (const char*)&EX_UBX_CFG_VALSET_INFIL_MINSV_20, sizeof(EX_UBX_CFG_VALSET_INFIL_MINSV_20));
+  bool ok = sendUBX(0x06, 0x17, UBX_CFG_VALSET_INFIL_MINSV_20, sizeof(UBX_CFG_VALSET_INFIL_MINSV_20),"Set Min Satellites 20 - force no fix",false);
+  USB_SERIAL_PRINTF("%s Sent Min Satellites 20 for Fix Command\n", (ok ? okAck : badAck));
+  return true;
 }
 
 bool gpsTriggerNormalSatCountForFix()
 {
-  bool ok = sendUBXUnified(0x06, 0x8A, UBX_CFG_VALSET_INFIL_MINSV_4, sizeof(UBX_CFG_VALSET_INFIL_MINSV_4),"Set Min Satellites 4",false);
-  BUFFER_LOG_PRINTF("%s Sent Min Satellites 4 for Fix Command\n", (ok ? okAck : badAck));
-  return ok;
+  bool ok = sendUBX(0x06, 0x17, UBX_CFG_VALSET_INFIL_MINSV_4, sizeof(UBX_CFG_VALSET_INFIL_MINSV_4),"Set Min Satellites 4",false);
+  USB_SERIAL_PRINTF("%s Sent Min Satellites 4 for Fix Command\n", (ok ? okAck : badAck));
+  return true;
 }
-/*
+
 bool gpsGetSatCountForFix()
 {
   bool ok = sendUBX(0x06, 0x17, UBX_CFG_VALSET_INFIL_MINSV_4, sizeof(UBX_CFG_VALSET_INFIL_MINSV_4),"Set Min Satellites 4",false);
-  BUFFER_LOG_PRINTF("%s Sent Min Satellites 4 for Fix Command\n", (ok ? okAck : badAck));
-  return ok;
+  USB_SERIAL_PRINTF("%s Sent Min Satellites 4 for Fix Command\n", (ok ? okAck : badAck));
+  return true;
 }
-*/
 
 #endif

@@ -18,6 +18,10 @@ extern bool sendOneCeaseFixCommand;
 extern bool overrideGPSToNoFixForTesting;
 extern bool fastStartup;
 
+// Thread-safe GPS command flags
+extern volatile bool pendingGPSTriggerNoFixBySatCountHigh;
+extern volatile bool pendingGPSTriggerNormalSatCount;
+
 // GPS functions from main_gps.cpp
 extern bool gpsSendWarmStartCommand();
 extern bool gpsSendColdStartCommand();
@@ -720,12 +724,12 @@ void NetworkManager::setupWebServerRoutes() {
                 USB_SERIAL_PRINTF("Cold Start command result: %s\n", result ? "SUCCESS" : "FAILED");
             } else if (pButton->value() == String("fixNeeds20SatsButton")) {
                 USB_SERIAL_PRINTLN(">>> FIX Needs 20 Sats button pressed <<<");
-                bool result = gpsTriggerNoFixBySatCountHighForFix();
-                USB_SERIAL_PRINTF("FIX Needs 20 Sats command result: %s\n", result ? "SUCCESS" : "FAILED");
+                pendingGPSTriggerNoFixBySatCountHigh = true;
+                USB_SERIAL_PRINTLN("FIX Needs 20 Sats command scheduled for main loop");
             } else if (pButton->value() == String("fixNeeds4SatsButton")) {
                 USB_SERIAL_PRINTLN(">>> FIX Needs 4 Sats button pressed <<<");
-                bool result = gpsTriggerNormalSatCountForFix();
-                USB_SERIAL_PRINTF("FIX Needs 4 Sats command result: %s\n", result ? "SUCCESS" : "FAILED");
+                pendingGPSTriggerNormalSatCount = true;
+                USB_SERIAL_PRINTLN("FIX Needs 4 Sats command scheduled for main loop");
             } else {
                 USB_SERIAL_PRINTF(">>> UNKNOWN BUTTON PRESSED: '%s' <<<\n", pButton->value().c_str());
             }
