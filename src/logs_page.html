@@ -143,6 +143,16 @@
         .btn-reload:hover {
             background: #c2185b;
         }
+        .btn-text-size {
+            background: #9c27b0;
+            color: white;
+            padding: 8px 12px;
+            font-weight: bold;
+            font-size: 16px;
+        }
+        .btn-text-size:hover {
+            background: #7b1fa2;
+        }
         #console {
             background: #000;
             border: 1px solid #444;
@@ -154,7 +164,7 @@
             max-height: 80vh;
             max-width: 90vw;
             overflow: auto;
-            font-size: 14px;
+            font-size: 10px;
             line-height: 1.4;
             white-space: pre;
             word-wrap: normal;
@@ -319,6 +329,8 @@
                 <option value="reboot">Reboot</option>
             </select>
             <button class="btn-send" onclick="sendDropdownMessage()">Send</button>
+            <button class="btn-text-size" onclick="decreaseTextSize()" title="Smaller Text">A-</button>
+            <button class="btn-text-size" onclick="increaseTextSize()" title="Larger Text">A+</button>
         </div>
         <div id="otaBanner" class="ota-banner" style="display: none;">
             <strong>OTA MODE SHUTTING DOWN</strong><br>
@@ -672,6 +684,9 @@
             // Restore console size from cookies
             restoreConsoleSize();
 
+            // Restore text size from cookies
+            restoreTextSize();
+
             // Initialize custom resize functionality
             initCustomResize();
 
@@ -697,6 +712,52 @@
                 observer.observe(consoleElement, { attributes: true, attributeFilter: ['style'] });
             }
         });
+
+        // Text size control functions
+        const textSizes = [10, 12, 14, 16, 18, 20, 24, 28];
+        let currentTextSizeIndex = 0; // Start at smallest size (10px)
+
+        function increaseTextSize() {
+            if (currentTextSizeIndex < textSizes.length - 1) {
+                currentTextSizeIndex++;
+                applyTextSize();
+                saveTextSize();
+                console.log('Text size increased to:', textSizes[currentTextSizeIndex] + 'px');
+            }
+        }
+
+        function decreaseTextSize() {
+            if (currentTextSizeIndex > 0) {
+                currentTextSizeIndex--;
+                applyTextSize();
+                saveTextSize();
+                console.log('Text size decreased to:', textSizes[currentTextSizeIndex] + 'px');
+            }
+        }
+
+        function applyTextSize() {
+            const fontSize = textSizes[currentTextSizeIndex];
+            consoleElement.style.fontSize = fontSize + 'px';
+        }
+
+        function saveTextSize() {
+            setCookie('consoleTextSize', currentTextSizeIndex);
+        }
+
+        function restoreTextSize() {
+            const savedIndex = getCookie('consoleTextSize');
+            if (savedIndex !== null) {
+                currentTextSizeIndex = parseInt(savedIndex);
+                // Ensure index is within valid range
+                if (currentTextSizeIndex < 0 || currentTextSizeIndex >= textSizes.length) {
+                    currentTextSizeIndex = 0; // Default to smallest
+                }
+            } else {
+                currentTextSizeIndex = 0; // Default to smallest size
+            }
+            applyTextSize();
+            console.log('Text size restored to:', textSizes[currentTextSizeIndex] + 'px');
+        }
 
         // Cookie functions for console size
         function setCookie(name, value, days = 365) {
