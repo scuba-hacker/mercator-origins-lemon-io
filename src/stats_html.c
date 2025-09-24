@@ -155,6 +155,10 @@ const char STATS_HTML[] = R"rawliteral(
                    <p class="reading"><span id="gpsOverrideNoFixSimActive"></span></p>
                </div>
                <div class="card">
+                   <p class="card-title">Min FIX Sats / Now</p>
+                   <p class="reading"><span id="gpsMinSatsForFix"></span></p>
+               </div>
+               <div class="card">
                    <p class="card-title">Good Uplinks</p>
                    <p class="reading"><span id="goodUplinkMessageCount"></span></p>
                </div>

@@ -743,12 +743,20 @@ struct MakoUplinkTelemetryForJson
 };
 
 
+char satsLabel[] = "00 / 00";
+
 String getStats()
 {
+  satsLabel[0] = '0' + (minimumSatellitesForFix / 10);
+  satsLabel[1] = '0' + minimumSatellitesForFix;
+  satsLabel[5] = '0' + (gps.satellites.peek() / 10);
+  satsLabel[6] = '0' + gps.satellites.peek();
+
   readings["fixCount"] = fixCount;
   readings["noFixCount"] = noFixCount;
   readings["gpsMissingMsgsSimActive"] = (forceGPSMissingGGARMCForTesting ? "ACTIVE" : "INACTIVE");
   readings["gpsOverrideNoFixSimActive"] = (overrideGPSToNoFixForTesting ? "ACTIVE" : "INACTIVE");
+  readings["gpsMinSatsForFix"] = satsLabel;
   readings["goodUplinkMessageCount"] = goodUplinkMessageCount;
   readings["privateMQTTUploadCount"] = privateMQTTUploadCount;
   readings["uplinkBadMessagePercentage"] = (int)uplinkBadMessagePercentage;

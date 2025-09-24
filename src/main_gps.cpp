@@ -517,15 +517,6 @@ uint8_t UBX_CFG_PEDESTRIAN_MODEL_VALSET[] = {
   0x21, 0x00, 0x11, 0x20, 0x03
 };
 
-/* not recommended
-// UBX-CFG-VALSET (0x06 0x8A)
-// header: version=0x00, layers=0x01 (RAM), rsvd[2]=0
-uint8_t UBX_CFG_SEA_MODEL_VALSET[] = {
-  0x00, 0x01, 0x00, 0x00,   // version 0, layers=0x01(RAM), 2 bytes reserved
-  0x21, 0x00, 0x11, 0x20,   // key 0x20110021 is CFG-NAVSPG-DYNMODEL
-  0x05                      // value 0x05 (Sea)
-};
-*/
 // UBX-CFG-VALSET (0x06 0x8A)
 // header: version=0x00, layers=0x01 (RAM), rsvd[2]=0
 // Emit no fix messages when there is no fix, instead of no message at all
@@ -546,36 +537,10 @@ uint8_t UBX_CFG_RATE_VALSET[] = {
 
 // UBX-CFG-RST (0x06 0x04)
 // Cold Start - Clear all aiding data (ephemeris, almanac, position, time)
-uint8_t EX_UBX_CFG_RST_COLDSTART[] = {
-  0xB5, 0x62,  // Header 0xB5 0x62
-  0x06, 0x04,  // UFX-CFG-RST is command 0x06 0x04
-  0x04, 0x00,  // length = 4
-  0xFF, 0xFF,  // navBbrMask = 0xFFFF (clear all BBR data)
-  0x02,        // resetMode = 0x02 (controlled GNSS restart)
-  0x00,        // reserved1 = 0x00
-  0x0E, 0x61   // Claude Checksum (CK_A, CK_B)
-};
-
-// UBX-CFG-RST (0x06 0x04)
-// Cold Start - Clear all aiding data (ephemeris, almanac, position, time)
 uint8_t UBX_CFG_RST_COLDSTART[] = {
-//  0x06, 0x04,  // UFX-CFG-RST is command 0x06 0x04
-//  0x04, 0x00,  // length = 4
   0xFF, 0xFF,  // navBbrMask = 0xFFFF (clear all BBR data)
   0x02,        // resetMode = 0x02 (controlled GNSS restart)
-  0x00         // reserved1 = 0x00
-};
-
-// RAW - UBX-CFG-RST (0x06 0x04)
-// Warm start: clear only ephemeris
-uint8_t EX_UBX_CFG_RST_WARMSTART[] = {
-  0xB5, 0x62,  // Header 0xB5 0x62
-  0x06, 0x04,  // UFX-CFG-RST is command 0x06 0x04
-  0x04, 0x00,  // length = 4
-  0x01, 0x00,  // navBbrMask = 0x0001 (clear eph only)
-  0x02,        // resetMode  = 0x02 (controlled GNSS restart)
-  0x00,        // reserved1  = 0x00
-  0x11, 0x6C   // Claude Checksum (CK_A, CK_B)
+  0x00         // reserved1 = 0x00 
 };
 
 // UBX-CFG-RST (0x06 0x04)
@@ -589,37 +554,8 @@ uint8_t UBX_CFG_RST_WARMSTART[] = {
 // HOT START - Keep everything, just restart
 uint8_t UBX_CFG_RST_HOTSTART[] = {
     0x00, 0x00, // navBbrMask = 0x0000 (clear nothing)
-    0x02,       // resetMode = 0x02
+    0x02,       // resetMode = 0x02 (controlled GNSS restart)
     0x00
-};
-
-// RAW - Shows milliseconds since system startup - key indicator!
-uint8_t EX_UBX_NAV_STATUS_POLL[] = {
-    0xB5, 0x62,             // Sync chars
-    0x01, 0x03,             // Class=NAV(0x01), ID=STATUS(0x03)
-    0x00, 0x00,             // Length = 0 (poll request)
-    0x04, 0x0D              // Checksum
-};
-
-// Shows milliseconds since system startup - key indicator!
-uint8_t UBX_NAV_STATUS_POLL[] = {
-    0x01, 0x03,             // Class=NAV(0x01), ID=STATUS(0x03)
-    0x00, 0x00,             // Length = 0 (poll request)
-};
-
-// RAW - Set 20 satellites for fix 
-uint8_t EX_UBX_CFG_VALSET_INFIL_MINSV_20[] = {
-  0xB5, 0x62,             // Sync chars
-  0x06, 0x8A,             // Class=CFG(0x06), ID=VALSET(0x8A)
-  0x09, 0x00,             // Length = 9 bytes
-
-  // Payload (9 bytes)
-  0x00, 0x01, 0x00, 0x00, // version=0, layer=RAM(0x01), rsvd[2]
-  0xA1, 0x00, 0x11, 0x20, // key = 0x201100a1 (CFG-NAVSPG-INFIL_MINSVS)
-  0x14,                   // value = 20
-
-  // Checksum (must be recalculated!)
-  0x80, 0xDD              // CK_A, CK_B
 };
 
 // Set 20 satellites for fix 
@@ -629,26 +565,11 @@ uint8_t UBX_CFG_VALSET_INFIL_MINSV_20[] = {
   0x14,                   // value = 20 satellites
 };
 
-// RAW - Set 4 satellites for fix 
-uint8_t EX_UBX_CFG_VALSET_INFIL_MINSV_4[] = {
-  0xB5, 0x62,             // Sync chars
-  0x06, 0x8A,             // Class=CFG(0x06), ID=VALSET(0x8A)
-  0x09, 0x00,             // Length = 9 bytes
-
-  // Payload (9 bytes)
+// Set 3 satellites for fix 
+uint8_t UBX_CFG_VALSET_INFIL_MINSV_3[] = {
   0x00, 0x01, 0x00, 0x00, // version=0, layer=BBR(0x01), rsvd[2]
   0xA1, 0x00, 0x11, 0x20, // key = 0x201100a1 (CFG-NAVSPG-INFIL_MINSVS)
-  0x4,                   // value = 4 satellites
-
-  // Checksum (must be recalculated!)
-  0x70, 0xCD              // CK_A, CK_B
-};
-
-// Set 4 satellites for fix 
-uint8_t UBX_CFG_VALSET_INFIL_MINSV_4[] = {
-  0x00, 0x01, 0x00, 0x00, // version=0, layer=BBR(0x01), rsvd[2]
-  0xA1, 0x00, 0x11, 0x20, // key = 0x201100a1 (CFG-NAVSPG-INFIL_MINSVS)
-  0x4,                   // value = 4
+  0x3,                   // value = 3
 };
 
 // RAW - get number of satellites for fix
@@ -1327,11 +1248,10 @@ bool configureUBLOXGps()
     else
       BUFFER_LOG_PRINTF("%s Get SBAS enabled status failed\n", badAck);
 
-    int satCount = -1;
-    bool responseOk = pollCFG_MinSatellites(satCount);
+    bool responseOk = pollCFG_MinSatellites(minimumSatellitesForFix);
 
     if (responseOk)
-      BUFFER_LOG_PRINTF("%s Get Min Visible Sat Count: %d\n", okAck, satCount);
+      BUFFER_LOG_PRINTF("%s Get Min Visible Sat Count: %d\n", okAck, minimumSatellitesForFix);
     else
       BUFFER_LOG_PRINTF("%s Get Min Visible Sat Count failed\n", badAck);
 
@@ -1340,30 +1260,29 @@ bool configureUBLOXGps()
     bool setSatCountHigh = gpsTriggerNoFixBySatCountHighForFix(flushBufferLog);
     BUFFER_LOG_PRINTF("%s - Set sat count high (20)\n", setSatCountHigh ? okAck : badAck);
 
-    responseOk = pollCFG_MinSatellites(satCount);
+    responseOk = pollCFG_MinSatellites(minimumSatellitesForFix);
 
     if (responseOk)
-      BUFFER_LOG_PRINTF("%s Get Min Visible Sat Count: %d\n", okAck, satCount);
+      BUFFER_LOG_PRINTF("%s Get Min Visible Sat Count: %d\n", okAck, minimumSatellitesForFix);
     else
       BUFFER_LOG_PRINTF("%s Get Min Visible Sat Count failed\n", badAck);
 
     bool setSatCountNormal = gpsTriggerNormalSatCountForFix(flushBufferLog);
     BUFFER_LOG_PRINTF("%s - Set sat count normal (4)\n", setSatCountNormal ? okAck : badAck);
 
-    responseOk = pollCFG_MinSatellites(satCount);
+    responseOk = pollCFG_MinSatellites(minimumSatellitesForFix);
 
     if (responseOk)
-      BUFFER_LOG_PRINTF("%s Get Min Visible Sat Count: %d\n", okAck, satCount);
+      BUFFER_LOG_PRINTF("%s Get Min Visible Sat Count: %d\n", okAck, minimumSatellitesForFix);
     else
       BUFFER_LOG_PRINTF("%s Get Min Visible Sat Count failed\n", badAck);
+
   }
 
   serial_gps.flush();
 
   return ok;
 }
-
-//  uart_write_bytes(UART_NUMBER_GPS, UBX_CFG_RST_COLDSTART, sizeof(UBX_CFG_RST_COLDSTART));
 
 bool gpsSendColdStartCommand(bool flushBufferLog)
 {
@@ -1425,15 +1344,6 @@ bool gpsSendHotStartCommand(bool flushBufferLog)
   return true;
 }
 
-// Extract uptime from UBX-NAV-STATUS response
-uint32_t extract_uptime_ms(uint8_t* ubx_response) {
-    // msss field is at bytes 18-21 of complete message (bytes 12-15 of payload)
-    return ubx_response[18] + 
-           (ubx_response[19] << 8) + 
-           (ubx_response[20] << 16) + 
-           (ubx_response[21] << 24);
-}
-
 bool gpsTriggerNoFixBySatCountHighForFix(bool flushBufferLog)
 {
   if (flushBufferLog)
@@ -1462,11 +1372,11 @@ bool gpsTriggerNormalSatCountForFix(bool flushBufferLog)
   // due to non-blocking reads in the gpsRx task there is no need to wait for any read to complete after setting the halt flag to true
   haltGPSTaskWhilstUBXTransactionsOngoing = true;
 
-  bool ok = sendUBXUnified(0x06, 0x8A, UBX_CFG_VALSET_INFIL_MINSV_4, sizeof(UBX_CFG_VALSET_INFIL_MINSV_4),"Set Min Satellites 4",false);
+  bool ok = sendUBXUnified(0x06, 0x8A, UBX_CFG_VALSET_INFIL_MINSV_3, sizeof(UBX_CFG_VALSET_INFIL_MINSV_3),"Set Min Satellites 3",false);
 
   haltGPSTaskWhilstUBXTransactionsOngoing = false;
 
-  BUFFER_LOG_PRINTF("%s Sent Min Satellites 4 for Fix Command\n", (ok ? okAck : badAck));
+  BUFFER_LOG_PRINTF("%s Sent Min Satellites 3 for Fix Command\n", (ok ? okAck : badAck));
 
   if (flushBufferLog)
     BUFFER_LOG_FLUSH_TO_SERIAL();

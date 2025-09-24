@@ -100,6 +100,8 @@ HardwareSerial serial_lantern_neopixels(UART_NUMBER_LANTERN_NEOPIXELS);
 #define GPS_TX_GREY_GPIO   39
 #define GPS_RX_WHITE_GPIO  38
 
+int minimumSatellitesForFix = 0;
+
 static constexpr int GPS_RX_BUFFER_SIZE = 1024;
 static constexpr size_t GPS_RX_READ_CHUNK = 256;
 static constexpr int GPS_QUEUE_SIZE = 10;
@@ -363,6 +365,7 @@ bool hasGPSFix = false;
 bool gpsSendColdStartCommand(bool flushBufferLog=true);
 bool gpsSendWarmStartCommand(bool flushBufferLog=true);
 bool gpsSendHotStartCommand(bool flushBufferLog=true);
+bool gpsGetUptime(uint32_t& uptimeMs, bool flushBufferLog=true);
 bool gpsTriggerNoFixBySatCountHighForFix(bool flushBufferLog=true);
 bool gpsTriggerNormalSatCountForFix(bool flushBufferLog=true);
 bool gpsGetSatCountForFix(int& minSatCount, bool flushBufferLog=true);
@@ -1132,9 +1135,8 @@ void sendPendingGPSUBXCommands()
   if (pendingGPSGetMinFixSats) {
     pendingGPSGetMinFixSats = false;
     USB_SERIAL_PRINTLN(">>> Main loop: Processing Get Min Fix Sats command <<<");
-    int minSatCount = -1;
-    bool result = gpsGetSatCountForFix(minSatCount);
-    USB_SERIAL_PRINTF("Get Min Fix Sats command result: %s, count: %d\n", result ? "SUCCESS" : "FAILED", minSatCount);
+    bool result = gpsGetSatCountForFix(minimumSatellitesForFix);
+    USB_SERIAL_PRINTF("Get Min Fix Sats command result: %s, count: %d\n", result ? "SUCCESS" : "FAILED", minimumSatellitesForFix);
   }
 
   if (pendingGPSTriggerColdStart) {
