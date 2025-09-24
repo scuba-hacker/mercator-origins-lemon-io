@@ -139,6 +139,13 @@ const char LOGS_PAGE_HTML[] PROGMEM = R"rawliteral(
         .btn-update:hover {
             background: #e67e22;
         }
+        .btn-reload {
+            background: #e91e63;
+            color: white;
+        }
+        .btn-reload:hover {
+            background: #c2185b;
+        }
         #console {
             background: #000;
             border: 1px solid #444;
@@ -279,6 +286,7 @@ const char LOGS_PAGE_HTML[] PROGMEM = R"rawliteral(
     <div class="container">
         <h1>Lemon IO - Serial Console</h1>
         <div class="shortcut-controls">
+            <button class="btn-reload" onclick="reloadPage()">Reload</button>
             <button class="btn-stats" onclick="goToStats()">Stats</button>
             <button class="btn-reboot" onclick="confirmReboot()">Reboot</button>
             <button class="btn-update" onclick="goToUpdate()">Update</button>
@@ -753,6 +761,11 @@ const char LOGS_PAGE_HTML[] PROGMEM = R"rawliteral(
         function goToUpdate() {
             window.location.href = '/update';
         }
+
+        function reloadPage() {
+            window.location.reload();
+        }
+
 
 
         // Auto-connect on load

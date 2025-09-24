@@ -21,12 +21,18 @@ extern bool fastStartup;
 // Thread-safe GPS command flags
 extern volatile bool pendingGPSTriggerNoFixBySatCountHigh;
 extern volatile bool pendingGPSTriggerNormalSatCount;
+extern volatile bool pendingGPSGetMinFixSats;
+extern volatile bool pendingGPSTriggerColdStart;
+extern volatile bool pendingGPSTriggerWarmStart;
+extern volatile bool pendingGPSTriggerHotStart;
 
 // GPS functions from main_gps.cpp
-extern bool gpsSendWarmStartCommand();
-extern bool gpsSendColdStartCommand();
-extern bool gpsTriggerNoFixBySatCountHighForFix();
-extern bool gpsTriggerNormalSatCountForFix();
+extern bool gpsSendWarmStartCommand(bool flushBufferLog=true);
+extern bool gpsSendHotStartCommand(bool flushBufferLog=true);
+extern bool gpsSendColdStartCommand(bool flushBufferLog=true);
+extern bool gpsTriggerNoFixBySatCountHighForFix(bool flushBufferLog=true);
+extern bool gpsTriggerNormalSatCountForFix(bool flushBufferLog=true);
+extern bool gpsGetSatCountForFix(int& minSatCount, bool flushBufferLog=true);
 // Static instance pointer for callbacks
 NetworkManager* NetworkManager::instance = nullptr;
 
@@ -532,6 +538,7 @@ void NetworkManager::setupWebServerRoutes() {
         esp_restart();
     });
 
+
     asyncWebServer->on("/logs", HTTP_GET, [](AsyncWebServerRequest * request) {
         request->send(200, "text/html", LOGS_PAGE_HTML);
       });
@@ -716,12 +723,16 @@ void NetworkManager::setupWebServerRoutes() {
                 USB_SERIAL_PRINTLN(overrideGPSToNoFixForTesting ? "ACTIVE" : "INACTIVE");
             } else if (pButton->value() == String("warmStartButton")) {
                 USB_SERIAL_PRINTLN(">>> Warm Start button pressed <<<");
-                bool result = gpsSendWarmStartCommand();
-                USB_SERIAL_PRINTF("Warm Start command result: %s\n", result ? "SUCCESS" : "FAILED");
+                pendingGPSTriggerWarmStart = true;
+                USB_SERIAL_PRINTLN("Warm Start command scheduled for main loop");
             } else if (pButton->value() == String("coldStartButton")) {
                 USB_SERIAL_PRINTLN(">>> Cold Start button pressed <<<");
-                bool result = gpsSendColdStartCommand();
-                USB_SERIAL_PRINTF("Cold Start command result: %s\n", result ? "SUCCESS" : "FAILED");
+                pendingGPSTriggerColdStart = true;
+                USB_SERIAL_PRINTLN("Cold Start command scheduled for main loop");
+            } else if (pButton->value() == String("hotStartButton")) {
+                USB_SERIAL_PRINTLN(">>> Hot Start button pressed <<<");
+                pendingGPSTriggerHotStart = true;
+                USB_SERIAL_PRINTLN("Hot Start command scheduled for main loop");
             } else if (pButton->value() == String("fixNeeds20SatsButton")) {
                 USB_SERIAL_PRINTLN(">>> FIX Needs 20 Sats button pressed <<<");
                 pendingGPSTriggerNoFixBySatCountHigh = true;
@@ -730,6 +741,10 @@ void NetworkManager::setupWebServerRoutes() {
                 USB_SERIAL_PRINTLN(">>> FIX Needs 4 Sats button pressed <<<");
                 pendingGPSTriggerNormalSatCount = true;
                 USB_SERIAL_PRINTLN("FIX Needs 4 Sats command scheduled for main loop");
+            } else if (pButton->value() == String("minFixSatsButton")) {
+                USB_SERIAL_PRINTLN(">>> Min Fix Sats button pressed <<<");
+                pendingGPSGetMinFixSats = true;
+                USB_SERIAL_PRINTLN("Get Min Fix Sats command scheduled for main loop");
             } else {
                 USB_SERIAL_PRINTF(">>> UNKNOWN BUTTON PRESSED: '%s' <<<\n", pButton->value().c_str());
             }

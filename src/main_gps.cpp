@@ -559,8 +559,8 @@ uint8_t EX_UBX_CFG_RST_COLDSTART[] = {
 // UBX-CFG-RST (0x06 0x04)
 // Cold Start - Clear all aiding data (ephemeris, almanac, position, time)
 uint8_t UBX_CFG_RST_COLDSTART[] = {
-  0x06, 0x04,  // UFX-CFG-RST is command 0x06 0x04
-  0x04, 0x00,  // length = 4
+//  0x06, 0x04,  // UFX-CFG-RST is command 0x06 0x04
+//  0x04, 0x00,  // length = 4
   0xFF, 0xFF,  // navBbrMask = 0xFFFF (clear all BBR data)
   0x02,        // resetMode = 0x02 (controlled GNSS restart)
   0x00         // reserved1 = 0x00
@@ -581,11 +581,16 @@ uint8_t EX_UBX_CFG_RST_WARMSTART[] = {
 // UBX-CFG-RST (0x06 0x04)
 // Warm start: clear only ephemeris
 uint8_t UBX_CFG_RST_WARMSTART[] = {
-  0x06, 0x04,  // UFX-CFG-RST is command 0x06 0x04
-  0x04, 0x00,  // length = 4
   0x01, 0x00,  // navBbrMask = 0x0001 (clear eph only)
   0x02,        // resetMode  = 0x02 (controlled GNSS restart)
   0x00        // reserved1  = 0x00
+};
+
+// HOT START - Keep everything, just restart
+uint8_t UBX_CFG_RST_HOTSTART[] = {
+    0x00, 0x00, // navBbrMask = 0x0000 (clear nothing)
+    0x02,       // resetMode = 0x02
+    0x00
 };
 
 // RAW - Shows milliseconds since system startup - key indicator!
@@ -1331,7 +1336,8 @@ bool configureUBLOXGps()
       BUFFER_LOG_PRINTF("%s Get Min Visible Sat Count failed\n", badAck);
 
 
-    bool setSatCountHigh = gpsTriggerNoFixBySatCountHighForFix();
+    const bool flushBufferLog = false;
+    bool setSatCountHigh = gpsTriggerNoFixBySatCountHighForFix(flushBufferLog);
     BUFFER_LOG_PRINTF("%s - Set sat count high (20)\n", setSatCountHigh ? okAck : badAck);
 
     responseOk = pollCFG_MinSatellites(satCount);
@@ -1341,7 +1347,7 @@ bool configureUBLOXGps()
     else
       BUFFER_LOG_PRINTF("%s Get Min Visible Sat Count failed\n", badAck);
 
-    bool setSatCountNormal = gpsTriggerNormalSatCountForFix();
+    bool setSatCountNormal = gpsTriggerNormalSatCountForFix(flushBufferLog);
     BUFFER_LOG_PRINTF("%s - Set sat count normal (4)\n", setSatCountNormal ? okAck : badAck);
 
     responseOk = pollCFG_MinSatellites(satCount);
@@ -1357,17 +1363,65 @@ bool configureUBLOXGps()
   return ok;
 }
 
-bool gpsSendColdStartCommand()
+//  uart_write_bytes(UART_NUMBER_GPS, UBX_CFG_RST_COLDSTART, sizeof(UBX_CFG_RST_COLDSTART));
+
+bool gpsSendColdStartCommand(bool flushBufferLog)
 {
-  uart_write_bytes(UART_NUMBER_GPS, UBX_CFG_RST_COLDSTART, sizeof(UBX_CFG_RST_COLDSTART));
-  BUFFER_LOG_PRINTF("UBX_CFG_RST_COLDSTART: Sent Cold Start Command\n");
+  if (flushBufferLog)
+    BUFFER_LOG_RESET();
+
+  // due to non-blocking reads in the gpsRx task there is no need to wait for any read to complete after setting the halt flag to true
+  haltGPSTaskWhilstUBXTransactionsOngoing = true;
+
+  bool ok = sendUBXUnified(0x06, 0x04, UBX_CFG_RST_COLDSTART, sizeof(UBX_CFG_RST_COLDSTART),"Trigger Cold Restart",false);
+
+  BUFFER_LOG_PRINTF("UBX_CFG_RST_COLDSTART: Sent Cold Restart Command\n");
+
+  haltGPSTaskWhilstUBXTransactionsOngoing = false;
+
+  if (flushBufferLog)
+    BUFFER_LOG_FLUSH_TO_SERIAL();
+
   return true;
 }
 
-bool gpsSendWarmStartCommand()
+bool gpsSendWarmStartCommand(bool flushBufferLog)
 {
-  uart_write_bytes(UART_NUMBER_GPS, UBX_CFG_RST_WARMSTART, sizeof(UBX_CFG_RST_WARMSTART));
-  BUFFER_LOG_PRINTF("UBX_CFG_RST_WARMSTART: Sent Warm Start Command\n");
+  if (flushBufferLog)
+    BUFFER_LOG_RESET();
+
+  // due to non-blocking reads in the gpsRx task there is no need to wait for any read to complete after setting the halt flag to true
+  haltGPSTaskWhilstUBXTransactionsOngoing = true;
+
+  bool ok = sendUBXUnified(0x06, 0x04, UBX_CFG_RST_WARMSTART, sizeof(UBX_CFG_RST_WARMSTART),"Trigger Warm Restart",false);
+
+  haltGPSTaskWhilstUBXTransactionsOngoing = false;
+
+  BUFFER_LOG_PRINTF("UBX_CFG_RST_WARMSTART: Sent Warm Restart Command\n");
+
+  if (flushBufferLog)
+    BUFFER_LOG_FLUSH_TO_SERIAL();
+
+  return true;
+}
+
+bool gpsSendHotStartCommand(bool flushBufferLog)
+{
+  if (flushBufferLog)
+    BUFFER_LOG_RESET();
+
+  // due to non-blocking reads in the gpsRx task there is no need to wait for any read to complete after setting the halt flag to true
+  haltGPSTaskWhilstUBXTransactionsOngoing = true;
+
+  bool ok = sendUBXUnified(0x06, 0x04, UBX_CFG_RST_HOTSTART, sizeof(UBX_CFG_RST_HOTSTART),"Trigger Hot Restart",false);
+
+  haltGPSTaskWhilstUBXTransactionsOngoing = false;
+
+  BUFFER_LOG_PRINTF("UBX_CFG_RST_HOTSTART: Sent Hot Restart Command\n");
+
+  if (flushBufferLog)
+    BUFFER_LOG_FLUSH_TO_SERIAL();
+
   return true;
 }
 
@@ -1380,26 +1434,66 @@ uint32_t extract_uptime_ms(uint8_t* ubx_response) {
            (ubx_response[21] << 24);
 }
 
-bool gpsTriggerNoFixBySatCountHighForFix()
+bool gpsTriggerNoFixBySatCountHighForFix(bool flushBufferLog)
 {
+  if (flushBufferLog)
+    BUFFER_LOG_RESET();
+
+  // due to non-blocking reads in the gpsRx task there is no need to wait for any read to complete after setting the halt flag to true
+  haltGPSTaskWhilstUBXTransactionsOngoing = true;
+
   bool ok = sendUBXUnified(0x06, 0x8A, UBX_CFG_VALSET_INFIL_MINSV_20, sizeof(UBX_CFG_VALSET_INFIL_MINSV_20),"Set Min Satellites 20 - force no fix",false);
+
+  haltGPSTaskWhilstUBXTransactionsOngoing = false;
+
   BUFFER_LOG_PRINTF("%s Sent Min Satellites 20 for Fix Command\n", (ok ? okAck : badAck));
+  
+  if (flushBufferLog)
+    BUFFER_LOG_FLUSH_TO_SERIAL();
+
   return ok;
 }
 
-bool gpsTriggerNormalSatCountForFix()
+bool gpsTriggerNormalSatCountForFix(bool flushBufferLog)
 {
+  if (flushBufferLog)
+    BUFFER_LOG_RESET();
+
+  // due to non-blocking reads in the gpsRx task there is no need to wait for any read to complete after setting the halt flag to true
+  haltGPSTaskWhilstUBXTransactionsOngoing = true;
+
   bool ok = sendUBXUnified(0x06, 0x8A, UBX_CFG_VALSET_INFIL_MINSV_4, sizeof(UBX_CFG_VALSET_INFIL_MINSV_4),"Set Min Satellites 4",false);
+
+  haltGPSTaskWhilstUBXTransactionsOngoing = false;
+
   BUFFER_LOG_PRINTF("%s Sent Min Satellites 4 for Fix Command\n", (ok ? okAck : badAck));
+
+  if (flushBufferLog)
+    BUFFER_LOG_FLUSH_TO_SERIAL();
+
   return ok;
 }
-/*
-bool gpsGetSatCountForFix()
+
+bool gpsGetSatCountForFix(int& minSatCount, bool flushBufferLog)
 {
-  bool ok = sendUBX(0x06, 0x17, UBX_CFG_VALSET_INFIL_MINSV_4, sizeof(UBX_CFG_VALSET_INFIL_MINSV_4),"Set Min Satellites 4",false);
-  BUFFER_LOG_PRINTF("%s Sent Min Satellites 4 for Fix Command\n", (ok ? okAck : badAck));
+  if (flushBufferLog)
+    BUFFER_LOG_RESET();
+
+  minSatCount = -1;  
+
+  // due to non-blocking reads in the gpsRx task there is no need to wait for any read to complete after setting the halt flag to true
+  haltGPSTaskWhilstUBXTransactionsOngoing = true;
+
+  bool ok = pollCFG_MinSatellites(minSatCount);
+
+  haltGPSTaskWhilstUBXTransactionsOngoing = false;
+
+  BUFFER_LOG_PRINTF("%s Sent Get Minimum Satellites for Fix: minimum satCount = %d\n", (ok ? okAck : badAck), minSatCount);
+
+  if (flushBufferLog)
+    BUFFER_LOG_FLUSH_TO_SERIAL();
+
   return ok;
 }
-*/
 
 #endif

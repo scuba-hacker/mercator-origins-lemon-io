@@ -111,16 +111,18 @@ const char STATS_HTML[] = R"rawliteral(
            <button class="button button-purple" id="gpsOverrideNoFixSimToggleButton">Toggle GPS Override No FIX Sim</button>
            <button class="button button-black" id="logsButton">Logs</button>
            <button class="button button-amber" id="clearCountersButton">Clear Counters</button>
+           <button class="button button-purple" id="minFixSatsButton">Min Fix Sats</button>
 
             <br><br>
 
            <button class="button button-brown" id="warmStartButton">Warm Start</button>
            <button class="button button-brown" id="coldStartButton">Cold Start</button>
+           <button class="button button-brown" id="hotStartButton">Hot Start</button>
            <button class="button button-brown" id="fixNeeds20SatsButton">FIX Needs 20 Sats</button>
            <button class="button button-brown" id="fixNeeds4SatsButton">FIX Needs 4 Sats</button>
 
             <br><br>
-
+            
           <select id="sortedWaypointsDropdown">
                <!-- Options will be populated dynamically -->
            </select>
@@ -417,12 +419,20 @@ const char STATS_HTML[] = R"rawliteral(
        handleButtonClick("clearCountersButton");
    });
 
+   document.getElementById("minFixSatsButton").addEventListener("click", function() {
+       handleButtonClick("minFixSatsButton");
+   });
+
    document.getElementById("warmStartButton").addEventListener("click", function() {
        handleButtonClick("warmStartButton");
    });
 
    document.getElementById("coldStartButton").addEventListener("click", function() {
        handleButtonClick("coldStartButton");
+   });
+
+   document.getElementById("hotStartButton").addEventListener("click", function() {
+       handleButtonClick("hotStartButton");
    });
 
    document.getElementById("fixNeeds20SatsButton").addEventListener("click", function() {
@@ -535,7 +545,7 @@ const char STATS_HTML[] = R"rawliteral(
    // Sort the array alphabetically
    waypoints.sort();
 
-     // Get the drop-down element
+                 // Get the drop-down element
    var dropdown1 = document.getElementById("sortedWaypointsDropdown");
    var dropdown2 = document.getElementById("sortedWaypointsDropdown2");
 

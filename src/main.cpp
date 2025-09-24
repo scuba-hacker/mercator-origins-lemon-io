@@ -19,6 +19,10 @@ bool fastStartup = true;
 // Thread-safe GPS command flags (set by web handlers, processed by main loop)
 volatile bool pendingGPSTriggerNoFixBySatCountHigh = false;
 volatile bool pendingGPSTriggerNormalSatCount = false;
+volatile bool pendingGPSGetMinFixSats = false;
+volatile bool pendingGPSTriggerColdStart = false;
+volatile bool pendingGPSTriggerWarmStart = false;
+volatile bool pendingGPSTriggerHotStart = false;
 
 bool enableWebSerialFrame=false;    // stats page iframe - use /logs instead
 
@@ -99,7 +103,6 @@ HardwareSerial serial_lantern_neopixels(UART_NUMBER_LANTERN_NEOPIXELS);
 static constexpr int GPS_RX_BUFFER_SIZE = 1024;
 static constexpr size_t GPS_RX_READ_CHUNK = 256;
 static constexpr int GPS_QUEUE_SIZE = 10;
-static constexpr TickType_t GPS_RX_TIMEOUT = pdMS_TO_TICKS(100);
 
 QueueHandle_t gpsQueue = nullptr;
 
@@ -203,7 +206,9 @@ Button redButton = Button(RED_BUTTON_GPIO, true, DEBOUNCE_MS);
 #define MERCATOR_ELEGANTOTA_LEMON_BANNER
 #define MERCATOR_OTA_DEVICE_LABEL "LEMON-IO" 
 
-bool haltAllProcessingDuringOTAUpload = false;
+volatile bool haltAllProcessingDuringOTAUpload = false;
+
+volatile bool haltGPSTaskWhilstUBXTransactionsOngoing = false;
 
 // START FEATURE ENABLE FLAGS
 bool enableMQTTEncryption = true; // Set to true to use encrypted MQTT connections (port 8883, otherwise port 8887)
@@ -355,10 +360,12 @@ uint32_t timeNextGoodFixExpectedBy = 0;
 uint32_t timeNextGPSByteExpectedBy = 0;
 bool hasGPSFix = false;
 
-bool gpsSendColdStartCommand();
-bool gpsSendWarmStartCommand();
-bool gpsTriggerNoFixBySatCountHighForFix();
-bool gpsTriggerNormalSatCountForFix();
+bool gpsSendColdStartCommand(bool flushBufferLog=true);
+bool gpsSendWarmStartCommand(bool flushBufferLog=true);
+bool gpsSendHotStartCommand(bool flushBufferLog=true);
+bool gpsTriggerNoFixBySatCountHighForFix(bool flushBufferLog=true);
+bool gpsTriggerNormalSatCountForFix(bool flushBufferLog=true);
+bool gpsGetSatCountForFix(int& minSatCount, bool flushBufferLog=true);
 
 enum e_user_action
 {
@@ -674,34 +681,53 @@ bool testLgfxAdafruitDisplay = false;
 bool useGsDisplayManager = true;
 bool useLxDisplayManager = false;
 
+static constexpr TickType_t GPS_RX_RETRY_DELAY = pdMS_TO_TICKS(10);
+
 void gpsRxTask(void *arg)
 {
   GPSDataPacket packet;
   for (;;)
   {
-    if (!haltAllProcessingDuringOTAUpload)
+    if (!haltAllProcessingDuringOTAUpload && !haltGPSTaskWhilstUBXTransactionsOngoing)
     {
-      int bytesRead = uart_read_bytes(UART_NUMBER_GPS, packet.data, sizeof(packet.data), GPS_RX_TIMEOUT);
+      int bytesRead = uart_read_bytes(UART_NUMBER_GPS, packet.data, sizeof(packet.data),0); // removed timeout here to make it non-blocking
       if (bytesRead > 0)
       {
+        bool throwAwayBinaryPacket = false;
         for (int i=0; i < bytesRead; i++)
         {
-          // throw away any packets that contain binary data, ie UBX frame
-          if (*(packet.data+i) < 32 || *(packet.data+i) > 127)
-            continue;            
+          // throw away any packets that contain binary data (except new lines), ie UBX frame
+          uint8_t byte = packet.data[i];
+          if (byte != 10 && byte != 13 && (byte < 32 || byte > 127))
+          {
+            throwAwayBinaryPacket = true;
+            break;
+          }
         }
 
-        packet.length = bytesRead;
-        // Send packet to main loop via FreeRTOS queue (don't block if queue is full)
-        if (xQueueSend(gpsQueue, &packet, 0) != pdTRUE)
+        if (!throwAwayBinaryPacket)
         {
-          // Queue full - could increment a dropped packet counter here
+          packet.length = bytesRead;
+          // Send packet to main loop via FreeRTOS queue (don't block if queue is full)
+          if (xQueueSend(gpsQueue, &packet, 0) != pdTRUE)
+          {
+            // Queue full - could increment a dropped packet counter here
+          }
+          // else: silently discard packet containing binary data (UBX frames)
         }
+        else
+        {
+          packet.length = 0;
+        }
+      }
+      else
+      {
+        vTaskDelay(GPS_RX_RETRY_DELAY);
       }
     }
     else
     {
-      delay(100);
+      vTaskDelay(GPS_RX_RETRY_DELAY);
     }
   }
 }
@@ -1086,6 +1112,53 @@ bool newTempHumidRead=false;
 
 const uint32_t timeoutUntilNoGPSDetected = 10000;
 
+void sendPendingGPSUBXCommands()
+{
+  // Process thread-safe GPS command flags (set by web button handlers)
+  if (pendingGPSTriggerNoFixBySatCountHigh) {
+    pendingGPSTriggerNoFixBySatCountHigh = false;
+    USB_SERIAL_PRINTLN(">>> Main loop: Processing FIX Needs 20 Sats command <<<");
+    bool result = gpsTriggerNoFixBySatCountHighForFix();
+    USB_SERIAL_PRINTF("FIX Needs 20 Sats command result: %s\n", result ? "SUCCESS" : "FAILED");
+  }
+
+  if (pendingGPSTriggerNormalSatCount) {
+    pendingGPSTriggerNormalSatCount = false;
+    USB_SERIAL_PRINTLN(">>> Main loop: Processing FIX Needs 4 Sats command <<<");
+    bool result = gpsTriggerNormalSatCountForFix();
+    USB_SERIAL_PRINTF("FIX Needs 4 Sats command result: %s\n", result ? "SUCCESS" : "FAILED");
+  }
+
+  if (pendingGPSGetMinFixSats) {
+    pendingGPSGetMinFixSats = false;
+    USB_SERIAL_PRINTLN(">>> Main loop: Processing Get Min Fix Sats command <<<");
+    int minSatCount = -1;
+    bool result = gpsGetSatCountForFix(minSatCount);
+    USB_SERIAL_PRINTF("Get Min Fix Sats command result: %s, count: %d\n", result ? "SUCCESS" : "FAILED", minSatCount);
+  }
+
+  if (pendingGPSTriggerColdStart) {
+    pendingGPSTriggerColdStart = false;
+    USB_SERIAL_PRINTLN(">>> Main loop: Processing trigger cold re-start command <<<");
+    bool result = gpsSendColdStartCommand();
+    USB_SERIAL_PRINTF("Trigger cold restart command result: %s\n", result ? "SUCCESS" : "FAILED");
+  }
+
+  if (pendingGPSTriggerWarmStart) {
+    pendingGPSTriggerWarmStart = false;
+    USB_SERIAL_PRINTLN(">>> Main loop: Processing trigger warm re-start command <<<");
+    bool result = gpsSendWarmStartCommand();
+    USB_SERIAL_PRINTF("Trigger warm restart command result: %s\n", result ? "SUCCESS" : "FAILED");
+  }
+
+  if (pendingGPSTriggerHotStart) {
+    pendingGPSTriggerHotStart = false;
+    USB_SERIAL_PRINTLN(">>> Main loop: Processing trigger hot re-start command <<<");
+    bool result = gpsSendHotStartCommand();
+    USB_SERIAL_PRINTF("Trigger hot restart command result: %s\n", result ? "SUCCESS" : "FAILED");
+  }
+}
+
 void loop()
 {  
   // Handle NetworkManager processing (includes MQTT testing, OTA restart, etc.)
@@ -1098,28 +1171,13 @@ void loop()
     toggleStatusLED();
     return;
   }
-  
+
+  sendPendingGPSUBXCommands();
+
   newTempHumidRead = readTempHumidityCJMCU_1080_Sensor(&tempFloat, &humidFloat);
 
   // Process serial commands for testing
   processSerialCommands();
-
-  // Process thread-safe GPS command flags (set by web button handlers)
-  if (pendingGPSTriggerNoFixBySatCountHigh) {
-    pendingGPSTriggerNoFixBySatCountHigh = false;
-    USB_SERIAL_PRINTLN(">>> Main loop: Processing FIX Needs 20 Sats command <<<");
-bool result = gpsTriggerNoFixBySatCountHighForFix();
-//    bool result=true;
-    USB_SERIAL_PRINTF("FIX Needs 20 Sats command result: %s\n", result ? "SUCCESS" : "FAILED");
-  }
-
-  if (pendingGPSTriggerNormalSatCount) {
-    pendingGPSTriggerNormalSatCount = false;
-    USB_SERIAL_PRINTLN(">>> Main loop: Processing FIX Needs 4 Sats command <<<");
- bool result = gpsTriggerNormalSatCountForFix();
- //   bool result=true;
-    USB_SERIAL_PRINTF("FIX Needs 4 Sats command result: %s\n", result ? "SUCCESS" : "FAILED");
-  }
 
   updateButtonsAndBuzzer();
 
