@@ -204,7 +204,7 @@ void getNextTelemetryMessagesUploadedToPrivateMQTT()
 {
   extern MercatorMQTT privateMQTT;
   BlockHeader tailBlock;
-  const uint8_t maxTailPullsPerCycle = 10;   // allow up to 10 messages per cycle
+  const uint8_t maxTailPullsPerCycle = 50;   // allow up to 50 messages per cycle (per second)
   uint8_t tailPulls = maxTailPullsPerCycle;
 
   if (!privateMQTT.canUpload()) // upload throttle and connectivity check.

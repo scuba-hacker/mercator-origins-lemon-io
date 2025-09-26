@@ -247,6 +247,14 @@ const char STATS_HTML[] = R"rawliteral(
                     <p class="reading"><span id="largest_free_block"></span></p>
                 </div>
                 <div class="card">
+                    <p class="card-title">Lemon PSRAM Free (KB)</p>
+                    <p class="reading"><span id="psram_free"></span></p>
+                </div>
+                <div class="card">
+                    <p class="card-title">MQTT Buffer Offset (KB)</p>
+                    <p class="reading"><span id="mqtt_buf_offset_kb"></span></p>
+                </div>
+                <div class="card">
                     <p class="card-title">Lemon Minimum Free Ever (bytes)</p>
                     <p class="reading"><span id="minimum_free_ever"></span></p>
                 </div>

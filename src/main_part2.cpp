@@ -3,6 +3,8 @@
 #include "MercatorMQTT.h"
 #include "SerialConfig.h"
 
+#include "AsyncMqttClient/PSRAMBufferPool.hpp"
+
 char* customiseNMEASentence(char* sentence, int showOnMapIndex)
 {  
   const int minimumSentenceLength = 48;
@@ -747,6 +749,7 @@ char satsLabel[] = "00 / 00";
 
 String getStats()
 {
+  static int oldMQTTBufferOffset = 0;
   satsLabel[0] = '0' + (minimumSatellitesForFix / 10);
   satsLabel[1] = '0' + (minimumSatellitesForFix % 10);
   satsLabel[5] = '0' + (gps.satellites.peek() / 10);
@@ -784,7 +787,26 @@ String getStats()
 
   readings["free_heap_bytes"] = info.total_free_bytes;
   readings["largest_free_block"] = info.largest_free_block;
+  readings["psram_free"] = heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024;
   readings["minimum_free_ever"] = info.minimum_free_bytes;
+
+  int currentMQTTOffset = PSRAMBufferPool::getCurrentOffset() / 1024;
+  int bufferSize = PSRAMBufferPool::getBufferSize() / 1024;
+
+  char offsetLabel[24];
+
+  int diff = 0;
+
+  if (currentMQTTOffset < oldMQTTBufferOffset)
+    diff = (bufferSize - oldMQTTBufferOffset) + currentMQTTOffset;
+  else
+    diff = currentMQTTOffset - oldMQTTBufferOffset;
+
+  snprintf(offsetLabel,sizeof(offsetLabel),"%d (+%d) / %d",currentMQTTOffset,diff,bufferSize);
+
+  readings["mqtt_buf_offset_kb"] = offsetLabel;  // Convert to KB for display
+
+  oldMQTTBufferOffset = currentMQTTOffset;
 
   String jsonString;
   serializeJson(readings, jsonString);

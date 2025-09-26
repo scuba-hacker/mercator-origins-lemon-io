@@ -1064,11 +1064,6 @@ bool sendCFG_MSG_disable(uint8_t msgClass, uint8_t msgId, const char* msgName, i
   return false;
 }
 
-bool setBaudTo115200()
-{
-
-}
-
 // ------------------- Apply configuration -------------------
 bool configureUBLOXGps() 
 {
