@@ -19,8 +19,8 @@ struct GpsModuleInfo {
 
 static GpsModuleInfo detectedModule = {GPS_MODULE_UNKNOWN, "", "", 0};
 
-const char* okAck  = "OK - UBLOX - ";
-const char* badAck = "BAD - UBLOX - ";
+const char* okAck  = "##########  OK - UBLOX - ";
+const char* badAck = "#/\\/\\/\\/\\#BAD - UBLOX - ";
 
 // ---- UBX helper: compute checksum (CK_A, CK_B) over class,id,len,payload ----
 void ubxChecksum(uint8_t cls_, uint8_t id_, const uint8_t *payload, uint16_t len, uint8_t &cka, uint8_t &ckb) {
@@ -139,6 +139,25 @@ bool sendUBX(uint8_t cls_, uint8_t id_, const uint8_t *payload, uint16_t len, co
   }
   BUFFER_LOG_PRINTF(" TIMEOUT (skipped %d NMEA bytes, no ACK received)\n", bytesSkippedForAck);
   return false; // timeout
+}
+
+bool sendUBXWithAckCheckAndRetries(uint8_t cls_, uint8_t id_, const uint8_t *payload, uint16_t len, const char* ubxCommand, bool max_attempts = 3)
+{
+  int attempts = 0;
+
+  bool ok = false;
+
+  while (attempts < max_attempts)
+  {
+    const int waitAck = true;
+    ok = sendUBX(cls_, id_, payload, len, ubxCommand, waitAck);
+    if (ok)
+      break;
+    else
+      delay(50);
+  }
+
+  return ok;
 }
 
 // --- Check if frame was a UBX-ACK-NAK and print it ---
@@ -1045,21 +1064,47 @@ bool sendCFG_MSG_disable(uint8_t msgClass, uint8_t msgId, const char* msgName, i
   return false;
 }
 
+bool setBaudTo115200()
+{
+
+}
+
 // ------------------- Apply configuration -------------------
 bool configureUBLOXGps() 
 {
   bool ok = true;
 
   const int maxAttempts=5;
+  int attempts=0;
+
+  // set baud rate to 115200 (it defaults to 9600 and it has no flash so needs resetting every boot)
+  // initial attempt at 9600 and then 115200 - at first boot GPS will be at 115200
+  bool baud_ok = false;
+
+  // If baud is currently at 9600, this will set to 115200 - as ESP serial set to 9600 at start
+  // If baud is already at 115200, then serial port needs re-opening at 115200 and no set needed.
+  while (!baud_ok && attempts < maxAttempts)
+  {
+    baud_ok = sendUBX(0x06, 0x8A, UBX_CFG_BAUD_SET_VALSET, sizeof(UBX_CFG_BAUD_SET_VALSET),"SET BAUD TO 115200",false);
+    BUFFER_LOG_PRINTF("%s Set Baud Rate to 115200\n", (baud_ok ? okAck : badAck));
+    delay(100);
+    attempts++;
+  }
+  
+  // If GPS was at 9600, then it is now at 115200.
+  // If already at 115200, then it remains at 115200.
+  // ESP serial port now needs opening at 115200
+
+  serial_gps.end();
+  delay(100);
+  // UART1 for receiving data from GPS
+  serial_gps.setRxBufferSize(GPS_RX_BUFFER_SIZE); // must set before begin
+  serial_gps.begin(115200, SERIAL_8N1, GPS_RX_WHITE_GPIO, GPS_TX_GREY_GPIO);
 
   bool MON_VER_ok = false;
-  bool try115200 = true;
-  bool baud_ok = false;
-  bool skip_later_baud_change = false;
-
-  while (!MON_VER_ok || try115200)
+  while (!MON_VER_ok)
   {
-    int attempts = 0;
+    attempts = 0;
     while (attempts < maxAttempts)
     {
       BUFFER_LOG_PRINTF("Poll MON-VER (firmware version) attempt %i\n",attempts);
@@ -1067,7 +1112,7 @@ bool configureUBLOXGps()
 
       if (!MON_VER_ok) 
       {
-        BUFFER_LOG_PRINTLN("Failed to get GPS firmware version at default Serial port baud");
+        BUFFER_LOG_PRINTLN("Failed to get GPS firmware version");
         attempts++;
         delay(50);
       }
@@ -1075,60 +1120,31 @@ bool configureUBLOXGps()
       {
         MON_VER_ok = true;
         ok &= MON_VER_ok;
-    //    BUFFER_LOG_PRINTF("After doing pollMon_Ver the 'ok' combined result is %d\n", ok);
         break;
       }
     }
-
-    if (try115200)
-    {
-      // set baud rate to 115200 (it defaults to 9600 and it has no flash so needs replying every boot)
-      bool baud_ok = false;
-      baud_ok = sendUBX(0x06, 0x8A, UBX_CFG_BAUD_SET_VALSET, sizeof(UBX_CFG_BAUD_SET_VALSET),"SET BAUD TO 115200",false);
-      delay(100);
-      BUFFER_LOG_PRINTF("%s Set Baud Rate to 115200\n", (baud_ok ? okAck : badAck));
-      try115200 = false;
-      if (baud_ok)
-      {
-        serial_gps.end();
-        delay(100);
-        // UART1 for receiving data from GPS
-        serial_gps.setRxBufferSize(GPS_RX_BUFFER_SIZE); // must set before begin
-        serial_gps.begin(115200, SERIAL_8N1, GPS_RX_WHITE_GPIO, GPS_TX_GREY_GPIO);
-        skip_later_baud_change = true;
-      }
-    }
-    else
-    {
-      break;
-    }
   }
 
-  int attempts=0;
+  BUFFER_LOG_PRINTF("%s Get Module Firmware Version\n", (ok ? okAck : badAck));
 
   UbxPortCfg ports[6];
   size_t n=0;
 
-  bool gpsAt115200 = false;
-  while (attempts < maxAttempts)
+  bool pollCFG_PRT_Result = false;
+  attempts=0;
+
+  while (!pollCFG_PRT_Result && attempts < maxAttempts)
   {
     BUFFER_LOG_PRINTF("Poll CFG-PRT Attempt %i\n",attempts);
-    if (pollCFG_PRT(ports, 6, n)) {
+    pollCFG_PRT_Result = pollCFG_PRT(ports, 6, n);
+    
+    if (pollCFG_PRT_Result) {
       BUFFER_LOG_PRINTF("Got %i port configs\n",n); 
 
       for (size_t i=0; i<n; ++i) {
         UbxPortCfg p = ports[i];
-        // UART1
-        // Expect defaults: inProtoMask 0x0003 (UBX+NMEA), outProtoMask 0x0002 (NMEA)
-        // baud is whatever it's set to (e.g., 9600 or 115200)
         BUFFER_LOG_PRINTF("portID=%i baud=%i in=0x%04X out=0x%04X\n",p.portID, p.baud, p.inProtoMask, p.outProtoMask);
-        if (p.baud == 115200)
-        {
-          // Assume Lemon has been rebooted and the GPS still retains previous configuration in RAM.
-          gpsAt115200 = true;          
-        }
       }
-      break;
     }
     else
     {
@@ -1138,76 +1154,26 @@ bool configureUBLOXGps()
     }
   }
 
-    if (detectedModule.type == GPS_MODULE_SAM_M10Q)
-    {
-      // set baud rate to 115200 (it defaults to 9600 and it has no flash so needs replying every boot)
-      bool baud_ok = true;
-      if (!gpsAt115200)
-      {
-        baud_ok = sendUBX(0x06, 0x8A, UBX_CFG_BAUD_SET_VALSET, sizeof(UBX_CFG_BAUD_SET_VALSET),"SET BAUD TO 115200",false);
-        delay(100);
-        BUFFER_LOG_PRINTF("%s Set Baud Rate to 115200\n", (baud_ok ? okAck : badAck));
-      }
+  BUFFER_LOG_PRINTF("%s Get Port Configs\n", (pollCFG_PRT_Result ? okAck : badAck));
 
-      bool pollCFG_PRT_Result = false;
-
-      if (baud_ok)
-      {
-        serial_gps.end();
-        delay(100);
-        // UART1 for receiving data from GPS
-        serial_gps.setRxBufferSize(GPS_RX_BUFFER_SIZE); // must set before begin
-        serial_gps.begin(115200, SERIAL_8N1, GPS_RX_WHITE_GPIO, GPS_TX_GREY_GPIO);
-
-        attempts=0;
-        
-        while (attempts < maxAttempts)
-        {
-          BUFFER_LOG_PRINTF("Poll CFG-PRT Attempt %i\n",attempts);
-          pollCFG_PRT_Result = pollCFG_PRT(ports, 6, n);
-
-          if (pollCFG_PRT_Result) {
-            BUFFER_LOG_PRINTF("Got %i port configs\n",n); 
-
-            for (size_t i=0; i<n; ++i) {
-              UbxPortCfg p = ports[i];
-              // UART1
-              // Expect defaults: inProtoMask 0x0003 (UBX+NMEA), outProtoMask 0x0002 (NMEA)
-              // baud is whatever it's set to (e.g., 9600 or 115200)
-              BUFFER_LOG_PRINTF("portID=%i baud=%i in=0x%04X out=0x%04X\n",p.portID, p.baud, p.inProtoMask, p.outProtoMask);
-            }
-            break;
-          }
-          else
-          {
-            BUFFER_LOG_PRINTLN("Got 0 port configs"); 
-            attempts++;
-            delay(50);
-          }
-        }
-      }
-
-      ok &= pollCFG_PRT_Result;
-  //    BUFFER_LOG_PRINTF("After doing pollCFG_PRT the 'ok' combined result is %d\n", ok);
-    }
+  ok &= pollCFG_PRT_Result;
 
   // Configure NMEA messages based on detected module type
   if (detectedModule.type == GPS_MODULE_MTK_CLONE) 
   {
     BUFFER_LOG_PRINTF("%s MTK clone detected - skipping UBX configuration (NMEA works by default)\n", okAck);
-  } 
+  }
   else 
   {
     // Allow NMEA output even when there is no fix (genuine u-blox modules)
     // Stop the suppression of No Fix GGA/RMC messages
     // Normally they are simply not sent, resulting in a gap in messages.    
-    bool send_no_fix_result = sendUBX(0x06, 0x8A, UBX_CFG_NMEA_EMIT_NO_FIX, sizeof(UBX_CFG_NMEA_EMIT_NO_FIX),"ENABLE NO FIX MSGS");
+    bool send_no_fix_result = sendUBXWithAckCheckAndRetries(0x06, 0x8A, UBX_CFG_NMEA_EMIT_NO_FIX, sizeof(UBX_CFG_NMEA_EMIT_NO_FIX),"ENABLE NO FIX MSGS");
+
     ok &= send_no_fix_result;
     BUFFER_LOG_PRINTF("%s Allow No Fix messages (GGA/RMC)\n", (send_no_fix_result ? okAck : badAck));
 
-//    BUFFER_LOG_PRINTF("After setting no fix messages to send, the 'ok' combined result is %d\n", ok);
-
-    // Configure NMEA message rates using module-specific format - 3 retries on failure
+    // Configure NMEA message rates using module-specific format - 3 retries on failure to set for each
     ok &= sendCFG_MSG_enable(0xF0, 0x00,  "GGA",3);  // Enable GGA
     ok &= sendCFG_MSG_enable(0xF0, 0x04,  "RMC",3);  // Enable RMC
     ok &= sendCFG_MSG_disable(0xF0, 0x01, "GLL",3);  // Disable GLL
@@ -1216,23 +1182,14 @@ bool configureUBLOXGps()
     ok &= sendCFG_MSG_disable(0xF0, 0x05, "VTG",3);  // Disable VTG
     ok &= sendCFG_MSG_disable(0xF0, 0x08, "ZDA",3);  // Disable ZDA    
 
-    // Set navigation rate = 1 Hz - ZED-9FR and SAM-M10Q only
+    // Set navigation rate = 1 Hz
     bool rate_ok = sendUBX(0x06, 0x8A, UBX_CFG_RATE_VALSET, sizeof(UBX_CFG_RATE_VALSET),"SET TO 1HZ");
     BUFFER_LOG_PRINTF("%s Set nav Rate to 1 Hz\n", (rate_ok ? okAck : badAck));
     ok &= rate_ok;
 
-    BUFFER_LOG_PRINTF("After setting nav rate the 'ok' combined result is %d\n", ok);
-
-    // Set dynamic model to Sea - ZED-9FR and SAM-M10Q only
-//    bool model_ok = sendUBX(0x06, 0x8A, UBX_CFG_SEA_MODEL_VALSET, sizeof(UBX_CFG_SEA_MODEL_VALSET),"DYNAMIC MODEL = SEA");
-//    BUFFER_LOG_PRINTF("%s Set dynamic model to 'Sea'\n", (model_ok ? okAck : badAck));
-
-    // Set dynamic model to Pedestrian  - ZED-9FR and SAM-M10Q only
+    // Set dynamic model to Pedestrian
     bool ped_ok = sendUBX(0x06, 0x8A, UBX_CFG_PEDESTRIAN_MODEL_VALSET, sizeof(UBX_CFG_PEDESTRIAN_MODEL_VALSET),"DYNAMIC MODEL = PEDESTRIAN");
     BUFFER_LOG_PRINTF("%s Set dynamic model to 'Pedestrian'\n", (ped_ok ? okAck : badAck));
-
-//    BUFFER_LOG_PRINTF("After setting dynamic model the 'ped_ok' and 'ok' combined result are %d %d\n", ped_ok,ok);
-
     ok &= ped_ok;
 
     // get SBAS enabled status
@@ -1241,42 +1198,35 @@ bool configureUBLOXGps()
     
     ok &= sbas_ok;
 
-//    BUFFER_LOG_PRINTF("After getting SBAS the 'sbas_ok' and 'ok' combined result are %d %d\n", sbas_ok,ok);
-
     if (ok)
       BUFFER_LOG_PRINTF("%s Get SBAS enabled status: %s\n", okAck, (enabled ? "enabled" : "disabled"));
     else
       BUFFER_LOG_PRINTF("%s Get SBAS enabled status failed\n", badAck);
 
-    bool responseOk = pollCFG_MinSatellites(minimumSatellitesForFix);
-
-    if (responseOk)
-      BUFFER_LOG_PRINTF("%s Get Min Visible Sat Count: %d\n", okAck, minimumSatellitesForFix);
-    else
-      BUFFER_LOG_PRINTF("%s Get Min Visible Sat Count failed\n", badAck);
-
-
     const bool flushBufferLog = false;
-    bool setSatCountHigh = gpsTriggerNoFixBySatCountHighForFix(flushBufferLog);
-    BUFFER_LOG_PRINTF("%s - Set sat count high (20)\n", setSatCountHigh ? okAck : badAck);
+    bool responseOk = gpsTriggerNormalSatCountForFix(flushBufferLog);
+    BUFFER_LOG_PRINTF("%s - Set visible sat count for fix normal (3)\n", responseOk ? okAck : badAck);
+
+    ok &=responseOk;
 
     responseOk = pollCFG_MinSatellites(minimumSatellitesForFix);
 
     if (responseOk)
-      BUFFER_LOG_PRINTF("%s Get Min Visible Sat Count: %d\n", okAck, minimumSatellitesForFix);
+    {
+      if (minimumSatellitesForFix == 3)
+        BUFFER_LOG_PRINTF("%s Get Min Visible Sat Count: %d\n", okAck, minimumSatellitesForFix);
+      else
+      {
+        BUFFER_LOG_PRINTF("%s Get Min Visible Sat Count failed - responded but with wrong satellite count %d instead of 3\n", badAck, minimumSatellitesForFix);
+        responseOk = false;
+      }
+    }
     else
+    {
       BUFFER_LOG_PRINTF("%s Get Min Visible Sat Count failed\n", badAck);
+    }
 
-    bool setSatCountNormal = gpsTriggerNormalSatCountForFix(flushBufferLog);
-    BUFFER_LOG_PRINTF("%s - Set sat count normal (4)\n", setSatCountNormal ? okAck : badAck);
-
-    responseOk = pollCFG_MinSatellites(minimumSatellitesForFix);
-
-    if (responseOk)
-      BUFFER_LOG_PRINTF("%s Get Min Visible Sat Count: %d\n", okAck, minimumSatellitesForFix);
-    else
-      BUFFER_LOG_PRINTF("%s Get Min Visible Sat Count failed\n", badAck);
-
+    ok &=responseOk;
   }
 
   serial_gps.flush();
@@ -1372,7 +1322,7 @@ bool gpsTriggerNormalSatCountForFix(bool flushBufferLog)
   // due to non-blocking reads in the gpsRx task there is no need to wait for any read to complete after setting the halt flag to true
   haltGPSTaskWhilstUBXTransactionsOngoing = true;
 
-  bool ok = sendUBXUnified(0x06, 0x8A, UBX_CFG_VALSET_INFIL_MINSV_3, sizeof(UBX_CFG_VALSET_INFIL_MINSV_3),"Set Min Satellites 3",false);
+  bool ok = sendUBXUnified(0x06, 0x8A, UBX_CFG_VALSET_INFIL_MINSV_3, sizeof(UBX_CFG_VALSET_INFIL_MINSV_3),"Set Min Satellites 3",true); // was false
 
   haltGPSTaskWhilstUBXTransactionsOngoing = false;
 

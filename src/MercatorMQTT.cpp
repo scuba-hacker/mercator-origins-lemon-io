@@ -31,25 +31,28 @@ MercatorMQTT::~MercatorMQTT() {
 }
 
 void MercatorMQTT::setConnectionCallbacks(std::function<void()> localConnected,
-                                         std::function<void()> localDisconnected,
+                                         std::function<void(AsyncMqttClientDisconnectReason reason)> localAsyncMqttDisconnected,
                                          std::function<void()> remoteConnected,
-                                         std::function<void()> remoteDisconnected) {
+                                         std::function<void(AsyncMqttClientDisconnectReason reason)> remoteAsyncMqttDisconnected,
+                                         std::function<void()> localPicoMqttConnected,
+                                         std::function<void()> remotePicoMqttConnected                                        
+                                        ) {
     if (useTLS) {
         // Store callbacks for AsyncMqttClient
         localConnectedCallback = localConnected;
-        localDisconnectedCallback = localDisconnected;
+        localDisconnectedCallback = localAsyncMqttDisconnected;
         remoteConnectedCallback = remoteConnected;
-        remoteDisconnectedCallback = remoteDisconnected;
+        remoteDisconnectedCallback = remoteAsyncMqttDisconnected;
         
         localAsyncClient.onConnect([this](bool sessionPresent) { if (localConnectedCallback) localConnectedCallback(); });
-        localAsyncClient.onDisconnect([this](AsyncMqttClientDisconnectReason reason) { if (localDisconnectedCallback) localDisconnectedCallback(); });
+        localAsyncClient.onDisconnect([this](AsyncMqttClientDisconnectReason reason) { if (localDisconnectedCallback) localDisconnectedCallback(reason); });
         remoteAsyncClient.onConnect([this](bool sessionPresent) { if (remoteConnectedCallback) remoteConnectedCallback(); });
-        remoteAsyncClient.onDisconnect([this](AsyncMqttClientDisconnectReason reason) { if (remoteDisconnectedCallback) remoteDisconnectedCallback(); });
+        remoteAsyncClient.onDisconnect([this](AsyncMqttClientDisconnectReason reason) { if (remoteDisconnectedCallback) remoteDisconnectedCallback(reason); });
     } else {
         localClient.connected_callback = localConnected;
-        localClient.disconnected_callback = localDisconnected;
+        localClient.disconnected_callback = localPicoMqttConnected;
         remoteClient.connected_callback = remoteConnected;
-        remoteClient.disconnected_callback = remoteDisconnected;
+        remoteClient.disconnected_callback = remotePicoMqttConnected;
     }
 }
 
@@ -168,4 +171,28 @@ void MercatorMQTT::updateNetworkStatus(const char* gateway, const char* ssid) {
 
 void MercatorMQTT::setUsingDevNetwork(bool isDevNetwork) {
     usingDevNetwork = isDevNetwork;
+}
+
+const char* MercatorMQTT::getDisconnectReason(AsyncMqttClientDisconnectReason reason)
+{
+    switch (reason) {
+        case AsyncMqttClientDisconnectReason::TCP_DISCONNECTED:
+            return "TCP Disconnected";
+        case AsyncMqttClientDisconnectReason::MQTT_UNACCEPTABLE_PROTOCOL_VERSION:
+            return "MQTT Unacceptable Protocol Version";
+        case AsyncMqttClientDisconnectReason::MQTT_IDENTIFIER_REJECTED:
+            return "MQTT Identifier Rejected";
+        case AsyncMqttClientDisconnectReason::MQTT_SERVER_UNAVAILABLE:
+            return "MQTT Server Unavailable";
+        case AsyncMqttClientDisconnectReason::MQTT_MALFORMED_CREDENTIALS:
+            return "MQTT Malformed Credentials";
+        case AsyncMqttClientDisconnectReason::MQTT_NOT_AUTHORIZED:
+            return "MQTT Not Authorized";
+        case AsyncMqttClientDisconnectReason::ESP8266_NOT_ENOUGH_SPACE:
+            return "ESP8266 Not Enough Space";
+        case AsyncMqttClientDisconnectReason::TLS_BAD_FINGERPRINT:
+            return "TLS Bad Fingerprint";
+        default:
+            return "Unknown Disconnect Reason";
+    }
 }

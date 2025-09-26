@@ -167,7 +167,7 @@ const char LOGS_PAGE_HTML[] PROGMEM = R"rawliteral(
             max-height: 80vh;
             max-width: 90vw;
             overflow: auto;
-            font-size: 14px;
+            font-size: 10px;
             line-height: 1.4;
             white-space: pre;
             word-wrap: normal;

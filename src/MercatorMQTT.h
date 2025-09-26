@@ -50,24 +50,26 @@ private:
     
     // Callback storage for AsyncMqttClient
     std::function<void()> localConnectedCallback;
-    std::function<void()> localDisconnectedCallback;
+    std::function<void(AsyncMqttClientDisconnectReason)> localDisconnectedCallback;
     std::function<void()> remoteConnectedCallback;
-    std::function<void()> remoteDisconnectedCallback;
-    
+    std::function<void(AsyncMqttClientDisconnectReason)> remoteDisconnectedCallback;
+
     PicoMQTT::Client* getActivePicoClient();
     PicoMQTT::Client* getActivePicoClient() const;
     AsyncMqttClient* getActiveAsyncClient();
     bool isDevNetwork() const;
     
 public:
-    MercatorMQTT(const MQTTConfig& config, uint32_t minDutyMs = 50, int16_t bufferSize = 2560);
+    MercatorMQTT(const MQTTConfig& config, uint32_t minDutyMs = 0, int16_t bufferSize = 2560);
     ~MercatorMQTT();
-    
+
     void setConnectionCallbacks(std::function<void()> localConnected,
-                               std::function<void()> localDisconnected,
-                               std::function<void()> remoteConnected,
-                               std::function<void()> remoteDisconnected);
-    
+                                std::function<void(AsyncMqttClientDisconnectReason reason)> localAsyncMqttDisconnected,
+                                std::function<void()> remoteConnected,
+                                std::function<void(AsyncMqttClientDisconnectReason reason)> remoteAsyncMqttDisconnected,
+                                std::function<void()> localPicoMqttConnected,
+                                std::function<void()> remotePicoMqttConnected);
+
     void begin();
     void loop();
     void disconnect();
@@ -98,8 +100,8 @@ public:
             case MQTTConnectionResult::NOT_ENABLED:        return "NOT_ENABLED";
             case MQTTConnectionResult::UNDEFINED_ERROR:    return "UNDEFINED_ERROR";
             default:                                       return "UNKNOWN";
+        }
     }
-}
 
-
+    static const char* getDisconnectReason(AsyncMqttClientDisconnectReason reason);
 };

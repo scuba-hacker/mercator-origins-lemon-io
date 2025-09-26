@@ -96,7 +96,7 @@ U8G2_SSD1322_NHD_256X64_F_4W_HW_SPI wideOLEDDisplay(U8G2_R0, OLED_CS_ORANGE, OLE
 HardwareSerial serial_lantern_neopixels(UART_NUMBER_LANTERN_NEOPIXELS);
 
 #define UART_NUMBER_GPS    1
-#define GPS_BAUD_RATE      9600
+#define GPS_BAUD_RATE      9600     // GPS defaults to 9600 at startup, changed to 115200 during setup()
 #define GPS_TX_GREY_GPIO   39
 #define GPS_RX_WHITE_GPIO  38
 
@@ -571,7 +571,7 @@ void WiFiStationDisconnected(WiFiEvent_t event, WiFiEventInfo_t info);
 void checkConnectivity();
 bool isInternetAccessible();
 bool isScubaMosquittoBrokerAvailable();
-void dumpHeapUsage(const char* msg);
+void dumpHeapUsage(const char* msg, bool useBufferLog=false);
 char* customiseNMEASentence(char* sentence, int showOnMapIndex);
 char* getMQTTPayloadBuffer();
 bool doesHeadCommitRequireForce(BlockHeader& block);
@@ -630,14 +630,23 @@ bool devNetworkInUse()
   return (currentGateway == String(private_local_gateway) && currentSSID == String(private_dev_ssid));
 }
 
-void dumpHeapUsage(const char* msg)
+void dumpHeapUsage(const char* msg, bool useBufferLog)
 {  
   multi_heap_info_t info;
   heap_caps_get_info(&info, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT); // internal RAM, memory capable to store data or to create new task
 
-  USB_SERIAL_PRINTF("\n%s : free heap bytes: %i  largest free heap block: %i min free ever: %i\n",  msg, info.total_free_bytes, info.largest_free_block, info.minimum_free_bytes);
-  USB_SERIAL_PRINTF("Internal heap: %u bytes %u KB free\n", heap_caps_get_free_size(MALLOC_CAP_INTERNAL), heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024);
-  USB_SERIAL_PRINTF("SPIRAM heap  : %u bytes %u KB free\n", heap_caps_get_free_size(MALLOC_CAP_SPIRAM), heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024);
+  if (useBufferLog)
+  {
+    BUFFER_LOG_PRINTF("\n%s : free heap bytes: %i  largest free heap block: %i min free ever: %i\n",  msg, info.total_free_bytes, info.largest_free_block, info.minimum_free_bytes);
+    BUFFER_LOG_PRINTF("Internal heap: %u bytes %u KB free\n", heap_caps_get_free_size(MALLOC_CAP_INTERNAL), heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024);
+    BUFFER_LOG_PRINTF("SPIRAM heap  : %u bytes %u KB free\n", heap_caps_get_free_size(MALLOC_CAP_SPIRAM), heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024);
+  }
+  else
+  {
+    USB_SERIAL_PRINTF("\n%s : free heap bytes: %i  largest free heap block: %i min free ever: %i\n",  msg, info.total_free_bytes, info.largest_free_block, info.minimum_free_bytes);
+    USB_SERIAL_PRINTF("Internal heap: %u bytes %u KB free\n", heap_caps_get_free_size(MALLOC_CAP_INTERNAL), heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024);
+    USB_SERIAL_PRINTF("SPIRAM heap  : %u bytes %u KB free\n", heap_caps_get_free_size(MALLOC_CAP_SPIRAM), heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024);
+  }
 }
 
 void toggleStatusLED() { statusLED = !statusLED; ProS3.setPixelPower(statusLED); ProS3.writePixel(); }
@@ -783,7 +792,6 @@ void initialiseUARTS()
   // UART1 for receiving data from GPS
   serial_gps.setRxBufferSize(GPS_RX_BUFFER_SIZE); // must set before begin
   serial_gps.begin(GPS_BAUD_RATE, SERIAL_8N1, GPS_RX_WHITE_GPIO, GPS_TX_GREY_GPIO);
-//  sendCeaseFixMessagesNMEAMessage(false, "setup() - clear any existing test block of FIX msg as is persistent across boots"); // ensure test block of FIX msg is off
 
   BUFFER_LOG_RESET();
 
@@ -934,7 +942,12 @@ void setup()
   randomSeed(analogRead(RANDOM_NUMBER_ADC_GPIO_13));  // Use a floating analog pin for entropy - for OLED screen saver random movements
 
   ProS3.begin();
-  USB_SERIAL_PRINTF("=== MAIN SETUP START ===\n");
+  USB_SERIAL_PRINTLN("=== MAIN SETUP START ===");  // if connect on USB confirms started
+
+  BUFFER_LOG_PRINTLN("=== MAIN SETUP START ===");  // if Web Serial being used cache log in buffer until after Web Server started
+
+  // All logs are written to the buffer log until the Web Server is setup, when the buffer is dumped to either USB or Web Serial as needed.
+
   statusLEDColourPurple();
   statusLEDOn();
 
@@ -946,38 +959,38 @@ void setup()
   gpsQueue = xQueueCreate(GPS_QUEUE_SIZE, sizeof(GPSDataPacket));
   if (gpsQueue == nullptr)
   {
-    USB_SERIAL_PRINTLN("Failed to create GPS queue!");
+    BUFFER_LOG_PRINTLN("Failed to create GPS queue!");
     // Handle error appropriately
   }
   else
   {
-    USB_SERIAL_PRINTLN("GPS queue created successfully");
+    BUFFER_LOG_PRINTLN("GPS queue created successfully");
   }
 
   // Initialize Mako RS485 queue
   makoQueue = xQueueCreate(MAKO_QUEUE_SIZE, sizeof(MakoDataPacket));
   if (makoQueue == nullptr) 
   {
-    USB_SERIAL_PRINTLN("Failed to create Mako RS485 queue!");
+    BUFFER_LOG_PRINTLN("Failed to create Mako RS485 queue!");
   } 
   else 
   {
-    USB_SERIAL_PRINTLN("Mako RS485 queue created successfully");
+    BUFFER_LOG_PRINTLN("Mako RS485 queue created successfully");
   }
 
   if (useLxDisplayManager)
   {
     LXdisplayManager.begin();
-    USB_SERIAL_PRINTLN("=== ADAFRUIT GREYSCALE OLED STARTED - LoyvanGFX Driver ===");
+    BUFFER_LOG_PRINTLN("=== ADAFRUIT GREYSCALE OLED STARTED - LoyvanGFX Driver ===");
     useGsDisplayManager = fullTestAdafruitDisplay = singleScreenTestAdafruitDisplay = false;
   }
   else if (useGsDisplayManager)
   {
     useLxDisplayManager = testLgfxAdafruitDisplay = false;
     if (adafruitDisplay.begin(0x3D)) 
-      USB_SERIAL_PRINTLN("=== ADAFRUIT GREYSCALE OLED STARTED - Adafruit Driver ===");
+      BUFFER_LOG_PRINTLN("=== ADAFRUIT GREYSCALE OLED STARTED - Adafruit Driver ===");
     else
-      USB_SERIAL_PRINTLN("Unable to initialize Adafruit Greyscale OLED - Adafruit Driver");
+      BUFFER_LOG_PRINTLN("Unable to initialize Adafruit Greyscale OLED - Adafruit Driver");
   }
 
   if (testLgfxAdafruitDisplay)
@@ -996,15 +1009,17 @@ void setup()
 
   privateMQTT.setConnectionCallbacks(
     [&] { USB_SERIAL_PRINTF("Local MQTT connected (%s)\n", privateMQTT.getEncryptionStatus()); },
-    [&] { USB_SERIAL_PRINTF("Local MQTT disconnected (%s)\n", privateMQTT.getEncryptionStatus()); },
+    [&](AsyncMqttClientDisconnectReason reason) { USB_SERIAL_PRINTF("Local Async MQTT disconnected (%s) %s\n", privateMQTT.getEncryptionStatus(),MercatorMQTT::getDisconnectReason(reason)); },
     [&] { USB_SERIAL_PRINTF("Remote MQTT connected (%s)\n", privateMQTT.getEncryptionStatus()); },
-    [&] { USB_SERIAL_PRINTF("Remote MQTT disconnected (%s)\n", privateMQTT.getEncryptionStatus()); }
+    [&](AsyncMqttClientDisconnectReason reason) { USB_SERIAL_PRINTF("Remote Async MQTT disconnected (%s) %s\n", privateMQTT.getEncryptionStatus(),MercatorMQTT::getDisconnectReason(reason)); },
+    [&] { USB_SERIAL_PRINTF("Local  Pico MQTT disconnected (%s)\n"); },
+    [&] { USB_SERIAL_PRINTF("Remote Pico MQTT disconnected (%s)\n"); }
   );
 
   mainTaskCoreId = xPortGetCoreID();
   mainTaskHandle = xTaskGetCurrentTaskHandle();
 
-  USB_SERIAL_PRINTLN("Unexpected Maker Pro S3 Initialised...");
+  BUFFER_LOG_PRINTLN("Unexpected Maker Pro S3 Initialised...");
 
   SPIFFS.begin(true);
 
@@ -1024,9 +1039,9 @@ void setup()
   
   networkManager.begin();
 
-  USB_SERIAL_PRINTF("sizeof LemonTelemetry: %lu\n",getSizeOfLemonTelemetryForStorage());
+  BUFFER_LOG_PRINTF("sizeof LemonTelemetry: %lu\n",getSizeOfLemonTelemetryForStorage());
 
-  dumpHeapUsage("main: prior to Telemetry Pipeline creation  ");
+  dumpHeapUsage("main: prior to Telemetry Pipeline creation  ", true); // dump to buffer log
 
   const uint16_t maxPipelineBufferKB = 2048;
   const uint16_t maxPipelineBlockPayloadSize = 256; // was 224 - Assuming 120 byte Mako Telemetry Msg and 104 byte Lemon Telemetry Msg
@@ -1046,12 +1061,12 @@ void setup()
    */
   initializeTelemetrySystem();
 
-  dumpHeapUsage("main: after Telemetry Pipeline creation  ");
+  dumpHeapUsage("main: after Telemetry Pipeline creation  ");     // dump to buffer log
   
   statusLEDOff();
 
   serial_lantern_neopixels.begin(LANTERN_NEOPIXELS_ARDUINO_BAUD_RATE, SERIAL_8N1, LANTERN_NEOPIXELS_RX_ORANGE_GPIO, LANTERN_NEOPIXELS_TX_YELLOW_GPIO);
-  USB_SERIAL_PRINTF("UART1 configured: RX=GPIO%d, TX=GPIO%d, Baud=%d\n",
+  BUFFER_LOG_PRINTF("UART1 configured: RX=GPIO%d, TX=GPIO%d, Baud=%d\n",
                     LANTERN_NEOPIXELS_RX_ORANGE_GPIO, LANTERN_NEOPIXELS_TX_YELLOW_GPIO, LANTERN_NEOPIXELS_ARDUINO_BAUD_RATE);
 
   sendLemonStatus(LC_STARTUP);
@@ -1060,12 +1075,12 @@ void setup()
 
   if (enableOTAServer)
   {
-    USB_SERIAL_PRINTF("=== MAIN: Starting WiFi/OTA initialization (enableOTAServer=%i) ===\n", enableOTAServer);
+    BUFFER_LOG_PRINTF("=== MAIN: Starting WiFi/OTA initialization (enableOTAServer=%i) ===\n", enableOTAServer);
     sendLemonStatus(LC_SEARCH_WIFI);
 
     bool wifiOnly = false;
     int repeatScanAttempts = 4;
-    USB_SERIAL_PRINTF("=== MAIN: Calling connectToWiFiAndInitOTA with wifiOnly=%i, repeatScanAttempts=%i ===\n", wifiOnly, repeatScanAttempts);
+    BUFFER_LOG_PRINTF("=== MAIN: Calling connectToWiFiAndInitOTA with wifiOnly=%i, repeatScanAttempts=%i ===\n", wifiOnly, repeatScanAttempts);
     bool connected = networkManager.connectToWiFiAndInitOTA(wifiOnly, repeatScanAttempts);
     sendLemonStatus(connected ? LC_FOUND_WIFI : LC_NO_WIFI);
 
@@ -1074,6 +1089,11 @@ void setup()
       delay(5000);    // wait 5 seconds before proceeding - lantern will show no wifi state for 5 seconds
   }
 
+  USB_SERIAL_PRINTLN("+++++++++++++++++++  BUFFER LOG START ++++++++++++++++++");
+  USB_SERIAL_PRINTLN(BUFFER_LOG_GET_BUFFER());
+  BUFFER_LOG_RESET();
+  USB_SERIAL_PRINTLN("+++++++++++++++++++  BUFFER LOG END   ++++++++++++++++++");
+
   if (enableUploadToPrivateMQTT)
     privateMQTT.begin();
   
@@ -1081,12 +1101,7 @@ void setup()
   if (!fastStartup)
     delay(1000);
 
-  delay(5000);    // allow time to connect to /logs page for checking GPS results
-
-  USB_SERIAL_PRINTLN("++++++++++++++  BUFFER LOG ++++++++++++++++++");
-  USB_SERIAL_PRINTLN(BUFFER_LOG_GET_BUFFER());
-  BUFFER_LOG_RESET();
-  USB_SERIAL_PRINTLN("++++++++++++++++++++++++++++++++++++++++++++");
+//  delay(5000);    // allow time to connect to /logs page for checking GPS results
 
   wideDisplayManager.clearDisplay();
 
@@ -1105,13 +1120,12 @@ void setup()
   // Load testing preferences
   loadTestingPreferences();  
 
-  USB_SERIAL_PRINTLN("Setup() completed");
+  USB_SERIAL_PRINTF("Setup() completed in %d seconds",millis()/1000);
 }
 
 double tempFloat=0.0;
 double humidFloat=0.0;
 bool newTempHumidRead=false;
-
 
 const uint32_t timeoutUntilNoGPSDetected = 10000;
 
@@ -1265,7 +1279,8 @@ void loop()
         }
 
         // Must extract longitude and latitude for the updated flag to be set on next location update.
-        if (gps.location.isValid() && gps.location.isUpdated() && gps.isSentenceFixMsgType())
+        //if (gps.location.isValid() && gps.location.isUpdated() && gps.isSentenceFixMsgType())
+        if (gps.isSentenceFixMsgType() && (gps.location.isUpdated() || !gps.isSentenceContainingValidFix()))
         {
           // hasGPSFix already set correctly above for GGA messages, don't overwrite it
 
@@ -1430,7 +1445,8 @@ void loop()
       // Check for received RS485 data from queue
       if (xQueueReceive(makoQueue, &makoPacket, 0) == pdTRUE)
       {
-        USB_SERIAL_PRINTLN("1.0 xQueueMessage: Mako Message Received");
+        if (writeMakoMsgDecodingLogToSerial)
+          USB_SERIAL_PRINTLN("1.0 xQueueMessage: Mako Message Received");
         
         packetReceived = true;
 
@@ -1443,10 +1459,13 @@ void loop()
 
         if (writeMakoMsgDecodingLogToSerial)
         {
-          if (validPreambleFound)
-            USB_SERIAL_PRINTLN("3.0 preamble: Found");
-          else
-            USB_SERIAL_PRINTLN("3.1 preamble: ******** MISSING *********");
+          if (writeMakoMsgDecodingLogToSerial)
+          {
+            if (validPreambleFound)
+              USB_SERIAL_PRINTLN("3.0 preamble: Found");
+            else
+              USB_SERIAL_PRINTLN("3.1 preamble: ******** MISSING *********");
+          }
         }
 
         if (validPreambleFound && (makoPacket.length - preambleStart) >= makoHardcodedUplinkMessageLength)
