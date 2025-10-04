@@ -666,9 +666,8 @@ struct LemonTelemetryForStorage
   float     imu_lin_acc_x;
   float     imu_lin_acc_y;
   float     imu_lin_acc_z;
-  float     imu_rot_acc_x;
-  float     imu_rot_acc_y;
-  float     imu_rot_acc_z;
+  float     diver_roll_orientation;
+  float     diver_pitch_orientation;
   float     uplinkBadMessagePercentage;      // (92)
 
   float     KBFromMako;               
@@ -722,15 +721,8 @@ struct MakoUplinkTelemetryForJson
   float lsm_acc_x;
   float lsm_acc_y;
   float lsm_acc_z;
-  float imu_gyro_x;
-  float imu_gyro_y;
-  float imu_gyro_z;
-  float imu_lin_acc_x;
-  float imu_lin_acc_y;
-  float imu_lin_acc_z;
-  float imu_rot_acc_x;
-  float imu_rot_acc_y;
-  float imu_rot_acc_z;
+  float diver_roll_orientation;
+  float diver_pitch_orientation;
   uint16_t good_checksum_msgs;
   uint16_t way_marker_enum;
   char way_marker_label[3];
@@ -746,6 +738,22 @@ struct MakoUplinkTelemetryForJson
 
 
 char satsLabel[] = "00 / 00";
+
+char psramFreeLabel[12];
+char offsetLabel[24];
+char lemonUptimeLabel[12];
+char headCommitLabel[12];
+char internetCheckLabel[12];
+char lastMqttUpload[12];
+
+template<size_t N>
+void populateStatLabelWithDuration(uint32_t duration, char (&label)[N])
+{
+  int total_seconds = duration / 1000;
+  int total_minutes = total_seconds / 60;
+  int total_hours = total_minutes / 60;
+  snprintf(label,N,"%02d:%02d:%02d",total_hours, total_minutes % 60, total_seconds % 60);
+}
 
 String getStats()
 {
@@ -767,13 +775,22 @@ String getStats()
   readings["badUplinkMessageCount"] = badUplinkMessageCount;
   readings["badChkSumUplinkMsgCount"] = badChkSumUplinkMsgCount;
   readings["uplinkMessageMissingCount"] = uplinkMessageMissingCount;
-  readings["lemonUptime"] = (int)(millis() / 1000);
+
+  populateStatLabelWithDuration(millis(), lemonUptimeLabel);
+  readings["lemonUptime"] = lemonUptimeLabel;
+
   readings["pipelineDraining"] = (telemetryPipeline.isPipelineDraining() ? "Yes" : "No");
   readings["pipelineLength"] = telemetryPipeline.getPipelineLength();
   readings["offlineThrottleApplied"] = (g_offlineStorageThrottleApplied ? "Yes" : "No");  
-  readings["last_private_mqtt_upload_at"] = (int)(privateMQTT.getLastUploadTime() / 1000);
-  readings["last_head_committed_at"] = (int)(last_head_committed_at / 1000);
-  readings["lastCheckForInternetConnectivityAt"] = (int)(lastCheckForInternetConnectivityAt / 1000);
+
+  populateStatLabelWithDuration(privateMQTT.getLastUploadTime(), lastMqttUpload);
+  readings["last_private_mqtt_upload_at"] = lastMqttUpload;
+
+  populateStatLabelWithDuration(last_head_committed_at, headCommitLabel);
+  readings["last_head_committed_at"] = headCommitLabel;
+
+  populateStatLabelWithDuration(lastCheckForInternetConnectivityAt, internetCheckLabel);
+  readings["lastCheckForInternetConnectivityAt"] = internetCheckLabel;
 
   readings["min_sens_read"] = latestMakoStats.minimum_sensor_read_time;
   readings["sens_read"] = latestMakoStats.sensor_aquisition_time;
@@ -787,13 +804,12 @@ String getStats()
 
   readings["free_heap_bytes"] = info.total_free_bytes;
   readings["largest_free_block"] = info.largest_free_block;
-  readings["psram_free"] = heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024;
+  snprintf(psramFreeLabel,sizeof(psramFreeLabel),"%d KB",heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024);
+  readings["psram_free"] = psramFreeLabel;
   readings["minimum_free_ever"] = info.minimum_free_bytes;
 
   int currentMQTTOffset = PSRAMBufferPool::getCurrentOffset() / 1024;
   int bufferSize = PSRAMBufferPool::getBufferSize() / 1024;
-
-  char offsetLabel[24];
 
   int diff = 0;
 
@@ -802,7 +818,7 @@ String getStats()
   else
     diff = currentMQTTOffset - oldMQTTBufferOffset;
 
-  snprintf(offsetLabel,sizeof(offsetLabel),"%d (+%d) / %d",currentMQTTOffset,diff,bufferSize);
+  snprintf(offsetLabel,sizeof(offsetLabel),"%d (+%d) / %d KB",currentMQTTOffset,diff,bufferSize);
 
   readings["mqtt_buf_offset_kb"] = offsetLabel;  // Convert to KB for display
 

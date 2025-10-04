@@ -187,7 +187,7 @@ const char STATS_HTML[] = R"rawliteral(
                    <p class="reading"><span id="uplinkMessageMissingCount"></span></p>
                </div>
                <div class="card">
-                   <p class="card-title">Lemon Uptime (sec)</p>
+                   <p class="card-title">Lemon Uptime</p>
                    <p class="reading"><span id="lemonUptime"></span></p>
                </div>               
                 <div class="card">
@@ -203,15 +203,15 @@ const char STATS_HTML[] = R"rawliteral(
                     <p class="reading"><span id="offlineThrottleApplied"></span></p>
                 </div>
                 <div class="card">
-                    <p class="card-title">Last MQTT Upload (sec)</p>
+                    <p class="card-title">Last MQTT Upload</p>
                     <p class="reading"><span id="last_private_mqtt_upload_at"></span></p>
                 </div>
                 <div class="card">
-                    <p class="card-title">Last Head Commit (sec)</p>
+                    <p class="card-title">Last Head Commit</p>
                     <p class="reading"><span id="last_head_committed_at"></span></p>
                 </div>
                 <div class="card">
-                    <p class="card-title">Last Internet Check (sec)</p>
+                    <p class="card-title">Last Internet Check</p>
                     <p class="reading"><span id="lastCheckForInternetConnectivityAt"></span></p>
                 </div>
                 <div class="card">
@@ -247,11 +247,11 @@ const char STATS_HTML[] = R"rawliteral(
                     <p class="reading"><span id="largest_free_block"></span></p>
                 </div>
                 <div class="card">
-                    <p class="card-title">Lemon PSRAM Free (KB)</p>
+                    <p class="card-title">Lemon PSRAM Free</p>
                     <p class="reading"><span id="psram_free"></span></p>
                 </div>
                 <div class="card">
-                    <p class="card-title">MQTT Buffer Offset (KB)</p>
+                    <p class="card-title">MQTT Buffer Offset</p>
                     <p class="reading"><span id="mqtt_buf_offset_kb"></span></p>
                 </div>
                 <div class="card">

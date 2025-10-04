@@ -309,7 +309,7 @@ void constructLemonTelemetryForStorage(struct LemonTelemetryForStorage& s, const
   s.uplink_preamble_latency = l.uplink_preamble_latency; 
   s.uplink_rx_latency = l.uplink_rx_latency;                // (64)
   s.imu_lin_acc_x = l.imu_lin_acc_x; s.imu_lin_acc_y = l.imu_lin_acc_y; s.imu_lin_acc_z = l.imu_lin_acc_z;
-  s.imu_rot_acc_x = l.imu_rot_acc_x; s.imu_rot_acc_y = l.imu_rot_acc_y; s.imu_rot_acc_z = l.imu_rot_acc_z;
+  s.diver_roll_orientation = l.diver_roll_orientation; s.diver_pitch_orientation = l.diver_pitch_orientation;
   s.uplinkBadMessagePercentage = uplinkBadMessagePercentage;      // (92)
 
   s.KBFromMako = KBFromMako;                             // GLOBAL
@@ -419,9 +419,8 @@ bool decodeIntoLemonTelemetryForUpload(uint8_t* msg, const uint16_t length, stru
   l.imu_lin_acc_x = decode_float(msg);
   l.imu_lin_acc_y = decode_float(msg);
   l.imu_lin_acc_z = decode_float(msg);
-  l.imu_rot_acc_x = decode_float(msg);
-  l.imu_rot_acc_y = decode_float(msg);
-  l.imu_rot_acc_z = decode_float(msg);
+  l.diver_roll_orientation = decode_float(msg);
+  l.diver_pitch_orientation = decode_float(msg);
   l.uplinkBadMessagePercentage = decode_float(msg);
 
   l.KBFromMako = decode_float(msg);
@@ -449,7 +448,7 @@ void checkMakoJSONForAlarms(struct MakoUplinkTelemetryForJson& m)
   }
 }
 
-// uplink msg from mako is 114 bytes
+// uplink msg from mako is 86 bytes
 bool decodeMakoUplinkMessageV5a(uint8_t* uplinkMsg, struct MakoUplinkTelemetryForJson& m, const bool preventGlobalUpdate)
 {
   bool result = false;
@@ -499,9 +498,7 @@ bool decodeMakoUplinkMessageV5a(uint8_t* uplinkMsg, struct MakoUplinkTelemetryFo
 
   m.lsm_acc_x = decode_float(uplinkMsg); m.lsm_acc_y = decode_float(uplinkMsg);  m.lsm_acc_z = decode_float(uplinkMsg);
 
-  m.imu_gyro_x = decode_float(uplinkMsg); m.imu_gyro_y = decode_float(uplinkMsg); m.imu_gyro_z = decode_float(uplinkMsg);
-  m.imu_lin_acc_x = decode_float(uplinkMsg); m.imu_lin_acc_y = decode_float(uplinkMsg); m.imu_lin_acc_z = decode_float(uplinkMsg);
-  m.imu_rot_acc_x = decode_float(uplinkMsg); m.imu_rot_acc_y = decode_float(uplinkMsg); m.imu_rot_acc_z = decode_float(uplinkMsg);
+  m.diver_roll_orientation = decode_float(uplinkMsg); m.diver_pitch_orientation = decode_float(uplinkMsg);
 
   m.good_checksum_msgs = decode_uint16(uplinkMsg);
 
@@ -604,14 +601,12 @@ void buildUplinkTelemetryMessageV6a(char* payload, const struct MakoUplinkTeleme
 
           "\"mako_lsm_acc_x\":%f,\"mako_lsm_acc_y\":%f,\"mako_lsm_acc_z\":%f,"
 
-          "\"mako_imu_gyro_x\":%f,\"mako_imu_gyro_y\":%f,\"mako_imu_gyro_z\":%f,"
-          "\"mako_imu_lin_acc_x\":%f,\"mako_imu_lin_acc_y\":%f,\"mako_imu_lin_acc_z\":%f,"
-          "\"mako_imu_rot_acc_x\":%f,\"mako_imu_rot_acc_y\":%f,\"mako_imu_rot_acc_z\":%f,"
+          "\"mako_diver_roll_orientation\":%f,\"mako_diver_pitch_orientation\":%f,"
           "\"mako_rx_good_checksum_msgs\":%hu,"
 
           "\"downlink_send_duration\":%lu,\"uplink_preamble_latency\":%lu,\"uplink_rx_latency\":%lu,"
           "\"lemon_imu_lin_acc_x\":%f,\"lemon_imu_lin_acc_y\":%f,\"lemon_imu_lin_acc_z\":%f,"
-          "\"lemon_imu_rot_acc_x\":%f,\"lemon_imu_rot_acc_y\":%f,\"lemon_imu_rot_acc_z\":%f,"
+          "\"lemon_diver_roll_orientation\":%f,\"lemon_diver_pitch_orientation\":%f,"
           "\"uplink_bad_percentage\":%.1f,"
 
           "\"mako_waymarker_e\":%d,\"mako_waymarker_label\":\"%s\",\"mako_direction_metric\":\"%s\","
@@ -649,16 +644,14 @@ void buildUplinkTelemetryMessageV6a(char* payload, const struct MakoUplinkTeleme
           m.max_sensor_acquisition_time, m.actual_sensor_acquisition_time, m.max_actual_sensor_acquisition_time,
 
           m.lsm_acc_x, m.lsm_acc_y, m.lsm_acc_z,
+          m.diver_roll_orientation, m.diver_pitch_orientation,
 
-          m.imu_gyro_x,    m.imu_gyro_y,    m.imu_gyro_z,
-          m.imu_lin_acc_x, m.imu_lin_acc_y, m.imu_lin_acc_z,
-          m.imu_rot_acc_x, m.imu_rot_acc_y, m.imu_rot_acc_z,
           m.good_checksum_msgs,
           l.downlink_send_duration,
           l.uplink_preamble_latency,    
           l.uplink_rx_latency,
           l.imu_lin_acc_x, l.imu_lin_acc_y, l.imu_lin_acc_z,
-          l.imu_rot_acc_x, l.imu_rot_acc_y, l.imu_rot_acc_z,
+          l.diver_roll_orientation, l.diver_pitch_orientation,
           l.uplinkBadMessagePercentage,
 
           m.way_marker_enum, m.way_marker_label, m.direction_metric,

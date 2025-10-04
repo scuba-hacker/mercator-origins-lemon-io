@@ -2,7 +2,7 @@
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-bool writeLogToSerial = true;
+bool writeLogToSerial = false;
 bool writeTelemetryLogToSerial = false; // writeLogToSerial must also be true if this is set to true
 bool writeMakoMsgDecodingLogToSerial = false; // writeLogToSerial must also be true if this is set to true
 
@@ -505,7 +505,7 @@ struct MakoStats
 
 MakoStats latestMakoStats;
 
-const uint16_t makoHardcodedUplinkMessageLength = 114;
+const uint16_t makoHardcodedUplinkMessageLength = 86;
 
 struct MakoUplinkTelemetryForJson;
 
@@ -540,9 +540,8 @@ struct LemonTelemetryForJson
   float     imu_lin_acc_x;
   float     imu_lin_acc_y;
   float     imu_lin_acc_z;
-  float     imu_rot_acc_x;
-  float     imu_rot_acc_y;
-  float     imu_rot_acc_z;
+  float     diver_roll_orientation;
+  float     diver_pitch_orientation;
 
   float     KBFromMako;
   uint8_t   gps_hour;
@@ -618,7 +617,7 @@ void getM5ImuSensorData(struct LemonTelemetryForJson& t)
 {
   const float uninitialisedIMU = 0.0;  
   t.imu_lin_acc_x = t.imu_lin_acc_y = t.imu_lin_acc_z = uninitialisedIMU;
-  t.imu_rot_acc_x = t.imu_rot_acc_y = t.imu_rot_acc_z = uninitialisedIMU;
+  t.diver_roll_orientation = t.diver_pitch_orientation = uninitialisedIMU;
 }
 
 bool devNetworkInUse()
