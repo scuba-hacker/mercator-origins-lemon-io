@@ -60,6 +60,7 @@ UMS3 ProS3;
 #include "LGFX_Adafruit_SSD1327.h"
 
 #include "driver/uart.h"
+#include "freertos/semphr.h"
 
 #include "OLEDDisplayManager.h"
 #include "OLEDGSDisplayManager.h"
@@ -412,7 +413,7 @@ TinyGPSPlus gps;
 bool diveInProgress = false;
 
 String getStats();
-
+String sendCommandToMako;
 template <typename T> struct vector
 {
   T x, y, z;
@@ -659,6 +660,12 @@ TaskHandle_t mainTaskHandle = nullptr;
 BaseType_t mainTaskCoreId = 0;
 TaskHandle_t gpsTaskHandle = nullptr;
 TaskHandle_t makoTaskHandle = nullptr;
+
+void read_command_for_mako(String& commandToSend);
+void read_and_clear_command_for_mako(String& commandToSend);
+void write_command_for_mako(const String& command);
+void init_command_to_mako_mutex();
+SemaphoreHandle_t send_command_to_mako_mutex;
 
 uint32_t getSizeOfLemonTelemetryForStorage();
 class mqttConnectionTest
@@ -946,9 +953,11 @@ void setup()
   BUFFER_LOG_PRINTLN("=== MAIN SETUP START ===");  // if Web Serial being used cache log in buffer until after Web Server started
 
   // All logs are written to the buffer log until the Web Server is setup, when the buffer is dumped to either USB or Web Serial as needed.
-
+  
   statusLEDColourPurple();
   statusLEDOn();
+
+  init_command_to_mako_mutex();
 
   initialiseUARTS();
 
@@ -1176,6 +1185,16 @@ void sendPendingGPSUBXCommands()
   }
 }
 
+void  sendPendingMakoCommands()
+{
+  String send;
+  read_and_clear_command_for_mako(send);
+  if (!send.isEmpty())
+  {
+    serial_mako_gopro.write(send.c_str());
+  }
+}
+
 void loop()
 {  
   // Handle NetworkManager processing (includes MQTT testing, OTA restart, etc.)
@@ -1190,6 +1209,8 @@ void loop()
   }
 
   sendPendingGPSUBXCommands();
+
+  sendPendingMakoCommands();
 
   newTempHumidRead = readTempHumidityCJMCU_1080_Sensor(&tempFloat, &humidFloat);
 

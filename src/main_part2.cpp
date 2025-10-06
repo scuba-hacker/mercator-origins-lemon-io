@@ -547,9 +547,50 @@ void processSerialCommands() {
   processSerialCommand(command);
 }
 
+void init_command_to_mako_mutex() {
+  send_command_to_mako_mutex = xSemaphoreCreateMutex();             // or xSemaphoreCreateMutexStatic(...)
+  configASSERT(send_command_to_mako_mutex);
+}
+
+void read_command_for_mako(String& commandToSend)
+{
+  const int maxWait = 1; // 1 ms
+  String command;
+  if (xSemaphoreTake(send_command_to_mako_mutex, pdMS_TO_TICKS(maxWait)) == pdTRUE) {
+    // critical section
+    commandToSend = sendCommandToMako;
+    xSemaphoreGive(send_command_to_mako_mutex);
+  }
+}
+
+void read_and_clear_command_for_mako(String& commandToSend)
+{
+  const int maxWait = 1; // 1 ms
+  String command;
+  if (xSemaphoreTake(send_command_to_mako_mutex, pdMS_TO_TICKS(maxWait)) == pdTRUE) {
+    // critical section
+    commandToSend = sendCommandToMako;
+    sendCommandToMako = "";
+    xSemaphoreGive(send_command_to_mako_mutex);
+  }
+}
+
+void write_command_for_mako(const String& command) {
+  const int maxWait = 1; // 1 ms
+  if (xSemaphoreTake(send_command_to_mako_mutex, pdMS_TO_TICKS(maxWait)) == pdTRUE) {
+    // critical section
+    sendCommandToMako = command;
+    xSemaphoreGive(send_command_to_mako_mutex);
+  }
+}
+
 // Process extended WebSerial commands (flash diagnostics)
 void processExtendedCommand(const String& command) {
-  if (command == "POST") {
+  if (command.startsWith("%")) {
+    // send entire message to Mako on main thread
+    write_command_for_mako(command);
+  }
+  else if (command == "POST") {
     USB_SERIAL_PRINTLN(">>> DIAGNOSTIC: Running Power-On Self Test...");
     bool result = telemetryPipeline.performPowerOnSelfTest(true);
     USB_SERIAL_PRINTF(">>> DIAGNOSTIC: Power-On Self Test %s\n", result ? "PASSED" : "FAILED");
@@ -566,7 +607,6 @@ void processExtendedCommand(const String& command) {
     bool result = telemetryPipeline.performPowerLossRecoveryTest();
     USB_SERIAL_PRINTF(">>> DIAGNOSTIC: Power-Loss Recovery Test %s\n", result ? "PASSED" : "FAILED");
   }
-  
   // Failure injection commands (only available in TESTING_MODE builds)
   #ifdef TESTING_MODE
   else if (command.startsWith("CORRUPT_SECTOR")) {

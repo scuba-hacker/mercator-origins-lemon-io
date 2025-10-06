@@ -924,7 +924,11 @@ void NetworkManager::webSerialReceiveMessage(uint8_t *data, size_t len) {
             webSerialCommandCallback(singleChar);
         }
     }
-    
+    else if (command.startsWith("%"))
+    {
+        // Command to send to Mako
+        webSerialExtendedCommandCallback(command);
+    }
     // Handle multi-character commands (extended flash test commands)
     else if (command == "POST") {
         WebSerial.println(">>> Running Power-On Self Test...");
