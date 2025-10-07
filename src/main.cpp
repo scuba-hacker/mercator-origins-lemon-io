@@ -945,6 +945,8 @@ void sendLemonStatus(const e_lemon_status status)
 
 void setup()
 {
+  delay(1500);
+
   randomSeed(analogRead(RANDOM_NUMBER_ADC_GPIO_13));  // Use a floating analog pin for entropy - for OLED screen saver random movements
 
   ProS3.begin();

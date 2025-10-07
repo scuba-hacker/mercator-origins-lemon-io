@@ -96,6 +96,18 @@ const char STATS_HTML[] = R"rawliteral(
            background-color: #8B4513;
            color: #fff;
        }
+       .button-purple {
+           background-color: #7103c0ff;
+           color: #fff;
+       }
+       .button-bright-orange {
+           background-color: #ecac33ff;
+           color: #fff;
+       }
+       .button-black {
+           background-color: #000000ff;
+           color: #fff;
+       }
    </style>
    </head>
    <body>
@@ -119,7 +131,7 @@ const char STATS_HTML[] = R"rawliteral(
            <button class="button button-brown" id="coldStartButton">Cold Start</button>
            <button class="button button-brown" id="hotStartButton">Hot Start</button>
            <button class="button button-brown" id="fixNeeds20SatsButton">FIX Needs 20 Sats</button>
-           <button class="button button-brown" id="fixNeeds4SatsButton">FIX Needs 3 Sats</button>
+           <button class="button button-brown" id="fixNeeds3SatsButton">FIX Needs 3 Sats</button>
 
             <br><br>
             
@@ -127,9 +139,11 @@ const char STATS_HTML[] = R"rawliteral(
                <!-- Options will be populated dynamically -->
            </select>
 
-            <button class="button button-green" id="showOnMapButton">Override Location</button>
+            <button class="button button-green" id="overrideLocationButton">Override Location</button>
 
-            <br><br>
+            <br>
+            <button class="button button-bright-orange" id="disableLocationOverride">Disable Override</button>
+            <br>
 
           <select id="sortedWaypointsDropdown2">
                <!-- Options will be populated dynamically -->
@@ -341,7 +355,7 @@ const char STATS_HTML[] = R"rawliteral(
 
    // Function to handle button clicks
     function handleButtonClick(buttonId) {
-    if (buttonId == "showOnMapButton")
+    if (buttonId == "overrideLocationButton")
         sendSelectionPostRequest(window.location.href, buttonId);
     else
         if (buttonId == "setTargetButton")
@@ -451,12 +465,16 @@ const char STATS_HTML[] = R"rawliteral(
        handleButtonClick("fixNeeds20SatsButton");
    });
 
-   document.getElementById("fixNeeds4SatsButton").addEventListener("click", function() {
-       handleButtonClick("fixNeeds4SatsButton");
+   document.getElementById("fixNeeds3SatsButton").addEventListener("click", function() {
+       handleButtonClick("fixNeeds3SatsButton");
    });
 
-   document.getElementById("showOnMapButton").addEventListener("click", function() {
-        handleButtonClick("showOnMapButton");
+   document.getElementById("disableLocationOverride").addEventListener("click", function() {
+       handleButtonClick("disableLocationOverride");
+   });
+
+   document.getElementById("overrideLocationButton").addEventListener("click", function() {
+        handleButtonClick("overrideLocationButton");
     });
 
     document.getElementById("setTargetButton").addEventListener("click", function() {

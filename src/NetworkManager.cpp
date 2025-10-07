@@ -667,7 +667,7 @@ void NetworkManager::setupWebServerRoutes() {
                 // Note: Counter clearing would need to be done via callback
                 // uplinkMessageMissingCount = consoleDownlinkMsgCount = privateMQTTUploadCount = 0;
                 // badUplinkMessageCount = badLengthUplinkMsgCount = badChkSumUplinkMsgCount = goodUplinkMessageCount = 0;
-            } else if (pButton->value() == String("showOnMapButton")) {
+            } else if (pButton->value() == String("overrideLocationButton")) {
                 const AsyncWebParameter* pChoice = request->getParam("choice", true, false);
                 if (pChoice) {
                     showOnMapRequest = pChoice->value();
@@ -685,6 +685,9 @@ void NetworkManager::setupWebServerRoutes() {
                     if (showOnMapRequestIndex == -1)
                         showOnMapRequest = "";
                 }
+            } else if (pButton->value() == String("disableLocationOverride")) {
+                showOnMapRequest = "";
+                showOnMapRequestIndex = -1;
             } else if (pButton->value() == String("setTargetButton")) {
                 const AsyncWebParameter* pTarget = request->getParam("target", true, false);
                 if (pTarget) {
@@ -737,7 +740,7 @@ void NetworkManager::setupWebServerRoutes() {
                 USB_SERIAL_PRINTLN(">>> FIX Needs 20 Sats button pressed <<<");
                 pendingGPSTriggerNoFixBySatCountHigh = true;
                 USB_SERIAL_PRINTLN("FIX Needs 20 Sats command scheduled for main loop");
-            } else if (pButton->value() == String("fixNeeds4SatsButton")) {
+            } else if (pButton->value() == String("fixNeeds3SatsButton")) {
                 USB_SERIAL_PRINTLN(">>> FIX Needs 3 Sats button pressed <<<");
                 pendingGPSTriggerNormalSatCount = true;
                 USB_SERIAL_PRINTLN("FIX Needs 3 Sats command scheduled for main loop");
