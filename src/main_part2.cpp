@@ -398,10 +398,16 @@ void saveTestingPreferences() {
  */
 void initializeTelemetrySystem() {
   USB_SERIAL_PRINTLN(">>> Initializing telemetry system...");
-  
+
+#ifdef USE_FLASH_TELEMETRY
+  // Enable flash buffer before initialization (FlashTelemetryManager only)
+  telemetryPipeline.enableFlashBuffer(true);
+  USB_SERIAL_PRINTLN(">>> Flash buffer enabled for persistent storage");
+#endif
+
   // Initialize the selected telemetry system (API is identical for both)
   telemetryPipeline.init(&millis, 2048);
-  
+
 #ifdef USE_FLASH_TELEMETRY
   USB_SERIAL_PRINTLN(">>> Telemetry System: Flash persistence ENABLED");
   USB_SERIAL_PRINTLN(">>> Marine Mode: Extended dive logging (8+ hours) with power-safe storage");
@@ -409,7 +415,7 @@ void initializeTelemetrySystem() {
   USB_SERIAL_PRINTLN(">>> Telemetry System: Using PSRAM (volatile) storage");
   USB_SERIAL_PRINTLN(">>> Marine Mode: Battle-tested reliability, active session only");
 #endif
-  
+
   // Configure NetworkManager to use the initialized telemetry system
   networkManager.setTelemetryPipeline(&telemetryPipeline);
 }
