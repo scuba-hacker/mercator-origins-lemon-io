@@ -39,7 +39,8 @@ public:
         // Network statistics  
         const String& ipAddress, uint32_t mqttUploads, bool wifiConnected,
         const String& wifiSSID, bool dnsConnected, bool ipConnected, bool mqttConnected, uint8_t latestLanternReedState,
-        double temperatureFloat, double humidityFloat
+        float temperatureLemon, float humidityLemon,
+        float temperatureLantern, float humidityLantern
     );
     void setStatusDisplayMode(bool enabled);
     bool isInStatusDisplayMode() const { return statusDisplayModeActive; }

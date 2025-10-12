@@ -331,7 +331,9 @@ void OLEDWideDisplayManager::displayStatusScreen(
     bool hasGPSFix, double gpsHdop, uint8_t gpsSatellites,
     const String& ipAddress, uint32_t mqttUploads, bool wifiConnected,
     const String& wifiSSID, bool dnsConnected, bool ipConnected, bool mqttConnected, uint8_t latestLanternReedState,
-    double temperatureFloat, double humidityFloat) {
+    float temperatureLemon, float humidityLemon,
+    float temperatureLantern, float humidityLantern
+) {
     
     char lineBuffer[128];
 
@@ -416,9 +418,13 @@ void OLEDWideDisplayManager::displayStatusScreen(
 //    safeDrawStr(rightX, y, lineBuffer);
 //    y += lineHeight;
     
-    snprintf(lineBuffer, sizeof(lineBuffer), "Temp: %.1fC Humidity: %.1f%%", temperatureFloat, humidityFloat);
+    snprintf(lineBuffer, sizeof(lineBuffer), "Lemon... %.1fC %.1f%%", temperatureLemon, humidityLemon);
     safeDrawStr(rightX, y, lineBuffer);
     y += lineHeight;
     
+    snprintf(lineBuffer, sizeof(lineBuffer), "Lantern... %.1fC %.1f%%", temperatureLantern, humidityLantern);
+    safeDrawStr(rightX, y, lineBuffer);
+    y += lineHeight;
+
     display.sendBuffer();
 }

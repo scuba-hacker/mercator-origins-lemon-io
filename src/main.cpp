@@ -2,7 +2,7 @@
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-bool writeLogToSerial = false;
+bool writeLogToSerial = true;
 bool writeTelemetryLogToSerial = false; // writeLogToSerial must also be true if this is set to true
 bool writeMakoMsgDecodingLogToSerial = false; // writeLogToSerial must also be true if this is set to true
 
@@ -91,10 +91,32 @@ U8G2_SSD1322_NHD_256X64_F_4W_HW_SPI wideOLEDDisplay(U8G2_R0, OLED_CS_ORANGE, OLE
 
 // ################### START UART SERIAL CONFIGURATION ############################
 #define UART_NUMBER_LANTERN_NEOPIXELS  0
-#define LANTERN_NEOPIXELS_ARDUINO_BAUD_RATE 9600
+#define LANTERN_NEOPIXELS_ARDUINO_BAUD_RATE 38400
 #define LANTERN_NEOPIXELS_TX_YELLOW_GPIO 40                             // Black wire connected to Arduino RX Pin
 #define LANTERN_NEOPIXELS_RX_ORANGE_GPIO 41                             // RED wire connected to Arduino TX Pin
 HardwareSerial serial_lantern_neopixels(UART_NUMBER_LANTERN_NEOPIXELS);
+
+static constexpr int LANTERN_RX_BUFFER_SIZE = 1024;
+static constexpr size_t LANTERN_RX_READ_CHUNK = 256;
+static constexpr int LANTERN_QUEUE_SIZE = 10;
+static constexpr TickType_t LANTERN_RX_TIMEOUT = pdMS_TO_TICKS(100);
+
+QueueHandle_t lanternQueue = nullptr;
+
+// Data structure to send via queue
+struct LanternDataPacket
+{
+  uint8_t data[LANTERN_RX_READ_CHUNK];
+  int length;
+};
+
+void processReceivedLanternMessages();
+
+bool lanternCommandsPowerOff = false;
+bool lanternCommandsPowerOn = false;    // testing - power on wouldn't be detected in normal operation
+bool lanternCommandsReboot = false;
+
+
 
 #define UART_NUMBER_GPS    1
 #define GPS_BAUD_RATE      9600     // GPS defaults to 9600 at startup, changed to 115200 during setup()
@@ -178,6 +200,7 @@ OLEDLXDisplayManager LXdisplayManager(lgfxAdafruitDisplay);
 #include <AsyncElegantOTA.h>
 
 #include <ArduinoJson.h>
+
 #include <WebSerial.h>
 #include "TinyGPSPlus.h"
 #include <NavigationWaypoints.h>
@@ -314,7 +337,8 @@ NetworkManager networkManager(networkConfig, wideDisplayManager, privateMQTT);
 // ################## END NETWORK MANAGER Configuration
 
 // Json document for sending statistics to web page (used by getStats() in main_part2.cpp)
-JsonDocument readings;
+StaticJsonDocument<2048> readings;
+StaticJsonDocument<1024> lanternReadingsJson;
 
 // Variables needed by getStats() function in main_part2.cpp
 int32_t lastCheckForInternetConnectivityAt = 0;
@@ -660,6 +684,7 @@ TaskHandle_t mainTaskHandle = nullptr;
 BaseType_t mainTaskCoreId = 0;
 TaskHandle_t gpsTaskHandle = nullptr;
 TaskHandle_t makoTaskHandle = nullptr;
+TaskHandle_t lanternTaskHandle = nullptr;
 
 void read_command_for_mako(String& commandToSend);
 void read_and_clear_command_for_mako(String& commandToSend);
@@ -699,8 +724,98 @@ bool testLgfxAdafruitDisplay = false;
 bool useGsDisplayManager = true;
 bool useLxDisplayManager = false;
 
-static constexpr TickType_t GPS_RX_RETRY_DELAY = pdMS_TO_TICKS(10);
+// Able to read multiple JSON messages on Rx and split 
+// them across multiple queued events
+void lanternRxTask(void *arg)
+{
+    static char rxBuffer[LANTERN_RX_BUFFER_SIZE];
+    static size_t rxIndex = 0;
 
+    LanternDataPacket packet;
+
+    for (;;)
+    {
+        if (haltAllProcessingDuringOTAUpload) {
+            vTaskDelay(pdMS_TO_TICKS(100));
+            continue;
+        }
+
+        int bytesRead = uart_read_bytes(
+            UART_NUMBER_LANTERN_NEOPIXELS,
+            &rxBuffer[rxIndex],
+            LANTERN_RX_BUFFER_SIZE - rxIndex - 1,
+            LANTERN_RX_TIMEOUT
+        );
+
+        if (bytesRead <= 0)
+            continue;
+
+        rxIndex += bytesRead;
+        if (rxIndex >= LANTERN_RX_BUFFER_SIZE - 1) {
+            // Overflow protection
+            // Do not call as printf is not multi-thread safe
+            // USB_SERIAL_PRINTF("RX buffer overflow, resetting\n");
+            rxIndex = 0;
+            continue;
+        }
+
+        rxBuffer[rxIndex] = '\0';
+
+        char *start = rxBuffer;
+        while (true)
+        {
+            size_t available = rxIndex - (start - rxBuffer);
+            if (available == 0)
+                break;
+
+            char *newline = (char *)memchr(start, '\n', available);
+            if (!newline)
+                break;  // no complete message yet
+
+            size_t msgLen = newline - start;
+
+            // Trim \r if present
+            if (msgLen > 0 && start[msgLen - 1] == '\r')
+                msgLen--;
+
+            if (msgLen > 0 && msgLen < sizeof(packet.data))
+            {
+                memcpy(packet.data, start, msgLen);
+                packet.data[msgLen] = '\0';
+                packet.length = msgLen;
+
+                if (xQueueSend(lanternQueue, &packet, 0) != pdTRUE)
+                {
+                  // Do not call as printf is not multi-thread safe
+                  // USB_SERIAL_PRINTF("lanternRxTask: queue full\n");
+                }
+                else
+                {
+                  // Do not call as printf is not multi-thread safe
+                  // USB_SERIAL_PRINTF("lanternRxTask: queued %u bytes\n", (unsigned)msgLen);
+                }
+            }
+            else if (msgLen >= sizeof(packet.data))
+            {
+              // Do not call as printf is not multi-thread safe
+              // USB_SERIAL_PRINTF("lanternRxTask: message too long (%u), dropped\n", (unsigned)msgLen);
+            }
+
+            start = newline + 1;
+        }
+
+        // Preserve incomplete fragment safely
+        size_t leftover = rxIndex - (start - rxBuffer);
+        if (leftover > 0 && leftover < LANTERN_RX_BUFFER_SIZE) {
+            memmove(rxBuffer, start, leftover);
+            rxIndex = leftover;
+        } else {
+            rxIndex = 0;
+        }
+    }
+}
+
+static constexpr TickType_t GPS_RX_RETRY_DELAY = pdMS_TO_TICKS(10);
 void gpsRxTask(void *arg)
 {
   GPSDataPacket packet;
@@ -792,8 +907,18 @@ void initialiseUARTS()
 
   // Begin UART0 for serial comms with Lantern Arduino Nano Every for Neo-Pixel Lights and Reed Relay Control
   // Must use the uart_set_pin as well on ESP32-S3. Remove it and Rx will not work.
+  serial_lantern_neopixels.setRxBufferSize(LANTERN_RX_BUFFER_SIZE);
   serial_lantern_neopixels.begin(LANTERN_NEOPIXELS_ARDUINO_BAUD_RATE, SERIAL_8N1, LANTERN_NEOPIXELS_RX_ORANGE_GPIO, LANTERN_NEOPIXELS_TX_YELLOW_GPIO);
   uart_set_pin(UART_NUM_0, LANTERN_NEOPIXELS_TX_YELLOW_GPIO, LANTERN_NEOPIXELS_RX_ORANGE_GPIO, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+  
+  // Create Mako RS485 receive task on Core 1 (opposite core from GPS)
+  xTaskCreatePinnedToCore(lanternRxTask,
+                          "lanternRxTask",
+                          4096,    // stack size
+                          nullptr, // user parameters to pass to task
+                          5,       // Lower priority than gps
+                          &lanternTaskHandle, // task handle
+                          1);      // core id
 
   // UART1 for receiving data from GPS
   serial_gps.setRxBufferSize(GPS_RX_BUFFER_SIZE); // must set before begin
@@ -831,7 +956,7 @@ void initialiseUARTS()
                           nullptr, // user parameters to pass to task
                           7,       // Higher priority than GPS (more time-critical)
                           &makoTaskHandle, // task handle
-                          1);      // core id (different from GPS task)
+                          1);      // core id
 
   // NOTES FOR UPGRADING RS485 Interface linking Mako <--> Lemon
   // If using a MAX485 board which exposes driver enable control DE / RE then can use this mode which would be better than now
@@ -901,6 +1026,11 @@ void prepareSystemForOTA()
   writeTelemetryLogToSerial = false;
 
   // Delete UART tasks to prevent interference with OTA
+  if (lanternTaskHandle != nullptr) {
+    vTaskDelete(lanternTaskHandle);
+    lanternTaskHandle = nullptr;
+  }
+
   if (gpsTaskHandle != nullptr) {
     vTaskDelete(gpsTaskHandle);
     gpsTaskHandle = nullptr;
@@ -912,6 +1042,11 @@ void prepareSystemForOTA()
   }
   
   // Clean up queues
+  if (lanternQueue != nullptr) {
+    vQueueDelete(lanternQueue);
+    lanternQueue = nullptr;
+  }
+
   if (gpsQueue != nullptr) {
     vQueueDelete(gpsQueue);
     gpsQueue = nullptr;
@@ -961,9 +1096,16 @@ void setup()
 
   init_command_to_mako_mutex();
 
-  initialiseUARTS();
-
-  statusLEDColourYellow();
+  // Initialize Lemon Serial Queue
+  lanternQueue = xQueueCreate(LANTERN_QUEUE_SIZE, sizeof(LanternDataPacket));
+  if (lanternQueue == nullptr) 
+  {
+    BUFFER_LOG_PRINTLN("Failed to create Lantern queue!");
+  } 
+  else 
+  {
+    BUFFER_LOG_PRINTLN("Lantern queue created successfully");
+  }
 
   // Initialize GPS queue - 10 packets deep should be sufficient
   gpsQueue = xQueueCreate(GPS_QUEUE_SIZE, sizeof(GPSDataPacket));
@@ -987,6 +1129,10 @@ void setup()
   {
     BUFFER_LOG_PRINTLN("Mako RS485 queue created successfully");
   }
+
+  initialiseUARTS();
+
+  statusLEDColourYellow();
 
   if (useLxDisplayManager)
   {
@@ -1075,10 +1221,6 @@ void setup()
   
   statusLEDOff();
 
-  serial_lantern_neopixels.begin(LANTERN_NEOPIXELS_ARDUINO_BAUD_RATE, SERIAL_8N1, LANTERN_NEOPIXELS_RX_ORANGE_GPIO, LANTERN_NEOPIXELS_TX_YELLOW_GPIO);
-  BUFFER_LOG_PRINTF("UART1 configured: RX=GPIO%d, TX=GPIO%d, Baud=%d\n",
-                    LANTERN_NEOPIXELS_RX_ORANGE_GPIO, LANTERN_NEOPIXELS_TX_YELLOW_GPIO, LANTERN_NEOPIXELS_ARDUINO_BAUD_RATE);
-
   sendLemonStatus(LC_STARTUP);
 
   p_primaryButton = &redButton;
@@ -1133,9 +1275,18 @@ void setup()
   USB_SERIAL_PRINTF("Setup() completed in %d seconds",millis()/1000);
 }
 
-double tempFloat=0.0;
-double humidFloat=0.0;
-bool newTempHumidRead=false;
+double lemonTemp=0.0;
+double lemonHumidity=0.0;
+bool   newLemonTempHumidityRead=false;
+
+float powerBankVolts=0.0;
+float powerBankMinVolts=0.0;
+float powerBankMaxVolts=0.0;
+float powerBankAmps=0.0;
+float powerBankMaxAmps=0.0;
+float powerBank_mAh=0.0;
+float lanternTemp=0;
+float lanternHumidity=0;
 
 const uint32_t timeoutUntilNoGPSDetected = 10000;
 
@@ -1214,7 +1365,7 @@ void loop()
 
   sendPendingMakoCommands();
 
-  newTempHumidRead = readTempHumidityCJMCU_1080_Sensor(&tempFloat, &humidFloat);
+  newLemonTempHumidityRead = readTempHumidityCJMCU_1080_Sensor(&lemonTemp, &lemonHumidity);
 
   // Process serial commands for testing
   processSerialCommands();
@@ -1636,7 +1787,10 @@ void loop()
   }
   // *************  END CODE FOR TELEMETRY PROCESSING FOR GPS MESSAGE RECEIVED
 
-  // *************  START CODE FOR SEND LEMON STATUS TO THE ARDUINO CALLED LANTERN
+  // *************  START CODE FOR RECEIVE LEMON PACKETS AND SEND LEMON STATUS TO THE ARDUINO CALLED LANTERN
+
+  processReceivedLanternMessages();
+
   now = millis();
 
   // Handle timeout for telemetry GPS fix status (3 second timeout)
@@ -1705,7 +1859,8 @@ void loop()
       hasGPSFix, gpsHdop, gpsSatellites,
       ipAddress, privateMQTTUploadCount, wifiConnected,
       wifiSSID, dnsConnected, ipConnected, mqttConnected,
-      latestLanternReedState, tempFloat, humidFloat
+      latestLanternReedState, lemonTemp, lemonHumidity,
+      lanternTemp, lanternHumidity
     );
     
     lastStatusUpdate = now;
@@ -1745,6 +1900,64 @@ bool nmea_get_field(const char *s, int index, char *out, size_t outsz) {
         }
     }
     return false;
+}
+
+void processReceivedLanternMessages()
+{
+  LanternDataPacket lanternPacket;
+  if (xQueueReceive(lanternQueue, &lanternPacket, 0) == pdTRUE)
+  {
+    // expect null terminated json string
+    lanternPacket.data[lanternPacket.length]='\0'; // ensure packet is null terminated.
+    const unsigned char* lanternReadingsData=static_cast<const unsigned char*>(lanternPacket.data);
+    DeserializationError error = deserializeJson(lanternReadingsJson, lanternReadingsData);
+
+    if (!error)
+    {
+      const char* lanternMsgType = lanternReadingsJson["type"];
+      if (lanternMsgType != nullptr)
+      {
+        if (strcmp(lanternMsgType,"lanternReadings") == 0)
+        {
+          powerBankVolts = lanternReadingsJson["V"];
+          powerBankMinVolts  = lanternReadingsJson["Vmin"];
+          powerBankMaxVolts  = lanternReadingsJson["Imax"];
+          powerBankAmps  = lanternReadingsJson["I"];
+          powerBankMaxAmps  = lanternReadingsJson["Imax"];
+          powerBank_mAh   = lanternReadingsJson["mAH"];
+          lanternTemp = lanternReadingsJson["Temp"];
+          lanternHumidity = lanternReadingsJson["Humid"];
+          USB_SERIAL_PRINTF("Lantern Sensors: %s\n", lanternReadingsData);
+        }
+        else if (strcmp(lanternMsgType,"lanternPowerOff") == 0)
+        {
+          // lantern initiating a power off event
+          lanternCommandsPowerOff = true;
+          USB_SERIAL_PRINTF("Lantern Power Off Event: %s\n", lanternReadingsData);
+        }
+        else if (strcmp(lanternMsgType,"lanternPowerOn") == 0)
+        {
+          lanternCommandsPowerOn = true;
+          // lantern initiating a power on event - not relevant as will be off!
+          USB_SERIAL_PRINTF("Lantern Power On Event: %s\n", lanternReadingsData);
+        }
+        else if (strcmp(lanternMsgType,"lanternReboot") == 0)
+        {
+          // lantern initiating a reboot
+          lanternCommandsReboot = true;
+          USB_SERIAL_PRINTF("Lantern Reboot Event: %s\n", lanternReadingsData);
+        }
+        else
+        {
+          USB_SERIAL_PRINTF("Unknown Event: %s\n", lanternReadingsData);
+        }
+      }
+    }
+    else
+    {
+      USB_SERIAL_PRINTF("Error deserializing JSON: %s\n", lanternReadingsData);
+    }
+  }
 }
 
 #define BUILD_INCLUDE_MAIN_PART2

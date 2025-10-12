@@ -337,16 +337,16 @@ bool readTempHumidityCJMCU_1080_Sensor(double* temperature, double* humidity)
       //If the 4 bytes were returned sucessfully
       if (4 <= Wire.available())
       {
-        uint8_t Byte[5];
+        uint8_t Byte[4];
         Byte[0] = Wire.read();    // upper byte of temp reading
         Byte[1] = Wire.read();    // lower byte of temp reading
-        Byte[3] = Wire.read();    // upper byte of humidity reading
-        Byte[4] = Wire.read();    // lower byte of humidity reading
+        Byte[2] = Wire.read();    // upper byte of humidity reading
+        Byte[3] = Wire.read();    // lower byte of humidity reading
 
         uint16_t temp = (((unsigned int)Byte[0] <<8 | Byte[1]));
         *temperature = (double)(temp)/(65536)*165-40;
 
-        uint16_t humid = (((unsigned int)Byte[3] <<8 | Byte[4]));
+        uint16_t humid = (((unsigned int)Byte[2] <<8 | Byte[3]));
         *humidity = (double)(humid)/(65536)*100;
         state = 0;
         newReadingsAvailable = true;
