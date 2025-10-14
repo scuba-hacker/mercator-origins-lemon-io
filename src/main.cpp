@@ -241,6 +241,7 @@ bool enableMQTTEncryption = true; // Set to true to use encrypted MQTT connectio
 
 bool enableReadUplinkComms = true;
 bool enableGPSRead = true;
+bool enableLanternRead = true;
 bool enableAllUplinkMessageIntegrityChecks = true;
 bool enableConnectToPrivateMQTT = true;
 bool enableUploadToPrivateMQTT = true;
@@ -912,7 +913,8 @@ void initialiseUARTS()
   uart_set_pin(UART_NUM_0, LANTERN_NEOPIXELS_TX_YELLOW_GPIO, LANTERN_NEOPIXELS_RX_ORANGE_GPIO, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
   
   // Create Mako RS485 receive task on Core 1 (opposite core from GPS)
-  xTaskCreatePinnedToCore(lanternRxTask,
+ 
+ xTaskCreatePinnedToCore(lanternRxTask,
                           "lanternRxTask",
                           4096,    // stack size
                           nullptr, // user parameters to pass to task
@@ -1022,6 +1024,7 @@ void prepareSystemForOTA()
   processUplinkMessage = false;
   enableAllUplinkMessageIntegrityChecks = false;
   enableGPSRead = false;
+  enableLanternRead = false;
   writeLogToSerial = false;
   writeTelemetryLogToSerial = false;
 
@@ -1399,7 +1402,7 @@ void loop()
   // *************  START CODE FOR RECEIVING GPS MESSAGE
   GPSDataPacket gpsPacket;
 
-  if (enableGPSRead && xQueueReceive(gpsQueue, &gpsPacket, 0) == pdTRUE)
+  if (enableGPSRead && gpsQueue && xQueueReceive(gpsQueue, &gpsPacket, 0) == pdTRUE)
   {
     // Update GPS device detection
     lastGPSMessageTime = now;
@@ -1616,7 +1619,7 @@ void loop()
       bool validMessageProcessed = false;
 
       // Check for received RS485 data from queue
-      if (xQueueReceive(makoQueue, &makoPacket, 0) == pdTRUE)
+      if (makoQueue && xQueueReceive(makoQueue, &makoPacket, 0) == pdTRUE)
       {
         if (writeMakoMsgDecodingLogToSerial)
           USB_SERIAL_PRINTLN("1.0 xQueueMessage: Mako Message Received");
@@ -1905,7 +1908,8 @@ bool nmea_get_field(const char *s, int index, char *out, size_t outsz) {
 void processReceivedLanternMessages()
 {
   LanternDataPacket lanternPacket;
-  if (xQueueReceive(lanternQueue, &lanternPacket, 0) == pdTRUE)
+  
+  if (enableLanternRead && lanternQueue && xQueueReceive(lanternQueue, &lanternPacket, 0) == pdTRUE)
   {
     // expect null terminated json string
     lanternPacket.data[lanternPacket.length]='\0'; // ensure packet is null terminated.
