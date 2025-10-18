@@ -290,6 +290,48 @@ enum e_lemon_status
   LC_NO_INTERNET = 128
 };
 
+const char* getLemonStatusString(e_lemon_status status)
+{
+  if (status & LC_NO_INTERNET)
+    return "NO_INTERNET";
+  else if (status == LC_NO_STATUS_UPDATE)
+    return "NO_STATUS_UPDATE";
+  else if (status & LC_DIVE_IN_PROGRESS)
+  {
+    status = (e_lemon_status)(status & ~LC_DIVE_IN_PROGRESS);
+
+    switch (status)
+    {
+      case LC_NONE: return "NONE | DIVE_IN_PROGRESS";
+      case LC_STARTUP: return "STARTUP | DIVE_IN_PROGRESS";
+      case LC_SEARCH_WIFI: return "SEARCH_WIFI | DIVE_IN_PROGRESS";
+      case LC_FOUND_WIFI: return "FOUND_WIFI | DIVE_IN_PROGRESS";
+      case LC_NO_WIFI: return "NO_WIFI | DIVE_IN_PROGRESS";
+      case LC_NO_GPS: return "NO_GPS | DIVE_IN_PROGRESS";
+      case LC_NO_FIX: return "NO_FIX | DIVE_IN_PROGRESS";
+      case LC_GOOD_FIX: return "GOOD_FIX | DIVE_IN_PROGRESS";
+      case LC_ALL_OFF: return "ALL_OFF | DIVE_IN_PROGRESS";
+      default: return "UNKNOWN_STATUS | DIVE_IN_PROGRESS";
+    }
+  }
+  else
+  {
+    switch (status)
+    {
+      case LC_NONE: return "NONE";
+      case LC_STARTUP: return "STARTUP";
+      case LC_SEARCH_WIFI: return "SEARCH_WIFI";
+      case LC_FOUND_WIFI: return "FOUND_WIFI";
+      case LC_NO_WIFI: return "NO_WIFI";
+      case LC_NO_GPS: return "NO_GPS";
+      case LC_NO_FIX: return "NO_FIX";
+      case LC_GOOD_FIX: return "GOOD_FIX";
+      case LC_ALL_OFF: return "ALL_OFF";
+      default: return "UNKNOWN_STATUS";
+    }
+  }
+}
+
 e_lemon_status lemonStatus = LC_STARTUP;
 // ################## END LANTERN NEO-PIXEL CONFIGURATION
 
@@ -497,7 +539,7 @@ void updateButtonsAndBuzzer()
 {
   p_primaryButton->read();
 }
-void sendLemonStatus(const e_lemon_status status);
+void sendLemonStatus(e_lemon_status status, bool useBufferLog=false);
 
 bool nmea_get_field(const char *s, int index, char *out, size_t outsz);
 
@@ -926,8 +968,6 @@ void initialiseUARTS()
   serial_gps.setRxBufferSize(GPS_RX_BUFFER_SIZE); // must set before begin
   serial_gps.begin(GPS_BAUD_RATE, SERIAL_8N1, GPS_RX_WHITE_GPIO, GPS_TX_GREY_GPIO);
 
-  BUFFER_LOG_RESET();
-
   BUFFER_LOG_PRINTLN("###########################################################################");
 
   BUFFER_LOG_PRINTLN("\nSetting GPS Module to Pedestrian Dynamic Model, 1 Hz, GGA+RMC only, Enable NMEA send NO FIX msgs...");
@@ -1073,17 +1113,24 @@ void prepareSystemForOTA()
   telemetryPipeline.teardown();
 }
 
-void sendLemonStatus(const e_lemon_status status)
+void sendLemonStatus(e_lemon_status status, bool useBufferLog)
 {
   if (diveInProgress)
-    serial_lantern_neopixels.write(status | LC_DIVE_IN_PROGRESS);
+    status = (e_lemon_status)(status | LC_DIVE_IN_PROGRESS);
+
+  if (useBufferLog)
+    BUFFER_LOG_PRINTF("Send Lemon Status to Lantern: 0x%02X %s\n", status, getLemonStatusString(status));
   else
-    serial_lantern_neopixels.write(status);
+    USB_SERIAL_PRINTF("Send Lemon Status to Lantern: 0x%02X %s\n", status, getLemonStatusString(status));
+
+  serial_lantern_neopixels.write(status);
 }
 
 void setup()
 {
   delay(1500);
+
+  BUFFER_LOG_RESET();
 
   randomSeed(analogRead(RANDOM_NUMBER_ADC_GPIO_13));  // Use a floating analog pin for entropy - for OLED screen saver random movements
 
@@ -1134,8 +1181,6 @@ void setup()
   }
 
   initialiseUARTS();
-
-  statusLEDColourYellow();
 
   if (useLxDisplayManager)
   {
@@ -1222,32 +1267,37 @@ void setup()
 
   dumpHeapUsage("main: after Telemetry Pipeline creation  ");     // dump to buffer log
   
-  statusLEDOff();
-
-  sendLemonStatus(LC_STARTUP);
+  bool useBufferLog = true;
+  sendLemonStatus(LC_STARTUP,useBufferLog);
 
   p_primaryButton = &redButton;
 
   if (enableOTAServer)
   {
     BUFFER_LOG_PRINTF("=== MAIN: Starting WiFi/OTA initialization (enableOTAServer=%i) ===\n", enableOTAServer);
-    sendLemonStatus(LC_SEARCH_WIFI);
+    sendLemonStatus(LC_SEARCH_WIFI,useBufferLog);
 
     bool wifiOnly = false;
     int repeatScanAttempts = 4;
     BUFFER_LOG_PRINTF("=== MAIN: Calling connectToWiFiAndInitOTA with wifiOnly=%i, repeatScanAttempts=%i ===\n", wifiOnly, repeatScanAttempts);
     bool connected = networkManager.connectToWiFiAndInitOTA(wifiOnly, repeatScanAttempts);
-    sendLemonStatus(connected ? LC_FOUND_WIFI : LC_NO_WIFI);
+    sendLemonStatus((connected ? LC_FOUND_WIFI : LC_NO_WIFI),useBufferLog);
 
     // WiFi connection result already added by connectToWiFiAndInitOTA
     if (!connected)
       delay(5000);    // wait 5 seconds before proceeding - lantern will show no wifi state for 5 seconds
   }
 
+  statusLEDColourYellow();
+
+  delay(5000);
+
   USB_SERIAL_PRINTLN("+++++++++++++++++++  BUFFER LOG START ++++++++++++++++++");
   USB_SERIAL_PRINTLN(BUFFER_LOG_GET_BUFFER());
   BUFFER_LOG_RESET();
   USB_SERIAL_PRINTLN("+++++++++++++++++++  BUFFER LOG END   ++++++++++++++++++");
+
+  statusLEDColourRed();
 
   if (enableUploadToPrivateMQTT)
     privateMQTT.begin();
