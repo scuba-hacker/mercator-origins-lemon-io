@@ -719,9 +719,9 @@ void dumpHeapUsage(const char* msg, bool useBufferLog)
 void toggleStatusLED() { statusLED = !statusLED; ProS3.setPixelPower(statusLED); ProS3.writePixel(); }
 void statusLEDOn()     { statusLED = true;       ProS3.setPixelPower(statusLED); ProS3.writePixel(); }
 void statusLEDOff()    { statusLED = false;      ProS3.setPixelPower(statusLED); ProS3.writePixel(); }
-void statusLEDColourYellow() { ProS3.setPixelColor(128,128,0); }
-void statusLEDColourRed() { ProS3.setPixelColor(255,0,0); }
-void statusLEDColourPurple() { ProS3.setPixelColor(35,31,42); }
+void statusLEDColourYellow() { ProS3.setPixelColor(128,128,0); statusLEDOn();}
+void statusLEDColourRed() { ProS3.setPixelColor(255,0,0); statusLEDOn();}
+void statusLEDColourPurple() { ProS3.setPixelColor(35,31,42); statusLEDOn();}
 
 TaskHandle_t mainTaskHandle = nullptr;
 BaseType_t mainTaskCoreId = 0;
@@ -1142,7 +1142,6 @@ void setup()
   // All logs are written to the buffer log until the Web Server is setup, when the buffer is dumped to either USB or Web Serial as needed.
   
   statusLEDColourPurple();
-  statusLEDOn();
 
   init_command_to_mako_mutex();
 
@@ -1290,7 +1289,7 @@ void setup()
 
   statusLEDColourYellow();
 
-  delay(5000);
+  delay(5000);    // allow time to connect to /logs page for grabbing buffer logs from WEB Serials
 
   USB_SERIAL_PRINTLN("+++++++++++++++++++  BUFFER LOG START ++++++++++++++++++");
   USB_SERIAL_PRINTLN(BUFFER_LOG_GET_BUFFER());
@@ -1305,8 +1304,6 @@ void setup()
   wideDisplayManager.addDisplayLine("Lemon-IO Online @ " + networkManager.getLocalIP());
   if (!fastStartup)
     delay(1000);
-
-//  delay(5000);    // allow time to connect to /logs page for checking GPS results
 
   wideDisplayManager.clearDisplay();
 
