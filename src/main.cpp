@@ -1115,7 +1115,9 @@ void prepareSystemForOTA()
 
 void sendLemonStatus(e_lemon_status status, bool useBufferLog)
 {
-  if (diveInProgress)
+  const bool forceDiveInProgress = false;  // for testing purposes when set to true
+
+  if (diveInProgress || forceDiveInProgress)
     status = (e_lemon_status)(status | LC_DIVE_IN_PROGRESS);
 
   if (useBufferLog)
