@@ -60,7 +60,7 @@ private:
     bool isDevNetwork() const;
     
 public:
-    MercatorMQTT(const MQTTConfig& config, uint32_t minDutyMs = 0, int16_t bufferSize = 2560);
+    MercatorMQTT(const MQTTConfig& config, uint32_t minDutyMs = 0, int16_t bufferSize = 3072);
     ~MercatorMQTT();
 
     void setConnectionCallbacks(std::function<void()> localConnected,

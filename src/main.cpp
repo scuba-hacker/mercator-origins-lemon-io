@@ -1278,8 +1278,6 @@ void setup()
   USB_SERIAL_PRINTF("Setup() completed in %d seconds",millis()/1000);
 }
 
-double lemonTemp=0.0;
-double lemonHumidity=0.0;
 bool   newLemonTempHumidityRead=false;
 
 float powerBankVolts=0.0;
@@ -1290,6 +1288,8 @@ float powerBankMaxAmps=0.0;
 float powerBank_mAh=0.0;
 float lanternTemp=0;
 float lanternHumidity=0;
+double lemonTemp=0.0;
+double lemonHumidity=0.0;
 
 const uint32_t timeoutUntilNoGPSDetected = 10000;
 
