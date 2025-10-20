@@ -258,6 +258,18 @@ const bool publishMQTTTestMessages = true;
 bool readTempHumidityCJMCU_1080_Sensor(double* temperature, double* humidity);
 void initializeTempHumiditySensor();
 
+float powerBankVolts=0.0;
+float powerBankMinVolts=0.0;
+float powerBankMaxVolts=0.0;
+float powerBank_mA=0.0;
+float powerBankMax_mA=0.0;
+float powerBank_mAH=0.0;
+
+float lanternTemp=0;
+float lanternHumidity=0;
+double lemonTemp=0.0;
+double lemonHumidity=0.0;
+
 
 #define STATUS_LED_ON HIGH
 #define STATUS_LED_OFF LOW
@@ -418,7 +430,7 @@ FlashTelemetryManager telemetryPipeline;    // Flash-based persistent pipeline w
 TelemetryPipeline telemetryPipeline;        // Original PSRAM-based pipeline (battle-tested fallback)
 #endif
 
-const uint32_t telemetry_online_head_commit_duty_ms = 1000;
+const uint32_t telemetry_online_head_commit_duty_ms = 900;  // Commit prior to next Fix message expected from GPS once per second
 const uint32_t telemetry_offline_head_commit_duty_ms = telemetry_online_head_commit_duty_ms;
 uint32_t last_head_committed_at = 0;
 bool g_offlineStorageThrottleApplied = false;
@@ -586,14 +598,14 @@ struct LemonTelemetryForJson
   bool      isFix;
   uint32_t  goodUplinkMessageCount;
   uint32_t  badUplinkMessageCount;
-//  uint32_t  badLengthUplinkMsgCount;
-//  uint32_t  badChkSumUplinkMsgCount;  
   uint32_t  consoleDownlinkMsgCount;
   uint32_t  telemetry_timestamp;
   uint32_t  fixCount;
-  float     vBusVoltage;
-  float     vBusCurrent;
-  float     vBatVoltage;
+
+  float     powerbank_voltage;
+  float     powerbank_current;
+  float     powerbank_mAH;
+
   uint32_t  uplinkMessageMissingCount;
   uint16_t  uplinkMessageLength;
   float     uplinkBadMessagePercentage;
@@ -605,11 +617,6 @@ struct LemonTelemetryForJson
   uint32_t  downlink_send_duration;
   uint32_t  uplink_preamble_latency;
   uint32_t  uplink_rx_latency;
-  float     imu_lin_acc_x;
-  float     imu_lin_acc_y;
-  float     imu_lin_acc_z;
-  float     diver_roll_orientation;
-  float     diver_pitch_orientation;
 
   float     KBFromMako;
   uint8_t   gps_hour;
@@ -624,13 +631,10 @@ struct LemonTelemetryForJson
   uint32_t  privateMQTTUploadCount;   // removed from LemonTelem message
   uint16_t  privateMQTTMessageLength;   // removed from LemonTelem message
   float     KBToPrivateMQTT;   // removed from LemonTelem message
-  uint32_t  live_metrics_count;   // removed from LemonTelem message
-  uint32_t  privateMQTTUploadDutyCycle;   // removed from LemonTelem message
 };
 
 struct LemonTelemetryForJson latestLemonTelemetry;
 
-void getM5ImuSensorData(struct LemonTelemetryForJson& t);
 void WiFiStationConnected(WiFiEvent_t event, WiFiEventInfo_t info);
 void WiFiGotIP(WiFiEvent_t event, WiFiEventInfo_t info);
 void WiFiLostIP(WiFiEvent_t event, WiFiEventInfo_t info);
@@ -681,11 +685,11 @@ void buildUplinkTelemetryMessageV6a(char* payload, const struct MakoUplinkTeleme
 void buildBasicTelemetryMessage(char* payload);
 enum e_q_upload_status uploadTelemetryToPrivateMQTT(MakoUplinkTelemetryForJson* makoTelemetry, struct LemonTelemetryForJson* lemonTelemetry);
 
-void getM5ImuSensorData(struct LemonTelemetryForJson& t)
+void populateLanternPowerStats(struct LemonTelemetryForJson& t)
 {
-  const float uninitialisedIMU = 0.0;  
-  t.imu_lin_acc_x = t.imu_lin_acc_y = t.imu_lin_acc_z = uninitialisedIMU;
-  t.diver_roll_orientation = t.diver_pitch_orientation = uninitialisedIMU;
+  t.powerbank_voltage = powerBankVolts;
+  t.powerbank_current = powerBank_mA;
+  t.powerbank_mAH = powerBank_mAH;
 }
 
 bool devNetworkInUse()
@@ -1329,17 +1333,6 @@ void setup()
 
 bool   newLemonTempHumidityRead=false;
 
-float powerBankVolts=0.0;
-float powerBankMinVolts=0.0;
-float powerBankMaxVolts=0.0;
-float powerBankAmps=0.0;
-float powerBankMaxAmps=0.0;
-float powerBank_mAh=0.0;
-float lanternTemp=0;
-float lanternHumidity=0;
-double lemonTemp=0.0;
-double lemonHumidity=0.0;
-
 const uint32_t timeoutUntilNoGPSDetected = 10000;
 
 void sendPendingGPSUBXCommands()
@@ -1551,6 +1544,7 @@ void loop()
             USB_SERIAL_PRINTF("\nOriginal NMEA  %s\n",gps.getSentence()+1);
 
             serial_mako_gopro.write(customiseNMEASentence(gps.getSentence(), networkManager.getShowOnMapRequestIndex()));
+          consoleDownlinkMsgCount++;
 
             if (writeLogToSerial)
             {
@@ -1592,7 +1586,6 @@ void loop()
                 USB_SERIAL_PRINTF("**** SEND TO MAKO ****  Real GPS Message %s - under test - %s GGA:%i RMC:%c  %s\n", msgType, fixType, fixQualityGGA, validFixRMC, nmea);
             }
           }
-          consoleDownlinkMsgCount++;
 
           if (gps.isSentenceGGA())
           {
@@ -1975,9 +1968,9 @@ void processReceivedLanternMessages()
           powerBankVolts = lanternReadingsJson["V"];
           powerBankMinVolts  = lanternReadingsJson["Vmin"];
           powerBankMaxVolts  = lanternReadingsJson["Imax"];
-          powerBankAmps  = lanternReadingsJson["I"];
-          powerBankMaxAmps  = lanternReadingsJson["Imax"];
-          powerBank_mAh   = lanternReadingsJson["mAH"];
+          powerBank_mA  = lanternReadingsJson["I"];
+          powerBankMax_mA  = lanternReadingsJson["Imax"];
+          powerBank_mAH   = lanternReadingsJson["mAH"];
           lanternTemp = lanternReadingsJson["Temp"];
           lanternHumidity = lanternReadingsJson["Humid"];
           USB_SERIAL_PRINTF("Lantern Sensors: %s\n", lanternReadingsData);

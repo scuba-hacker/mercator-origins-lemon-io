@@ -277,7 +277,7 @@ void populateCurrentLemonTelemetry(LemonTelemetryForJson& l, TinyGPSPlus& g)
     USB_SERIAL_PRINTF("\nPOPULATE TELEMETRY: using gpsFixStatusForTelemetry=%d, set l.isFix=%d\n",
                     gpsFixStatusForTelemetry, l.isFix);
 
-  getM5ImuSensorData(l);
+  populateLanternPowerStats(l);
 }
 
 void populateFinalLemonTelemetry(LemonTelemetryForJson& l)
@@ -289,47 +289,42 @@ void populateFinalLemonTelemetry(LemonTelemetryForJson& l)
 
 void constructLemonTelemetryForStorage(struct LemonTelemetryForStorage& s, const LemonTelemetryForJson l, const uint16_t uplinkMessageLength)
 {
-  s.gps_lat = l.gps_lat;  s.gps_lng = l.gps_lng;          // must be on 8 byte boundary 
+  s.gps_lat = l.gps_lat;          // must be on 4 byte boundary   
+  s.gps_lng = l.gps_lng;          // must be on 4 byte boundary 
   s.goodUplinkMessageCount = goodUplinkMessageCount;      // GLOBAL
   s.badUplinkMessageCount = badUplinkMessageCount;        // GLOBAL
   s.consoleDownlinkMsgCount = consoleDownlinkMsgCount;    // GLOBAL
   s.telemetry_timestamp = lastGoodUplinkMessage;          // GLOBAL
-  s.fixCount = fixCount;                                  // GLOBAL  (36)
+  s.fixCount = fixCount;                                  // GLOBAL
 
-  s.vBusVoltage = (uint16_t)(0.11);
-  s.vBusCurrent = (uint16_t)(0.11);
-  s.vBatVoltage = (uint16_t)(0.11);                       // (42)
-  s.uplinkMessageMissingCount = (uint16_t)(uplinkMessageMissingCount);          // 
+  s.powerbank_voltage = powerBankVolts * 1000.0;          // GLOBAL
+  s.powerbank_current = powerBank_mA;                     // GLOBAL            
+  s.powerbank_mAH = powerBank_mAH;                        // GLOBAL
+
+  s.uplinkMessageMissingCount = (uint16_t)(uplinkMessageMissingCount);  
   s.uplinkMessageLength = uplinkMessageLength;            // GLOBAL
   s.gps_hdop = (uint16_t)(l.gps_hdop * 10.0);
   s.gps_course_deg = (uint16_t)(l.gps_course_deg * 10.0);
-  s.gps_knots = (uint16_t)(l.gps_knots * 10.0);            // (52)
+  s.gps_knots = (uint16_t)(l.gps_knots * 10.0);            
   
   s.downlink_send_duration = l.downlink_send_duration; 
   s.uplink_preamble_latency = l.uplink_preamble_latency; 
-  s.uplink_rx_latency = l.uplink_rx_latency;                // (64)
-  s.imu_lin_acc_x = l.imu_lin_acc_x; s.imu_lin_acc_y = l.imu_lin_acc_y; s.imu_lin_acc_z = l.imu_lin_acc_z;
-  s.diver_roll_orientation = l.diver_roll_orientation; s.diver_pitch_orientation = l.diver_pitch_orientation;
-  s.uplinkBadMessagePercentage = uplinkBadMessagePercentage;      // (92)
+  s.uplink_rx_latency = l.uplink_rx_latency;                
+  s.uplinkBadMessagePercentage = uplinkBadMessagePercentage;    
 
   s.KBFromMako = KBFromMako;                             // GLOBAL
-  s.gps_hour = l.gps_hour; s.gps_minute = l.gps_minute;  s.gps_second = l.gps_second;  // (100)
+  s.gps_hour = l.gps_hour; s.gps_minute = l.gps_minute;  s.gps_second = l.gps_second;  //
   s.gps_day = l.gps_day; s.gps_month = l.gps_month; s.gps_satellites = (uint8_t)l.gps_satellites;
-  s.gps_year =  l.gps_year;         // (104)
+  s.gps_year =  l.gps_year;         //
 
   s.is_fix = l.isFix;
-  s.one_byte_is_fix_padding = 0;
-  s.two_byte_zero_padding = 0;      // (108)
+  s.one_byte_zero_padding = 0;
+  s.two_byte_zero_padding = 0;      //
+  s.four_byte_zero_padding = 0;      //
 
   if (writeTelemetryLogToSerial)
     USB_SERIAL_PRINTF("\nSTORAGE: l.isFix=%d -> s.is_fix=%d\n", l.isFix, s.is_fix);
 }
-
-//  uint32_t  l.privateMQTTUploadCount;
-//  float     l.KBToPrivateMQTT;
-//  uint32_t  l.live_metrics_count;
-//  uint32_t  l.privateMQTTUploadDutyCycle;
-//  uint16_t  l.privateMQTTMessageLength = privateMQTTMessageLength;
 
 uint8_t decode_uint8(uint8_t*& msg) 
 { 
@@ -396,16 +391,18 @@ void decode_uint32_into_5_char_array(uint8_t*& msg, char* target)
 
 bool decodeIntoLemonTelemetryForUpload(uint8_t* msg, const uint16_t length, struct LemonTelemetryForJson& l)
 {
-  l.gps_lat = decode_double(msg);
-  l.gps_lng = decode_double(msg);         
+  l.gps_lat = decode_float(msg);
+  l.gps_lng = decode_float(msg);         
   l.goodUplinkMessageCount = decode_uint32(msg);
   l.badUplinkMessageCount = decode_uint32(msg);
   l.consoleDownlinkMsgCount = decode_uint32(msg);
   l.telemetry_timestamp = decode_uint32(msg);
   l.fixCount = decode_uint32(msg);
-  l.vBusVoltage = ((float)decode_uint16(msg)) / 1000.0;
-  l.vBusCurrent = ((float)decode_uint16(msg)) / 100.0;
-  l.vBatVoltage = ((float)decode_uint16(msg)) / 1000.0;
+
+  l.powerbank_voltage = ((float)decode_uint16(msg)) / 1000.0;
+  l.powerbank_current = ((float)decode_uint16(msg));
+  l.powerbank_mAH = ((float)decode_uint16(msg));
+
   l.uplinkMessageMissingCount = decode_uint16(msg);
   l.uplinkMessageLength = decode_uint16(msg);
   l.gps_hdop = ((float)decode_uint16(msg)) / 10.0;
@@ -416,11 +413,6 @@ bool decodeIntoLemonTelemetryForUpload(uint8_t* msg, const uint16_t length, stru
   l.uplink_preamble_latency = decode_uint32(msg);
   
   l.uplink_rx_latency = decode_uint32(msg);
-  l.imu_lin_acc_x = decode_float(msg);
-  l.imu_lin_acc_y = decode_float(msg);
-  l.imu_lin_acc_z = decode_float(msg);
-  l.diver_roll_orientation = decode_float(msg);
-  l.diver_pitch_orientation = decode_float(msg);
   l.uplinkBadMessagePercentage = decode_float(msg);
 
   l.KBFromMako = decode_float(msg);
@@ -476,8 +468,8 @@ bool decodeMakoUplinkMessageV5a(uint8_t* uplinkMsg, struct MakoUplinkTelemetryFo
   m.user_action = decode_uint16(uplinkMsg);
 
   m.bad_checksum_msgs = decode_uint16(uplinkMsg);
-  m.usb_voltage = ((float)decode_uint16(uplinkMsg)) / 1000.0;
-  m.usb_current = ((float)decode_uint16(uplinkMsg)) / 100.0;
+  m.mako_usb_voltage = ((float)decode_uint16(uplinkMsg)) / 1000.0;
+  m.mako_usb_current = ((float)decode_uint16(uplinkMsg)) / 100.0;
 
   decode_uint32_into_5_char_array(uplinkMsg,m.target_code);
 
@@ -581,92 +573,52 @@ void sendCeaseFixMessagesNMEAMessage(bool cease, const char* context)
   }
 }
 
-void buildUplinkTelemetryMessageV6a(char* payload, const struct MakoUplinkTelemetryForJson& m, const struct LemonTelemetryForJson& l)
+void buildUplinkTelemetryMessageV6a(char* payload, 
+                                    uint16_t payload_size,
+                                    const struct MakoUplinkTelemetryForJson& m, 
+                                    const struct LemonTelemetryForJson& l)
 {
   currentPrivateMQTTUploadAt = millis();
-  privateMQTTUploadDutyCycle = currentPrivateMQTTUploadAt - lastPrivateMQTTUploadAt;
-
-  uint32_t live_metrics_count = 75; // as of 9 May 2023
   
-  sprintf(payload,
-          "{\"UTC_time\":\"%02d:%02d:%02d\",\"UTC_date\":\"%02d:%02d:%02d\",\"lemon_on_mins\":%lu,\"coordinates\":[%f,%f],\"is_fix\":%i,\"depth\":%f,"
-          "\"water_pressure\":%f,\"water_temperature\":%f,\"enclosure_temperature\":%f,\"enclosure_humidity\":%f,\"enclosure_air_pressure\":%f,"
-          "\"magnetic_heading_compensated\":%f,\"heading_to_target\":%f,\"distance_to_target\":%f,\"journey_course\":%f,\"journey_distance\":%f,"
+  // Analysis: send lat/long as doubles not needed as floats preserve 7 decimal places which is sub-metre precision.
+  snprintf(payload, payload_size,
+          "{\"UTC_time\":\"%02d:%02d:%02d\",\"UTC_date\":\"%02d:%02d:%02d\",\"lemon_on_mins\":%lu,\"coordinates\":[%f,%f],\"is_fix\":%i,\"depth\":%.1f,"
+          "\"water_pressure\":%.1f,\"water_temperature\":%.1f,\"enclosure_temperature\":%.1f,\"enclosure_humidity\":%.0f,\"enclosure_air_pressure\":%.1f,"
+          "\"magnetic_heading_compensated\":%.0f,\"heading_to_target\":%.0f,\"distance_to_target\":%.1f,\"journey_course\":%.1f,\"journey_distance\":%.1f,"
           "\"mako_screen_display\":\"%s\",\"mako_on_mins\":%lu,\"mako_user_action\":%d,\"mako_rx_bad_checksum_msgs\":%hu,"
-          "\"mako_usb_voltage\":%f,\"mako_usb_current\":%f,\"mako_target_code\":\"%s\","
-          "\"fix_count\":%lu,\"lemon_usb_voltage\":%f,\"lemon_usb_current\":%f,\"lemon_bat_voltage\":%f,\"uplink_missing_msgs_from_mako\":%hu,"
+          "\"mako_usb_voltage\":%.1f,\"mako_usb_current\":%.0f,\"mako_target_code\":\"%s\","
+          "\"fix_count\":%lu,\"powerbank_voltage\":%.1f,\"powerbank_current\":%f,\"powerbank_mAh\":%f,\"uplink_missing_msgs_from_mako\":%hu,"
           "\"sats\":%lu,\"hdop\":%f,\"gps_course\":%f,\"gps_speed_knots\":%f,"
-
           "\"min_sens_read\":%hu,\"quiet_b4_uplink\":%hu,\"sens_read\":%hu,\"max_sens_read\":%hu,\"act_sens_read\":%hu,\"max_act_sens_read\":%hu,"
-
-          "\"mako_lsm_acc_x\":%f,\"mako_lsm_acc_y\":%f,\"mako_lsm_acc_z\":%f,"
-
-          "\"mako_diver_roll_orientation\":%f,\"mako_diver_pitch_orientation\":%f,"
+          "\"mako_roll\":%.1f,\"mako_pitch\":%.1f,"
           "\"mako_rx_good_checksum_msgs\":%hu,"
-
           "\"downlink_send_duration\":%lu,\"uplink_preamble_latency\":%lu,\"uplink_rx_latency\":%lu,"
-          "\"lemon_imu_lin_acc_x\":%f,\"lemon_imu_lin_acc_y\":%f,\"lemon_imu_lin_acc_z\":%f,"
-          "\"lemon_diver_roll_orientation\":%f,\"lemon_diver_pitch_orientation\":%f,"
           "\"uplink_bad_percentage\":%.1f,"
-
           "\"mako_waymarker_e\":%d,\"mako_waymarker_label\":\"%s\",\"mako_direction_metric\":\"%s\","
-
-          "\"uplink_good_msgs_from_mako\":%lu,\"uplink_bad_msgs_from_mako\":%lu,\"uplink_msg_length\":%hu,\"msgs_to_qubitro\":%d,\"qubitro_msg_length\":%hu,\"KB_to_qubitro\":%.1f,\"KB_uplinked_from_mako\":%.1f,"
-          "\"live_metrics\":%lu,\"qubitro_upload_duty_cycle\":%lu,\"console_downlink_msg\":%lu,\"geo_location\":\"Gozo, Malta\""
+          "\"uplink_good_msgs_from_mako\":%lu,\"uplink_bad_msgs_from_mako\":%lu,\"uplink_msg_length\":%hu,"
+          "\"msgs_to_mqtt\":%d,\"mqtt_msg_length\":%hu,\"KB_to_mqtt\":%.1f,\"KB_uplinked_from_mako\":%.1f,"
+          "\"console_downlink_msg\":%lu,\"geo_location\":\"Gozo, Malta\""
           "}",
 
-          // with bad length and bad checksum stats
-          //           "\"uplink_good_msgs_from_mako\":%lu,\"uplink_bad_msgs_from_mako\":%lu,\"uplink_bad_len_msgs_from_mako\":%lu,\"uplink_bad_chk_msgs_from_mako\":%lu,\"uplink_msg_length\":%hu,\"msgs_to_qubitro\":%d,\"qubitro_msg_length\":%hu,\"KB_to_qubitro\":%.1f,\"KB_uplinked_from_mako\":%.1f,"
-
-          l.gps_hour, l.gps_minute, l.gps_second,
-          l.gps_day, l.gps_month, l.gps_year,
-
+          l.gps_hour, l.gps_minute, l.gps_second,l.gps_day, l.gps_month, l.gps_year,
           currentPrivateMQTTUploadAt / 1000 / 60,   // lemon on minutes
           l.gps_lat, l.gps_lng, l.isFix,
           m.depth, m.water_pressure, m.water_temperature,
           m.enclosure_temperature, m.enclosure_humidity, m.enclosure_air_pressure,
           m.magnetic_heading_compensated, m.heading_to_target, m.distance_to_target,
-          m.journey_course, m.journey_distance,
-          m.screen_display,
-          m.seconds_on,
-          m.user_action,
-          m.bad_checksum_msgs, m.usb_voltage, m.usb_current, 
-          
-          m.target_code,
-
-          l.fixCount,
-          
-          l.vBusVoltage, l.vBusCurrent, l.vBatVoltage, l.uplinkMessageMissingCount,
-
+          m.journey_course, m.journey_distance,m.screen_display, m.seconds_on, m.user_action,
+          m.bad_checksum_msgs, m.mako_usb_voltage, m.mako_usb_current, m.target_code,l.fixCount,          
+          l.powerbank_voltage, l.powerbank_current, l.powerbank_mAH, l.uplinkMessageMissingCount,
           l.gps_satellites, l.gps_hdop, l.gps_course_deg, l.gps_knots,
-          
           m.minimum_sensor_read_time, m.quietTimeMsBeforeUplink, m.sensor_aquisition_time,  
           m.max_sensor_acquisition_time, m.actual_sensor_acquisition_time, m.max_actual_sensor_acquisition_time,
-
-          m.lsm_acc_x, m.lsm_acc_y, m.lsm_acc_z,
           m.diver_roll_orientation, m.diver_pitch_orientation,
-
-          m.good_checksum_msgs,
-          l.downlink_send_duration,
-          l.uplink_preamble_latency,    
-          l.uplink_rx_latency,
-          l.imu_lin_acc_x, l.imu_lin_acc_y, l.imu_lin_acc_z,
-          l.diver_roll_orientation, l.diver_pitch_orientation,
-          l.uplinkBadMessagePercentage,
-
+          m.good_checksum_msgs,l.downlink_send_duration,l.uplink_preamble_latency,    
+          l.uplink_rx_latency,l.uplinkBadMessagePercentage,
           m.way_marker_enum, m.way_marker_label, m.direction_metric,
-          
-          l.goodUplinkMessageCount,
-          l.badUplinkMessageCount,
-          l.uplinkMessageLength,
-          privateMQTTUploadCount,
-          privateMQTTMessageLength,             ///  ????
-          KBToPrivateMQTT,                      ///  ????
-          l.KBFromMako,
-          live_metrics_count,
-          privateMQTTUploadDutyCycle,           ///  ????
-          l.consoleDownlinkMsgCount
-          
+          l.goodUplinkMessageCount,l.badUplinkMessageCount,l.uplinkMessageLength,
+          privateMQTTUploadCount, privateMQTTMessageLength,
+          KBToPrivateMQTT, l.KBFromMako,l.consoleDownlinkMsgCount
           // DO NOT POPULATE (HARDCODED IN SPRINTF STRING) geo_location
          );
 
@@ -697,11 +649,13 @@ enum e_q_upload_status uploadTelemetryToPrivateMQTT(MakoUplinkTelemetryForJson* 
   {
     if (privateMQTT.canUpload())
     {
-        char* mqtt_payload = privateMQTT.getPayloadBuffer();
-        buildUplinkTelemetryMessageV6a(mqtt_payload, *makoTelemetry, *lemonTelemetry);
+        buildUplinkTelemetryMessageV6a(privateMQTT.getPayloadBuffer(), 
+                                       privateMQTT.getPayloadSize(),
+                                      *makoTelemetry, 
+                                      *lemonTelemetry);
 
         const int qos = 1;
-        MQTTConnectionResult result = privateMQTT.publish("telemetry/uplink", mqtt_payload, qos);
+        MQTTConnectionResult result = privateMQTT.publish("telemetry/uplink", privateMQTT.getPayloadBuffer(), qos);
 
         switch(result) {
           case MQTTConnectionResult::SUCCESS:

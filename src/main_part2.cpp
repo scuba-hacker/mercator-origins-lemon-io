@@ -686,49 +686,49 @@ void processExtendedCommand(const String& command) {
   }
 }
 
+// 76 bytes defined, but sizeof is rounded to 80 to keep on 8 byte boundary in case doubles are added later.
+// floats and uint32_t are on 4 byte boundaries.
+// uint16_t are on 2 byte boundaries.
+// any doubles added later will be on 8 byte boundaries.
 struct LemonTelemetryForStorage 
-// 108 bytes defined, but sizeof is rounded to 112 to keep on 8 byte boundary as there is a double present
-// The sizeof struct is rounded up to the largest sizeof primitive that is present.
 {
-  double    gps_lat;              // must be on 8 byte boundary
-  double    gps_lng;              // 
+  float     gps_lat;
+  float     gps_lng;
   uint32_t  goodUplinkMessageCount;
   uint32_t  badUplinkMessageCount;
   uint32_t  consoleDownlinkMsgCount;
   uint32_t  telemetry_timestamp;       
-  uint32_t  fixCount;                   // (36)
-  uint16_t  vBusVoltage;
-  uint16_t  vBusCurrent;
-  uint16_t  vBatVoltage;
-  uint16_t  uplinkMessageMissingCount;  // (44) 
+  uint32_t  fixCount;
+
+  uint16_t  powerbank_voltage;
+  uint16_t  powerbank_current;
+  uint16_t  powerbank_mAH;
+
+  uint16_t  uplinkMessageMissingCount;  
   uint16_t  uplinkMessageLength;
   uint16_t  gps_hdop;
   uint16_t  gps_course_deg;
-  uint16_t  gps_knots;                  // (52)
+  uint16_t  gps_knots;                  
   
   uint32_t  downlink_send_duration;   // must be on 4 byte boundary
   uint32_t  uplink_preamble_latency;
   uint32_t  uplink_rx_latency;
-  float     imu_lin_acc_x;
-  float     imu_lin_acc_y;
-  float     imu_lin_acc_z;
-  float     diver_roll_orientation;
-  float     diver_pitch_orientation;
-  float     uplinkBadMessagePercentage;      // (92)
+  float     uplinkBadMessagePercentage; 
 
   float     KBFromMako;               
   uint8_t   gps_hour;
   uint8_t   gps_minute;
   uint8_t   gps_second;
-  uint8_t   gps_day;            // 100
+  uint8_t   gps_day;    
 
   uint8_t   gps_month;
   uint8_t   gps_satellites;
-  uint16_t  gps_year;           // 104
+  uint16_t  gps_year;  
 
   uint8_t   is_fix;
-  uint8_t   one_byte_is_fix_padding;
-  uint16_t  two_byte_zero_padding;  // 108
+  uint8_t   one_byte_zero_padding;
+  uint16_t  two_byte_zero_padding;
+  uint32_t  four_byte_zero_padding;    // 80 bytes up to here, previously 108
 };
 
 uint32_t getSizeOfLemonTelemetryForStorage()
@@ -753,8 +753,8 @@ struct MakoUplinkTelemetryForJson
   uint16_t seconds_on;
   uint16_t user_action;
   uint16_t bad_checksum_msgs;
-  float usb_voltage;
-  float usb_current;
+  float mako_usb_voltage;
+  float mako_usb_current;
   char target_code[5];
     
   uint16_t minimum_sensor_read_time;
@@ -1046,8 +1046,7 @@ bool checkForValidPreambleOnUplink()
   if (enableReadUplinkComms)
   {
     uint32_t nowUS = micros();
-
-    downlinkSendMessageDurationMicroSeconds = (nowUS >= downlinkSendMessageDurationMicroSeconds ? nowUS - downlinkSendMessageDurationMicroSeconds : 0xFFFFFFFF - downlinkSendMessageDurationMicroSeconds + nowUS);
+    downlinkSendMessageDurationMicroSeconds = (uint32_t)(nowUS - downlinkSendMessageDurationMicroSeconds);
 
     uplinkLingerTimeoutAt = millis()+uplinkMessageLingerPeriodMs;
 
