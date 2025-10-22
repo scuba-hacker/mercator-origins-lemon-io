@@ -140,18 +140,8 @@ struct GPSDataPacket
 
 HardwareSerial serial_gps(UART_NUMBER_GPS);
 
-// ******** Tx = GPIO2 Max Speed Tests ********
-// GPIO2 Tx works for 57600, 71000, 91000, 576000
-// at 1,700,000 getting about 10% bad msgs - 5% missing uplinks and 5% bad length uplinks (may help to have a small pause before sending response)
-// at 2,100,000 getting about 14% bad msgs -  7% missing uplinks and 7% bad length uplinks
-// ^^^^ add 3ms linger time before mako replying to lemon to get rid of all bad messages at 2,100,000
-// ^^^^^ probably also works at 1,700,000
-// Other rates to try which did work with tx only to Mako when not expecting a reply: 
-//    922190, 1100000,1500000,1900000
-// rates that did not work TO mako prior to changing reply to wired from IR LED:
-//    921600, 1800000
 #define UART_NUMBER_MAKO_GOPRO   2
-#define MAKO_UPLINK_BAUD_RATE    57600    // max working test so far: 2,100,000
+#define MAKO_UPLINK_BAUD_RATE    1000000  // 1Mbs Max reliable with MAX485 ICs
 #define MAKO_GOPRO_TX_BLUE_GPIO  43       // marked TX on board
 #define MAKO_GOPRO_RX_GREEN_GPIO 44       // marked RX on board
 
@@ -993,7 +983,7 @@ void initialiseUARTS()
 
   // UART2 for sending/receiving data to/from GoPro
   serial_mako_gopro.setRxBufferSize(1024); // was 256 - must set before begin
-  serial_mako_gopro.begin(MAKO_UPLINK_BAUD_RATE, SERIAL_8N2, MAKO_GOPRO_RX_GREEN_GPIO, MAKO_GOPRO_TX_BLUE_GPIO);
+  serial_mako_gopro.begin(MAKO_UPLINK_BAUD_RATE, SERIAL_8N1, MAKO_GOPRO_RX_GREEN_GPIO, MAKO_GOPRO_TX_BLUE_GPIO);
 
   // Create Mako RS485 receive task on Core 1 (opposite core from GPS)
   xTaskCreatePinnedToCore(makoRxTask,
