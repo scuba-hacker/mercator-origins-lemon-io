@@ -249,6 +249,15 @@ const char STATS_HTML[] = R"rawliteral(
                     <p class="reading"><span id="colour_read"></span></p>
                 </div>
                 <div class="card">
+                    <p class="card-title">Diver Pitch</p>
+                    <p class="reading"><span id="diver_pitch"></span></p>
+                </div>
+                <div class="card">
+                    <p class="card-title">Diver Roll</p>
+                    <p class="reading"><span id="diver_roll"></span></p>
+                </div>
+
+                <div class="card">
                     <p class="card-title">Lemon Free Heap (bytes)</p>
                     <p class="reading"><span id="free_heap_bytes"></span></p>
                 </div>

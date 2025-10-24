@@ -633,7 +633,7 @@ void buildUplinkTelemetryMessageV6a(char* payload,
 
   // update last uploaded mako stats
   latestMakoStats=MakoStats(m.total_sensor_acquisition_time_micros, m.quietTimeMsBeforeUplink,m.compass_acquire_time_micros, 
-                            m.temp_humid_acquire_time_micros, m.imu_acquire_time_micros, m.colour_acquire_time_micros);
+                            m.temp_humid_acquire_time_micros, m.imu_acquire_time_micros, m.colour_acquire_time_micros, m.diver_pitch_orientation,m.diver_roll_orientation);
 }
 
 void buildBasicTelemetryMessage(char* payload)

@@ -845,6 +845,12 @@ String getStats()
   readings["imu_read"] = latestMakoStats.imu_acquire_time_micros;
   readings["colour_read"] = latestMakoStats.colour_acquire_time_micros;
 
+  snprintf(psramFreeLabel,sizeof(psramFreeLabel),"%.1f°",latestMakoStats.diver_pitch_orientation);
+  readings["diver_pitch"] = psramFreeLabel;
+
+  snprintf(psramFreeLabel,sizeof(psramFreeLabel),"%.1f°",latestMakoStats.diver_roll_orientation);
+  readings["diver_roll"] = psramFreeLabel;
+
   multi_heap_info_t info;
   heap_caps_get_info(&info, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT); // internal RAM, memory capable to store data or to create new task
 

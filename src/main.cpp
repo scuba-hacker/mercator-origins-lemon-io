@@ -555,13 +555,18 @@ struct MakoStats
   uint16_t imu_acquire_time_micros;
   uint16_t colour_acquire_time_micros;
 
-  MakoStats(uint16_t mi, uint16_t qu, uint16_t ca,uint16_t tha,uint16_t ia,uint16_t cola) :
+  float diver_pitch_orientation;
+  float diver_roll_orientation;
+
+  MakoStats(uint16_t mi, uint16_t qu, uint16_t ca,uint16_t tha,uint16_t ia,uint16_t cola, float pitch, float roll) :
     total_sensor_acquisition_time_micros(mi),
     quietTimeMsBeforeUplink(qu),
     compass_acquire_time_micros(ca),
     temp_humid_acquire_time_micros(tha),
     imu_acquire_time_micros(ia),
-    colour_acquire_time_micros(cola)
+    colour_acquire_time_micros(cola),
+    diver_pitch_orientation(pitch),
+    diver_roll_orientation(roll)
   {}
 
   MakoStats() :
@@ -570,7 +575,9 @@ struct MakoStats
     compass_acquire_time_micros(0),
     temp_humid_acquire_time_micros(0),
     imu_acquire_time_micros(0),
-    colour_acquire_time_micros(0)
+    colour_acquire_time_micros(0),
+    diver_pitch_orientation(0.0),
+    diver_roll_orientation(0.0)
   {}
 };
 
