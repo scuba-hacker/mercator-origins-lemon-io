@@ -547,29 +547,30 @@ bool nmea_get_field(const char *s, int index, char *out, size_t outsz);
 
 struct MakoStats
 {
-  uint16_t minimum_sensor_read_time;
+  uint16_t total_sensor_acquisition_time_micros;
   uint16_t quietTimeMsBeforeUplink;
-  uint16_t sensor_aquisition_time;
-  uint16_t max_sensor_acquisition_time;
-  uint16_t actual_sensor_acquisition_time;
-  uint16_t max_actual_sensor_acquisition_time;
 
-  MakoStats(uint16_t mi, uint16_t qu, uint16_t se,uint16_t max_s,uint16_t ac,uint16_t max_a) :
-    minimum_sensor_read_time(mi),
+  uint16_t compass_acquire_time_micros;
+  uint16_t temp_humid_acquire_time_micros;
+  uint16_t imu_acquire_time_micros;
+  uint16_t colour_acquire_time_micros;
+
+  MakoStats(uint16_t mi, uint16_t qu, uint16_t ca,uint16_t tha,uint16_t ia,uint16_t cola) :
+    total_sensor_acquisition_time_micros(mi),
     quietTimeMsBeforeUplink(qu),
-    sensor_aquisition_time(se),
-    max_sensor_acquisition_time(max_s),
-    actual_sensor_acquisition_time(ac),
-    max_actual_sensor_acquisition_time(max_a)
+    compass_acquire_time_micros(ca),
+    temp_humid_acquire_time_micros(tha),
+    imu_acquire_time_micros(ia),
+    colour_acquire_time_micros(cola)
   {}
 
   MakoStats() :
-    minimum_sensor_read_time(0),
+    total_sensor_acquisition_time_micros(0),
     quietTimeMsBeforeUplink(0),
-    sensor_aquisition_time(0),
-    max_sensor_acquisition_time(0),
-    actual_sensor_acquisition_time(0),
-    max_actual_sensor_acquisition_time(0)
+    compass_acquire_time_micros(0),
+    temp_humid_acquire_time_micros(0),
+    imu_acquire_time_micros(0),
+    colour_acquire_time_micros(0)
   {}
 };
 

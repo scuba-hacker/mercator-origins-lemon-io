@@ -757,12 +757,13 @@ struct MakoUplinkTelemetryForJson
   float mako_usb_current;
   char target_code[5];
     
-  uint16_t minimum_sensor_read_time;
+  uint16_t total_sensor_acquisition_time_micros;
   uint16_t quietTimeMsBeforeUplink;
-  uint16_t sensor_aquisition_time;
-  uint16_t max_sensor_acquisition_time;
-  uint16_t actual_sensor_acquisition_time;
-  uint16_t max_actual_sensor_acquisition_time;
+
+  uint16_t compass_acquire_time_micros;
+  uint16_t temp_humid_acquire_time_micros;
+  uint16_t imu_acquire_time_micros;
+  uint16_t colour_acquire_time_micros;
   
   float lsm_acc_x;
   float lsm_acc_y;
@@ -838,12 +839,11 @@ String getStats()
   populateStatLabelWithDuration(lastCheckForInternetConnectivityAt, internetCheckLabel);
   readings["lastCheckForInternetConnectivityAt"] = internetCheckLabel;
 
-  readings["min_sens_read"] = latestMakoStats.minimum_sensor_read_time;
-  readings["sens_read"] = latestMakoStats.sensor_aquisition_time;
-  readings["max_sens_read"] = latestMakoStats.max_sensor_acquisition_time;
-  readings["act_sens_read"] = latestMakoStats.actual_sensor_acquisition_time;
-  readings["max_act_sens_read"] = latestMakoStats.max_actual_sensor_acquisition_time;
-  readings["quiet_b4_uplink"] = latestMakoStats.quietTimeMsBeforeUplink;
+  readings["total_sensor_read"] = latestMakoStats.total_sensor_acquisition_time_micros;
+  readings["compass_read"] = latestMakoStats.compass_acquire_time_micros;
+  readings["temphumid_read"] = latestMakoStats.temp_humid_acquire_time_micros;
+  readings["imu_read"] = latestMakoStats.imu_acquire_time_micros;
+  readings["colour_read"] = latestMakoStats.colour_acquire_time_micros;
 
   multi_heap_info_t info;
   heap_caps_get_info(&info, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT); // internal RAM, memory capable to store data or to create new task

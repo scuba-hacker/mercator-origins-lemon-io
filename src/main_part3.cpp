@@ -481,12 +481,12 @@ bool decodeMakoUplinkMessageV5a(uint8_t* uplinkMsg, struct MakoUplinkTelemetryFo
   if (stripChar)
     *stripChar = '\0';      // strip any trailing newline
 
-  m.minimum_sensor_read_time = decode_uint16(uplinkMsg);
+  m.total_sensor_acquisition_time_micros = decode_uint16(uplinkMsg);
   m.quietTimeMsBeforeUplink = decode_uint16(uplinkMsg);
-  m.sensor_aquisition_time = decode_uint16(uplinkMsg);
-  m.max_sensor_acquisition_time = decode_uint16(uplinkMsg);
-  m.actual_sensor_acquisition_time = decode_uint16(uplinkMsg);
-  m.max_actual_sensor_acquisition_time = decode_uint16(uplinkMsg);
+  m.compass_acquire_time_micros = decode_uint16(uplinkMsg);
+  m.temp_humid_acquire_time_micros = decode_uint16(uplinkMsg);
+  m.imu_acquire_time_micros = decode_uint16(uplinkMsg);
+  m.colour_acquire_time_micros = decode_uint16(uplinkMsg);
 
   m.lsm_acc_x = decode_float(uplinkMsg); m.lsm_acc_y = decode_float(uplinkMsg);  m.lsm_acc_z = decode_float(uplinkMsg);
 
@@ -589,7 +589,8 @@ void buildUplinkTelemetryMessageV6a(char* payload,
           "\"mako_usb_voltage\":%.1f,\"mako_usb_current\":%.0f,\"mako_target_code\":\"%s\","
           "\"fix_count\":%lu,\"powerbank_voltage\":%.1f,\"powerbank_current\":%f,\"powerbank_mAh\":%f,\"uplink_missing_msgs_from_mako\":%hu,"
           "\"sats\":%lu,\"hdop\":%f,\"gps_course\":%f,\"gps_speed_knots\":%f,"
-          "\"min_sens_read\":%hu,\"quiet_b4_uplink\":%hu,\"sens_read\":%hu,\"max_sens_read\":%hu,\"act_sens_read\":%hu,\"max_act_sens_read\":%hu,"
+          "\"quiet_b4_uplink\":%hu,"
+          "\"total_sensor_us\":%hu,\"compass_us\":%hu,\"temp_humid_us\":%hu,\"imu_us\":%hu,\"colour_us\":%hu,"
           "\"mako_roll\":%.1f,\"mako_pitch\":%.1f,"
           "\"mako_rx_good_checksum_msgs\":%hu,"
           "\"downlink_send_duration\":%lu,\"uplink_preamble_latency\":%lu,\"uplink_rx_latency\":%lu,"
@@ -610,8 +611,8 @@ void buildUplinkTelemetryMessageV6a(char* payload,
           m.bad_checksum_msgs, m.mako_usb_voltage, m.mako_usb_current, m.target_code,l.fixCount,          
           l.powerbank_voltage, l.powerbank_current, l.powerbank_mAH, l.uplinkMessageMissingCount,
           l.gps_satellites, l.gps_hdop, l.gps_course_deg, l.gps_knots,
-          m.minimum_sensor_read_time, m.quietTimeMsBeforeUplink, m.sensor_aquisition_time,  
-          m.max_sensor_acquisition_time, m.actual_sensor_acquisition_time, m.max_actual_sensor_acquisition_time,
+          m.quietTimeMsBeforeUplink, 
+          m.total_sensor_acquisition_time_micros, m.compass_acquire_time_micros, m.temp_humid_acquire_time_micros, m.imu_acquire_time_micros, m.colour_acquire_time_micros,
           m.diver_roll_orientation, m.diver_pitch_orientation,
           m.good_checksum_msgs,l.downlink_send_duration,l.uplink_preamble_latency,    
           l.uplink_rx_latency,l.uplinkBadMessagePercentage,
@@ -631,8 +632,8 @@ void buildUplinkTelemetryMessageV6a(char* payload,
   lastPrivateMQTTUploadAt = millis();
 
   // update last uploaded mako stats
-  latestMakoStats=MakoStats(m.minimum_sensor_read_time, m.quietTimeMsBeforeUplink,m.sensor_aquisition_time, 
-                            m.max_sensor_acquisition_time, m.actual_sensor_acquisition_time, m.max_actual_sensor_acquisition_time);
+  latestMakoStats=MakoStats(m.total_sensor_acquisition_time_micros, m.quietTimeMsBeforeUplink,m.compass_acquire_time_micros, 
+                            m.temp_humid_acquire_time_micros, m.imu_acquire_time_micros, m.colour_acquire_time_micros);
 }
 
 void buildBasicTelemetryMessage(char* payload)
