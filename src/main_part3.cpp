@@ -75,7 +75,7 @@ bool populateHeadWithMakoTelemetry(BlockHeader& headBlock, const bool validPream
     if (enableAllUplinkMessageIntegrityChecks)
     {
       uint16_t uplink_checksum = 0;
-      
+
       if (uplinkMessageLength > 2 && (uplinkMessageLength % 2) == 0)
         uplink_checksum = *((uint16_t*)(blockBuffer + uplinkMessageLength - 2));
       else
@@ -88,8 +88,8 @@ bool populateHeadWithMakoTelemetry(BlockHeader& headBlock, const bool validPream
         badUplinkMessageCount++;
 
         badLengthUplinkMsgCount++;
-        
-        messageValidatedOk = false;              
+
+        messageValidatedOk = false;
         return messageValidatedOk;
       }
 
@@ -119,7 +119,7 @@ bool populateHeadWithMakoTelemetry(BlockHeader& headBlock, const bool validPream
         else if (uplink_checksum_bad)
           badChkSumUplinkMsgCount++;
 
-        messageValidatedOk = false;              
+        messageValidatedOk = false;
         return messageValidatedOk;  // this is going to stop any further messages to be uploaded if there are repeated checksum failures.
         // for now live with this.
       }
@@ -139,8 +139,24 @@ bool populateHeadWithMakoTelemetry(BlockHeader& headBlock, const bool validPream
     // No valid preamble found (or readuplinkcomms disabled)
     // do not increment checksum counts good/bad.
   }
-  
+
   messageValidatedOk = true;
+
+  // Extract Mako telemetry immediately for display purposes (leak detection, depth, etc.)
+  // Only decode if we have actual Mako data (validPreambleFound means real data, not zero'd data)
+  if (validPreambleFound)
+  {
+    MakoUplinkTelemetryForJson makoJSON;
+    const bool preventGlobalUpdate = true; // prevent updating globals like KBFromMako, lastGoodUplinkMessage
+    if (decodeMakoUplinkMessageV5a(blockBuffer, makoJSON, preventGlobalUpdate))
+    {
+      checkMakoJSONForAlarms(makoJSON);
+      extractMakoJSONTelemetryToGlobals(makoJSON);
+
+      if (writeTelemetryLogToSerial)
+        USB_SERIAL_PRINTF("Extracted Mako telemetry: depth=%.2f, leak=%s\n", depth, makoReportsLeak ? "YES" : "NO");
+    }
+  }
 
   // finished processing the uplink Message
 
@@ -228,6 +244,7 @@ void getNextTelemetryMessagesUploadedToPrivateMQTT()
     decodeMakoUplinkMessageV5a(makoPayloadBuffer, makoJSON, preventGlobalUpdate);
 
     checkMakoJSONForAlarms(makoJSON);
+    extractMakoJSONTelemetryToGlobals(makoJSON);
 
     // 2. parse the lemon payload into the lemon json payload struct
     LemonTelemetryForJson lemonForUpload;
@@ -438,6 +455,14 @@ void checkMakoJSONForAlarms(struct MakoUplinkTelemetryForJson& m)
   {
       makoReportsLeak = true;
   }
+}
+
+void extractMakoJSONTelemetryToGlobals(struct MakoUplinkTelemetryForJson& m)
+{
+  depth = m.depth;
+  makoHumidity = m.enclosure_humidity;
+  diverTilt = m.diver_roll_orientation;
+  diverPitch = m.diver_pitch_orientation;
 }
 
 // uplink msg from mako is 86 bytes

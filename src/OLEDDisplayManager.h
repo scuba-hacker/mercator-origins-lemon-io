@@ -40,7 +40,7 @@ public:
         const String& ipAddress, uint32_t mqttUploads, bool wifiConnected,
         const String& wifiSSID, bool dnsConnected, bool ipConnected, bool mqttConnected, uint8_t latestLanternReedState,
         float temperatureLemon, float humidityLemon,
-        float temperatureLantern, float humidityLantern
+        float temperatureLantern, float humidityLantern, float humidityMako, float depth, bool makoReportsLeak
     );
     void setStatusDisplayMode(bool enabled);
     bool isInStatusDisplayMode() const { return statusDisplayModeActive; }

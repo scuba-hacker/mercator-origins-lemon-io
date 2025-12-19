@@ -325,6 +325,38 @@ Tests to do mid-way through system operation: (ie not at boot)
 8. TO DO: check that bounce of WiFi Hub there is automatic reconnection of WiFi.
 
 */
+
+void drawLeakWarningWaterDropIcons(U8G2& display,int x_pos, int y_pos, bool leakWarning)
+{
+    int iconWidth = 16, gap = 8, x_offset = iconWidth + gap;
+
+    const uint8_t* font;
+
+    uint16_t wetIcon;
+
+    if (leakWarning)
+    {
+        wetIcon = 'H'; // rain drop
+        font = u8g2_font_open_iconic_thing_2x_t;
+    }
+    else
+    {
+        wetIcon = 'C'; // rain cloud
+        font = u8g2_font_open_iconic_weather_2x_t;
+    }
+
+    for (int i = 0; i < 6; i++) {
+        // Draw warning triangle (G in embedded font)
+        display.setFont(u8g2_font_open_iconic_embedded_2x_t);
+        display.drawGlyph(x_pos, y_pos, 'G');
+        x_pos += x_offset;
+        // Draw rain drop (H in thing font)
+        display.setFont(font);
+        display.drawGlyph(x_pos, y_pos, wetIcon);
+        x_pos += x_offset;
+    }
+}
+
 void OLEDWideDisplayManager::displayStatusScreen(
     uint32_t gpsMessagesReceived, uint32_t gpsFixes, uint32_t gpsNoFix,
     uint32_t gpsBadChecksum, uint32_t gpsBadLength, bool hasGPSDevice,
@@ -332,16 +364,102 @@ void OLEDWideDisplayManager::displayStatusScreen(
     const String& ipAddress, uint32_t mqttUploads, bool wifiConnected,
     const String& wifiSSID, bool dnsConnected, bool ipConnected, bool mqttConnected, uint8_t latestLanternReedState,
     float temperatureLemon, float humidityLemon,
-    float temperatureLantern, float humidityLantern
+    float temperatureLantern, float humidityLantern, float humidityMako, float depth, bool makoReportsLeak
 ) {
-    
+    const bool testMakoLeakWarning = false;
+    const bool testHumidityWarning = false;
+
+    static bool flashWarningBanner = true;
+
     char lineBuffer[128];
 
     // Block status display updates during OTA mode
     if (otaModeActive) {
         return;
     }
+
+    if (testMakoLeakWarning)
+        makoReportsLeak = true;
+
+    float humidityThreshold = 95;
+    bool makoHumidityWarning = (humidityMako >= humidityThreshold);
+    bool lemonHumidityWarning = (humidityLemon >= humidityThreshold);
+    bool lanternHumidityWarning = (humidityLantern >= humidityThreshold);
+
+    if (makoReportsLeak) {
+        flashWarningBanner = !flashWarningBanner;
+        if (flashWarningBanner) {
+            // make entire screen white and use large texts to say MAKO LEAK
+            display.setDrawColor(1);  // White
+            display.drawBox(0, 0, maxLineWidth, 64);  // Fill entire display
+            display.setDrawColor(0);  // Black
+
+            drawLeakWarningWaterDropIcons(display,0,17,true);
+            drawLeakWarningWaterDropIcons(display,0,63,true);
+
+            display.setFont(u8g2_font_inb27_mr); // or 27
+
+            display.setFontMode(1);
+            display.drawStr(display.getWidth() / 2 - display.getStrWidth("MAKO LEAK!") / 2, 46, "MAKO LEAK!");
+            display.sendBuffer();
+            display.setFontMode(0);
+
+            return;
+        }
+    }
+
+    static int test_selector = 0;
+    if (testHumidityWarning)
+    {
+        if (test_selector == 0) makoHumidityWarning = true;
+        else if (test_selector == 1) lemonHumidityWarning = true;
+        else if (test_selector == 2) lanternHumidityWarning = true;
+        test_selector = (test_selector + 1) % 3;
+    }
+
+    if (!makoReportsLeak && (makoHumidityWarning || lemonHumidityWarning || lanternHumidityWarning)) {
+        flashWarningBanner = !flashWarningBanner;
+        if (flashWarningBanner) {
+
+            display.setDrawColor(1);  // White
+            display.drawBox(0, 0, maxLineWidth, 64);  // Fill entire display
+            display.setDrawColor(0);  // Black
+
+            drawLeakWarningWaterDropIcons(display,0,17,false);
+            drawLeakWarningWaterDropIcons(display,0,63,false);
+
+            char humidityWarning[32];
     
+            if (lemonHumidityWarning)
+            {
+                display.setFont(u8g2_font_inb27_mr);
+                snprintf(humidityWarning, sizeof(humidityWarning), "LEMON DAMP!");
+            }
+            else if (lanternHumidityWarning)
+            {
+                display.setFont(u8g2_font_inb21_mr);
+                snprintf(humidityWarning, sizeof(humidityWarning), "LANTERN DAMP!");
+            }
+            else if (makoHumidityWarning)
+            {
+                display.setFont(u8g2_font_inb27_mr);
+                snprintf(humidityWarning, sizeof(humidityWarning), "MAKO DAMP!");
+            }
+            else
+            {
+                display.setFont(u8g2_font_inb27_mr);
+                snprintf(humidityWarning, sizeof(humidityWarning), "????");
+            }
+
+            display.setFontMode(1);
+            display.drawStr(display.getWidth() / 2 - display.getStrWidth(humidityWarning) / 2, 46, humidityWarning);
+            display.sendBuffer();
+            display.setFontMode(0);
+
+            return;
+        }
+    }
+
     shiftScreen();  // screen saver
     
     // Clear display
@@ -425,6 +543,14 @@ void OLEDWideDisplayManager::displayStatusScreen(
     snprintf(lineBuffer, sizeof(lineBuffer), "Lantern... %.1fC %.1f%%", temperatureLantern, humidityLantern);
     safeDrawStr(rightX, y, lineBuffer);
     y += lineHeight;
+
+    display.setFont(u8g2_font_10x20_tr);
+
+    rightX = 0;
+    y = 40;
+
+    snprintf(lineBuffer, sizeof(lineBuffer), "%.2fm", depth);
+    safeDrawStr(rightX, y, lineBuffer);
 
     display.sendBuffer();
 }

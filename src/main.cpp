@@ -141,7 +141,8 @@ struct GPSDataPacket
 HardwareSerial serial_gps(UART_NUMBER_GPS);
 
 #define UART_NUMBER_MAKO_GOPRO   2
-#define MAKO_UPLINK_BAUD_RATE    1000000  // 1Mbs Max reliable with MAX485 ICs
+#define MAKO_UPLINK_BAUD_RATE    115200
+//#define MAKO_UPLINK_BAUD_RATE    1000000  // 1Mbs Max reliable with MAX485 ICs
 #define MAKO_GOPRO_TX_BLUE_GPIO  43       // marked TX on board
 #define MAKO_GOPRO_RX_GREEN_GPIO 44       // marked RX on board
 
@@ -259,7 +260,10 @@ float lanternTemp=0;
 float lanternHumidity=0;
 double lemonTemp=0.0;
 double lemonHumidity=0.0;
-
+float makoHumidity=0.0;
+float diverTilt=0.0;
+float diverPitch=0.0;
+float depth=0.0;
 
 #define STATUS_LED_ON HIGH
 #define STATUS_LED_OFF LOW
@@ -671,6 +675,7 @@ bool decodeMakoUplinkMessageV5a(uint8_t* uplinkMsg, struct MakoUplinkTelemetryFo
 
 bool makoReportsLeak = false;
 void checkMakoJSONForAlarms(struct MakoUplinkTelemetryForJson& m);
+void extractMakoJSONTelemetryToGlobals(struct MakoUplinkTelemetryForJson& m);
 
 uint16_t calcUplinkChecksum(char* buffer, uint16_t length);
 bool configureUBLOXGps(); 
@@ -1903,7 +1908,7 @@ void loop()
       ipAddress, privateMQTTUploadCount, wifiConnected,
       wifiSSID, dnsConnected, ipConnected, mqttConnected,
       latestLanternReedState, lemonTemp, lemonHumidity,
-      lanternTemp, lanternHumidity
+      lanternTemp, lanternHumidity, makoHumidity, depth, makoReportsLeak
     );
     
     lastStatusUpdate = now;
