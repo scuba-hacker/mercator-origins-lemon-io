@@ -460,6 +460,8 @@ void checkMakoJSONForAlarms(struct MakoUplinkTelemetryForJson& m)
 void extractMakoJSONTelemetryToGlobals(struct MakoUplinkTelemetryForJson& m)
 {
   depth = m.depth;
+  max_depth = (m.depth > max_depth) ? m.depth : max_depth;
+  dive_time = 99; // needs real calculation
   makoHumidity = m.enclosure_humidity;
   diverTilt = m.diver_roll_orientation;
   diverPitch = m.diver_pitch_orientation;

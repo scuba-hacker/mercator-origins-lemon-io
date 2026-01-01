@@ -961,6 +961,7 @@ void NetworkManager::webSerialReceiveMessage(uint8_t *data, size_t len) {
 void NetworkManager::checkConnectivity() {        
     // Check connectivity if pipeline is backed up OR if forced for display testing
     const uint16_t pipelineBackedUpLength = 10;
+
     bool shouldCheckConnectivity = forceConnectivityCheckForDisplay || 
         (telemetryPipeline->getPipelineLength() > pipelineBackedUpLength && 
          telemetryPipeline->isPipelineDraining() == false &&
@@ -994,9 +995,15 @@ void NetworkManager::checkConnectivity() {
             // Do a manual wifi reconnect attempt - synchronous
             WiFi.reconnect();
         }
+    } 
+    else if (telemetryPipeline->isPipelineDraining())
+    {
+        // If pipeline is draining normally, then clear any previous connectivity failure flags
+        lastInternetConnectivityStatus = true;
+        lastDNSConnectivityStatus = true;
+        lastIPConnectivityStatus = true;
     }
 }
-
 
 bool NetworkManager::isInternetAccessible() {
     lastCheckForInternetConnectivityAt = millis();

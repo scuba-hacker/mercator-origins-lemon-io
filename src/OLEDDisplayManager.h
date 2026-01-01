@@ -10,7 +10,7 @@ public:
     U8G2& display;
     
     // Constructor
-    OLEDWideDisplayManager(U8G2& u8g2Display, int screenWidth = 256, int maxLines = 4);
+    OLEDWideDisplayManager(U8G2& u8g2Display, int screenWidth = 256, int screenHeight = 64, int maxLines = 4);
     
     // Destructor
     ~OLEDWideDisplayManager();
@@ -34,13 +34,15 @@ public:
     void displayStatusScreen(
         // GPS statistics
         uint32_t gpsMessagesReceived, uint32_t gpsFixes, uint32_t gpsNoFix,
-        uint32_t gpsBadChecksum, uint32_t gpsBadLength, bool hasGPSDevice,
+        uint32_t goodUplinkMessageCount, uint32_t badUplinkMessageCount, bool hasGPSDevice,
         bool hasGPSFix, double gpsHdop, uint8_t gpsSatellites,
         // Network statistics  
         const String& ipAddress, uint32_t mqttUploads, bool wifiConnected,
         const String& wifiSSID, bool dnsConnected, bool ipConnected, bool mqttConnected, uint8_t latestLanternReedState,
         float temperatureLemon, float humidityLemon,
-        float temperatureLantern, float humidityLantern, float humidityMako, float depth, bool makoReportsLeak
+        float temperatureLantern, float humidityLantern, float humidityMako, float depth, 
+        float max_depth, int dive_time, const char* lemonUptimeLabel,  int gps_hour, int gps_minute, int timezone_offset,
+        int max_pipeline_length, int pipeline_backups, bool makoReportsLeak
     );
     void setStatusDisplayMode(bool enabled);
     bool isInStatusDisplayMode() const { return statusDisplayModeActive; }
@@ -80,6 +82,7 @@ private:
     String baseStatusLine;  // Base line without progress chars
     int scrollOffset;
     const int maxLineWidth;  // Full screen width
+    const int maxLineHeight; // Full screen height
     bool showingProgress;
     int progressCharCount;
     

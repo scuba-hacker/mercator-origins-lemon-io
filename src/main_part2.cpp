@@ -793,14 +793,6 @@ char headCommitLabel[12];
 char internetCheckLabel[12];
 char lastMqttUpload[12];
 
-template<size_t N>
-void populateStatLabelWithDuration(uint32_t duration, char (&label)[N])
-{
-  int total_seconds = duration / 1000;
-  int total_minutes = total_seconds / 60;
-  int total_hours = total_minutes / 60;
-  snprintf(label,N,"%02d:%02d:%02d",total_hours, total_minutes % 60, total_seconds % 60);
-}
 
 String getStats()
 {

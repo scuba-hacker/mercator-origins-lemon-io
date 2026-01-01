@@ -3,12 +3,13 @@
 
 extern bool fastStartup;
 
-OLEDWideDisplayManager::OLEDWideDisplayManager(U8G2& u8g2Display, int screenWidth, int maxLines)
+OLEDWideDisplayManager::OLEDWideDisplayManager(U8G2& u8g2Display, int screenWidth, int screenHeight, int maxLines)
     : display(u8g2Display)
     , scrollingStatusLine("")
     , baseStatusLine("")
     , scrollOffset(0)
     , maxLineWidth(screenWidth)
+    , maxLineHeight(screenHeight)
     , showingProgress(false)
     , progressCharCount(0)
     , maxDisplayLines(maxLines)
@@ -136,7 +137,7 @@ void OLEDWideDisplayManager::refreshDisplay() {
     
     // Clear the display
     display.setDrawColor(0);  // Black (erase)
-    display.drawBox(0, 0, maxLineWidth, 64);  // Clear entire display
+    display.drawBox(0, 0, maxLineWidth, maxLineHeight);  // Clear entire display
     display.setDrawColor(1);  // White (draw)
     
     // Draw all current lines
@@ -259,7 +260,7 @@ void OLEDWideDisplayManager::updateScrollingStatusLine(const String& newText, bo
 
 void OLEDWideDisplayManager::clearDisplay() {
     display.setDrawColor(0);  // Black (erase)
-    display.drawBox(0, 0, maxLineWidth, 64);  // Clear entire display
+    display.drawBox(0, 0, maxLineWidth, maxLineHeight);  // Clear entire display
     display.setDrawColor(1);  // White (draw)
     display.sendBuffer();
     
@@ -281,7 +282,7 @@ void OLEDWideDisplayManager::setStatusDisplayMode(bool enabled) {
 }
 
 void OLEDWideDisplayManager::drawStatusIndicator(int x, int y, const String& label, bool status, const String& value) {
-    display.setFont(u8g2_font_4x6_tr);
+//    display.setFont(u8g2_font_4x6_tr);
     
     // Draw label
     safeDrawStr(x, y, label.c_str());
@@ -326,6 +327,40 @@ Tests to do mid-way through system operation: (ie not at boot)
 
 */
 
+// open_iconic_all_4x
+// 32 pixels high
+enum IconicSymbols {
+    ICON_NONE = 0,
+    ICON_ANTENNA_BROADCAST = 84,
+    ICON_COMPASS = 136,
+    ICON_GPS_FIX = 201,
+    ICON_HORIZ_ARROWS = 270,
+    ICON_UP_ARROW_TO_CLOUD = 126,
+    ICON_WIFI_ALT = 282,
+    ICON_WIFI_SIGNAL = 248,      // or 249
+    ICON_WORLD = 175,
+    ICON_X_BIG = 284,
+    ICON_X_ROUNDEL = 122   // or 303
+};
+
+void drawIconic(U8G2& display, int x_pos, int y_pos, IconicSymbols icon, bool clearBackground)
+{
+    const int iconWidthHeight = 32;
+    const uint8_t* font = u8g2_font_open_iconic_all_4x_t;
+    display.setFont(font);
+
+    if (clearBackground || icon == ICON_NONE)
+    {
+        // Clear background box
+        display.setDrawColor(0);  // Black
+        display.drawBox(x_pos, y_pos - iconWidthHeight, iconWidthHeight, iconWidthHeight);
+        display.setDrawColor(1);  // White
+    }
+
+    if (icon != ICON_NONE)
+        display.drawGlyph(x_pos, y_pos, icon);
+}
+
 void drawLeakWarningWaterDropIcons(U8G2& display,int x_pos, int y_pos, bool leakWarning)
 {
     int iconWidth = 16, gap = 8, x_offset = iconWidth + gap;
@@ -356,6 +391,243 @@ void drawLeakWarningWaterDropIcons(U8G2& display,int x_pos, int y_pos, bool leak
         x_pos += x_offset;
     }
 }
+
+// Other parameters: Dive Time, Max Depth
+void OLEDWideDisplayManager::displayStatusScreen(
+    uint32_t gpsMessagesReceived, uint32_t gpsFixes, uint32_t gpsNoFix,
+    uint32_t goodUplinkMessageCount, uint32_t badUplinkMessageCount, bool hasGPSDevice,
+    bool hasGPSFix, double gpsHdop, uint8_t gpsSatellites,
+    const String& ipAddress, uint32_t mqttUploads, bool wifiConnected,
+    const String& wifiSSID, bool dnsConnected, bool ipConnected, bool mqttConnected, uint8_t latestLanternReedState,
+    float temperatureLemon, float humidityLemon,
+    float temperatureLantern, float humidityLantern, float humidityMako, float depth, 
+    float max_depth, int dive_time, const char* lemonUptimeLabel, int gps_hour, int gps_minute, int timezone_offset,
+    int max_pipeline_length, int pipeline_interruptions, bool makoReportsLeak
+) {
+    const bool testMakoLeakWarning = false;
+    const bool testHumidityWarning = false;
+
+    static bool flashWarningBanner = true;
+
+    char lineBuffer[128];
+
+    // Block status display updates during OTA mode
+    if (otaModeActive) {
+        return;
+    }
+
+    if (testMakoLeakWarning)
+        makoReportsLeak = true;
+
+    float humidityThreshold = 95;
+    bool makoHumidityWarning = (humidityMako >= humidityThreshold);
+    bool lemonHumidityWarning = (humidityLemon >= humidityThreshold);
+    bool lanternHumidityWarning = (humidityLantern >= humidityThreshold);
+
+    if (makoReportsLeak) {
+        flashWarningBanner = !flashWarningBanner;
+        if (flashWarningBanner) {
+            // make entire screen white and use large texts to say MAKO LEAK
+            display.setDrawColor(1);  // White
+            display.drawBox(0, 0, maxLineWidth, maxLineHeight);  // Fill entire display
+            display.setDrawColor(0);  // Black
+
+            drawLeakWarningWaterDropIcons(display,0,17,true);
+            drawLeakWarningWaterDropIcons(display,0,63,true);
+
+            display.setFont(u8g2_font_inb27_mr); // or 27
+
+            display.setFontMode(1);
+            display.drawStr(display.getWidth() / 2 - display.getStrWidth("MAKO LEAK!") / 2, 46, "MAKO LEAK!");
+            display.sendBuffer();
+            display.setFontMode(0);
+
+            return;
+        }
+    }
+
+    static int test_selector = 0;
+    if (testHumidityWarning)
+    {
+        if (test_selector == 0) makoHumidityWarning = true;
+        else if (test_selector == 1) lemonHumidityWarning = true;
+        else if (test_selector == 2) lanternHumidityWarning = true;
+        test_selector = (test_selector + 1) % 3;
+    }
+
+    if (!makoReportsLeak && (makoHumidityWarning || lemonHumidityWarning || lanternHumidityWarning)) {
+        flashWarningBanner = !flashWarningBanner;
+        if (flashWarningBanner) {
+
+            display.setDrawColor(1);  // White
+            display.drawBox(0, 0, maxLineWidth, maxLineHeight);  // Fill entire display
+            display.setDrawColor(0);  // Black
+
+            drawLeakWarningWaterDropIcons(display,0,17,false);
+            drawLeakWarningWaterDropIcons(display,0,63,false);
+
+            char humidityWarning[32];
+    
+            if (lemonHumidityWarning)
+            {
+                display.setFont(u8g2_font_inb27_mr);
+                snprintf(humidityWarning, sizeof(humidityWarning), "LEMON DAMP!");
+            }
+            else if (lanternHumidityWarning)
+            {
+                display.setFont(u8g2_font_inb21_mr);
+                snprintf(humidityWarning, sizeof(humidityWarning), "LANTERN DAMP!");
+            }
+            else if (makoHumidityWarning)
+            {
+                display.setFont(u8g2_font_inb27_mr);
+                snprintf(humidityWarning, sizeof(humidityWarning), "MAKO DAMP!");
+            }
+            else
+            {
+                display.setFont(u8g2_font_inb27_mr);
+                snprintf(humidityWarning, sizeof(humidityWarning), "????");
+            }
+
+            display.setFontMode(1);
+            display.drawStr(display.getWidth() / 2 - display.getStrWidth(humidityWarning) / 2, 46, humidityWarning);
+            display.sendBuffer();
+            display.setFontMode(0);
+
+            return;
+        }
+    }
+
+    const int x_icon_offset = 0, x_icon_gap = 8, icon_size = 32;
+
+    // 2 rows, 5 columns of icons 32 pixels wide, 8 pixel gap. 0, 40, 120, 160, 200
+    const int col[6] = {x_icon_offset, 
+                        x_icon_offset + (x_icon_gap + icon_size) - 1, 
+                        x_icon_offset + (x_icon_gap + icon_size) * 2 - 1, 
+                        x_icon_offset + (x_icon_gap + icon_size) * 3 - 1, 
+                        x_icon_offset + (x_icon_gap + icon_size) * 4 - 1,
+                        x_icon_offset + (x_icon_gap + icon_size) * 5 - 1};
+    const int row[2] = {icon_size-1, icon_size * 2 - 1};
+
+    // Clear display
+    display.setDrawColor(0);
+    display.drawBox(0, 0, maxLineWidth, maxLineHeight);
+    display.setDrawColor(1);
+
+    const int gps_col = 0, gps_row = 0;
+    const int internet_col = 1, internet_row = 0;
+    const int wifi_col = 0, wifi_row = 1;
+    const int mqtt_col = 1, mqtt_row = 1;
+
+    const IconicSymbols gps_icon = ICON_GPS_FIX,            // confirmed works - indoors not fix/fix
+                        internet_icon = ICON_WORLD,         // when unblocked MAC - keeps flashing, when blocked starts flashing
+                        wifi_icon = ICON_WIFI_SIGNAL,       // confirmed works - block mac address on asus router
+                        mqtt_icon = ICON_UP_ARROW_TO_CLOUD; // confirmed works - start/stop mosquitto broker
+
+    static bool gps_icon_show = false, wifi_icon_show = false, internet_icon_show = false, mqtt_icon_show = false;
+
+    gps_icon_show = (hasGPSFix ? true : !gps_icon_show);
+    internet_icon_show = (ipConnected ? true : !internet_icon_show);
+    wifi_icon_show = (wifiConnected ? true : !wifi_icon_show);
+    mqtt_icon_show = (mqttConnected ? true : !mqtt_icon_show);
+
+    drawIconic(display,col[gps_col],row[gps_row],(gps_icon_show ? gps_icon : ICON_NONE),true);
+    drawIconic(display,col[internet_col],row[internet_row],(internet_icon_show ? internet_icon : ICON_NONE),true);
+    drawIconic(display,col[wifi_col],row[wifi_row],(wifi_icon_show ? wifi_icon : ICON_NONE),true);
+    drawIconic(display,col[mqtt_col],row[mqtt_row]+1,(mqtt_icon_show ? mqtt_icon : ICON_NONE),true);
+
+    //   shiftScreen();  // screen saver
+
+    int text_x = col[2];
+    display.setFont(u8g2_font_helvB08_tr);
+    int lineHeight = display.getMaxCharHeight();
+    int text_y = lineHeight;
+        
+    // MQTT Status
+    drawStatusIndicator(text_x, text_y, "MQTT", mqttConnected, String(mqttUploads));
+    text_y += lineHeight;
+
+    // Mako Humidity      
+    snprintf(lineBuffer, sizeof(lineBuffer), "Mako    %.0f%%", humidityMako);
+    safeDrawStr(text_x, text_y, lineBuffer);
+    text_y += lineHeight;
+ 
+    // Lemon Humidity
+    snprintf(lineBuffer, sizeof(lineBuffer), "Lemon  %.0f%%", humidityLemon);
+    safeDrawStr(text_x, text_y, lineBuffer);
+    text_y += lineHeight;
+    
+    // Lantern Humidity      
+    snprintf(lineBuffer, sizeof(lineBuffer), "Lantern %.0f%%", humidityLantern);
+    safeDrawStr(text_x, text_y, lineBuffer);
+
+    // Set small font
+    display.setFont(u8g2_font_tom_thumb_4x6_tr);
+    lineHeight = display.getMaxCharHeight();
+    text_y += lineHeight*2;
+
+    // WiFi Status
+    drawStatusIndicator(text_x, text_y, "WiFi", wifiConnected, wifiConnected ? wifiSSID : "");
+    text_y += lineHeight;
+
+    const char* ipLabel = "NO IP ";
+    if (wifiConnected && ipAddress.length() > 0) {
+        ipLabel = ipAddress.c_str();
+    }
+
+    // IP Address (if connected), Pipe Max Length, Pipe Drain Interruptions, bad uplinks, good uplinks
+    snprintf(lineBuffer, sizeof(lineBuffer), "%s P.Max:%d P.Int:%d  %lu/%lu",
+                            ipLabel,max_pipeline_length, pipeline_interruptions,badUplinkMessageCount,goodUplinkMessageCount);
+
+    safeDrawStr(text_x, text_y, lineBuffer);
+    text_y += lineHeight;
+
+    // 2nd column of text
+    text_x = col[4];
+    display.setFont(u8g2_font_helvB08_tr);
+    lineHeight = display.getMaxCharHeight();
+    text_y = lineHeight;
+        
+    // Current Depth
+    snprintf(lineBuffer, sizeof(lineBuffer), "Depth   %.02f m",depth);
+    safeDrawStr(text_x, text_y, lineBuffer);
+    text_y += lineHeight;
+
+    // Max Depth
+    snprintf(lineBuffer, sizeof(lineBuffer), "D.Max  %.02f m",max_depth);
+    safeDrawStr(text_x, text_y, lineBuffer);
+    text_y += lineHeight;
+
+    // Dive Time - omitted for now
+//    dive_time = 99;
+ //   snprintf(lineBuffer, sizeof(lineBuffer), "D.Time %d mins",dive_time);
+ //   safeDrawStr(text_x, text_y, lineBuffer);
+ //   text_y += lineHeight;
+
+    // Uptime
+    snprintf(lineBuffer, sizeof(lineBuffer), "Uptime %s",lemonUptimeLabel);
+    safeDrawStr(text_x, text_y, lineBuffer);
+    text_y += lineHeight;
+
+    // UTC Time Of Day - ignore timezone_offset for now
+    int hour12 = gps_hour % 12;
+    if (hour12 == 0)
+        hour12 = 12;
+
+    snprintf(lineBuffer, sizeof(lineBuffer),
+            "%d:%02d %s",
+            hour12,
+            gps_minute,
+            (gps_hour >= 12 ? "PM" : "AM"));
+
+    safeDrawStr(col[5]+8, text_y, lineBuffer);
+    text_y += lineHeight;
+
+    display.sendBuffer();
+}
+
+/*
+// original version without icons
 
 void OLEDWideDisplayManager::displayStatusScreen(
     uint32_t gpsMessagesReceived, uint32_t gpsFixes, uint32_t gpsNoFix,
@@ -554,3 +826,7 @@ void OLEDWideDisplayManager::displayStatusScreen(
 
     display.sendBuffer();
 }
+
+
+
+*/

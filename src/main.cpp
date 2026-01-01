@@ -172,7 +172,9 @@ Adafruit_SSD1327 adafruitDisplay(128, 128, &Wire, OLED_RST_ADA_BROWN, 1000000);
 LGFX_I2C_Adafruit_SSD1327_128x128_Grey_OLE lgfxAdafruitDisplay;
 
 // Create display manager instance (256px wide, 4 lines max)
-OLEDWideDisplayManager   wideDisplayManager(wideOLEDDisplay, 256, 4);
+const int oled_wide_display_width = 256;
+const int oled_wide_display_height = 64;
+OLEDWideDisplayManager   wideDisplayManager(wideOLEDDisplay, oled_wide_display_width, oled_wide_display_height, 4);
 OLEDGSDisplayManager GSdisplayManager(adafruitDisplay);
 OLEDLXDisplayManager LXdisplayManager(lgfxAdafruitDisplay);
 
@@ -264,6 +266,12 @@ float makoHumidity=0.0;
 float diverTilt=0.0;
 float diverPitch=0.0;
 float depth=0.0;
+float max_depth=0.0;
+int   dive_time=0;
+char  time_of_day[10];
+
+bool  lastPipelineDrainStatusGood = true;
+int   pipelineDrainingInterrupted = 0;
 
 #define STATUS_LED_ON HIGH
 #define STATUS_LED_OFF LOW
@@ -693,6 +701,15 @@ void populateLanternPowerStats(struct LemonTelemetryForJson& t)
   t.powerbank_voltage = powerBankVolts;
   t.powerbank_current = powerBank_mA;
   t.powerbank_mAH = powerBank_mAH;
+}
+
+template<size_t N>
+void populateStatLabelWithDuration(uint32_t duration, char (&label)[N])
+{
+  int total_seconds = duration / 1000;
+  int total_minutes = total_seconds / 60;
+  int total_hours = total_minutes / 60;
+  snprintf(label,N,"%02d:%02d:%02d",total_hours, total_minutes % 60, total_seconds % 60);
 }
 
 bool devNetworkInUse()
@@ -1876,6 +1893,20 @@ void loop()
         sendLemonStatus(LC_NO_INTERNET);
     }
 
+    // keep track of number of times pipeline draining is interrupted
+    if (telemetryPipeline.isPipelineDraining())
+    {
+      lastPipelineDrainStatusGood = true;
+    }
+    else
+    {
+      if (lastPipelineDrainStatusGood)
+      {
+        pipelineDrainingInterrupted++;
+        lastPipelineDrainStatusGood = false;
+      }
+    }
+
     timeOfNextLemonStatus = millis() + lemonStatusDutyCycle;
   }
   // *************  END CODE FOR SEND LEMON STATUS TO THE ARDUINO CALLED LANTERN
@@ -1901,14 +1932,21 @@ void loop()
     bool ipConnected = networkManager.getLastIPConnectivityStatus();
     bool mqttConnected = privateMQTT.isConnected();
     
+    char lemonUptimeLabel[20];
+    populateStatLabelWithDuration(millis(), lemonUptimeLabel);
+
+    int timezone_offset = 0;  // hardcoded until offset can be retrieved via Tiger
     wideDisplayManager.displayStatusScreen(
       gpsMessagesReceived, fixCount, gpsNoFixCount,
-      gpsFailedChecksumCount, gpsBadLengthCount, hasGPSDevice,
+      goodUplinkMessageCount, badUplinkMessageCount+uplinkMessageMissingCount, hasGPSDevice,
       hasGPSFix, gpsHdop, gpsSatellites,
       ipAddress, privateMQTTUploadCount, wifiConnected,
       wifiSSID, dnsConnected, ipConnected, mqttConnected,
       latestLanternReedState, lemonTemp, lemonHumidity,
-      lanternTemp, lanternHumidity, makoHumidity, depth, makoReportsLeak
+      lanternTemp, lanternHumidity, makoHumidity, depth, 
+      max_depth, dive_time, lemonUptimeLabel, 
+      latestLemonTelemetry.gps_hour, latestLemonTelemetry.gps_minute, timezone_offset,
+      telemetryPipeline.getMaximumDepth(), pipelineDrainingInterrupted, makoReportsLeak
     );
     
     lastStatusUpdate = now;
