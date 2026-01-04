@@ -42,7 +42,7 @@ public:
         float temperatureLemon, float humidityLemon,
         float temperatureLantern, float humidityLantern, float humidityMako, float depth, 
         float max_depth, int dive_time, const char* lemonUptimeLabel,  int gps_hour, int gps_minute, int timezone_offset,
-        int max_pipeline_length, int pipeline_backups, bool makoReportsLeak
+        int max_pipeline_length, int pipeline_backups, float powerbank_voltage, bool makoReportsLeak
     );
     void setStatusDisplayMode(bool enabled);
     bool isInStatusDisplayMode() const { return statusDisplayModeActive; }

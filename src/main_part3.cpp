@@ -607,7 +607,7 @@ void buildUplinkTelemetryMessageV6a(char* payload,
           "\"magnetic_heading_compensated\":%.0f,\"heading_to_target\":%.0f,\"distance_to_target\":%.1f,\"journey_course\":%.1f,\"journey_distance\":%.1f,"
           "\"mako_screen_display\":\"%s\",\"mako_on_mins\":%lu,\"mako_user_action\":%d,\"mako_rx_bad_checksum_msgs\":%hu,"
           "\"mako_usb_voltage\":%.1f,\"mako_usb_current\":%.0f,\"mako_target_code\":\"%s\","
-          "\"fix_count\":%lu,\"powerbank_voltage\":%.1f,\"powerbank_current\":%f,\"powerbank_mAh\":%f,\"uplink_missing_msgs_from_mako\":%hu,"
+          "\"fix_count\":%lu,\"powerbank_voltage\":%.3f,\"powerbank_current\":%f,\"powerbank_mAh\":%f,\"uplink_missing_msgs_from_mako\":%hu,"
           "\"sats\":%lu,\"hdop\":%f,\"gps_course\":%f,\"gps_speed_knots\":%f,"
           "\"quiet_b4_uplink\":%hu,"
           "\"total_sensor_us\":%hu,\"compass_us\":%hu,\"temp_humid_us\":%hu,\"imu_us\":%hu,\"colour_us\":%hu,"

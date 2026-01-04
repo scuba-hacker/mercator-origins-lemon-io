@@ -1940,7 +1940,7 @@ void loop()
       lanternTemp, lanternHumidity, makoHumidity, depth, 
       max_depth, dive_time, lemonUptimeLabel, 
       latestLemonTelemetry.gps_hour, latestLemonTelemetry.gps_minute, timezone_offset,
-      telemetryPipeline.getMaximumDepth(), pipelineDrainingInterrupted, makoReportsLeak
+      telemetryPipeline.getMaximumDepth(), pipelineDrainingInterrupted, powerBankVolts, makoReportsLeak
     );
     
     lastStatusUpdate = now;

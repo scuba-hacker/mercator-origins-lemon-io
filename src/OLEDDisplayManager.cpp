@@ -402,7 +402,7 @@ void OLEDWideDisplayManager::displayStatusScreen(
     float temperatureLemon, float humidityLemon,
     float temperatureLantern, float humidityLantern, float humidityMako, float depth, 
     float max_depth, int dive_time, const char* lemonUptimeLabel, int gps_hour, int gps_minute, int timezone_offset,
-    int max_pipeline_length, int pipeline_interruptions, bool makoReportsLeak
+    int max_pipeline_length, int pipeline_interruptions, float powerbank_voltage, bool makoReportsLeak
 ) {
     const bool testMakoLeakWarning = false;
     const bool testHumidityWarning = false;
@@ -613,6 +613,9 @@ void OLEDWideDisplayManager::displayStatusScreen(
     int hour12 = gps_hour % 12;
     if (hour12 == 0)
         hour12 = 12;
+
+    snprintf(lineBuffer, sizeof(lineBuffer), "%.2fV",powerbank_voltage);
+    safeDrawStr(col[4], text_y, lineBuffer);
 
     snprintf(lineBuffer, sizeof(lineBuffer),
             "%d:%02d %s",
