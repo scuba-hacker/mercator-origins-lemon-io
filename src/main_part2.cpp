@@ -710,8 +710,7 @@ struct LemonTelemetryForStorage
   uint16_t  gps_course_deg;
   uint16_t  gps_knots;                  
   
-  uint32_t  uplink_preamble_latency; // must be on 4 byte boundary
-  uint32_t  uplink_rx_latency;
+  uint32_t  uplink_rx_latency;  // must be on 4 byte boundary
   float     uplinkBadMessagePercentage; 
 
   float     KBFromMako;               
@@ -726,7 +725,8 @@ struct LemonTelemetryForStorage
 
   uint8_t   is_fix;
   uint8_t   one_byte_zero_padding;
-  uint16_t  two_byte_zero_padding;     // 72 bytes up to here, previously 108 - finish on 8 byte boundary
+  uint16_t  two_byte_zero_padding;
+  uint32_t  four_byte_zero_padding; // 72 bytes up to here, previously 108 - finish on 8 byte boundary
 };
 
 uint32_t getSizeOfLemonTelemetryForStorage()
@@ -1045,8 +1045,6 @@ bool checkForValidPreambleOnUplink()  // no longer called - processed in separat
 
     uplinkLingerTimeoutAt = millis()+uplinkMessageLingerPeriodMs;
 
-    preambleReceivedAfterMicroSeconds = micros();
-
     // 1.1 Read received data searching for lead-in pattern from Tracker - MBJ\0AEJ\0
     // wait upto uplinkLingerTimeoutAt milliseconds to receive the pre-amble
 
@@ -1165,15 +1163,6 @@ bool checkForValidPreambleOnUplink()  // no longer called - processed in separat
 
   uint32_t nowUS = micros();
   uplinkRxMicroSeconds = nowUS;
-
-  if (validPreambleFound)
-  {
-    preambleReceivedAfterMicroSeconds = (nowUS >= preambleReceivedAfterMicroSeconds ? nowUS - preambleReceivedAfterMicroSeconds : 0xFFFFFFFF - preambleReceivedAfterMicroSeconds + nowUS);
-  }
-  else
-  {
-    preambleReceivedAfterMicroSeconds = 0; 
-  }
 
   return validPreambleFound;
 }

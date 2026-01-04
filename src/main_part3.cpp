@@ -299,7 +299,6 @@ void populateCurrentLemonTelemetry(LemonTelemetryForJson& l, TinyGPSPlus& g)
 
 void populateFinalLemonTelemetry(LemonTelemetryForJson& l)
 {
-  l.uplink_preamble_latency = preambleReceivedAfterMicroSeconds;
   l.uplink_rx_latency = uplinkRxMicroSeconds;
 }
 
@@ -323,7 +322,6 @@ void constructLemonTelemetryForStorage(struct LemonTelemetryForStorage& s, const
   s.gps_course_deg = (uint16_t)(l.gps_course_deg * 10.0);
   s.gps_knots = (uint16_t)(l.gps_knots * 10.0);            
   
-  s.uplink_preamble_latency = l.uplink_preamble_latency; 
   s.uplink_rx_latency = l.uplink_rx_latency;                
   s.uplinkBadMessagePercentage = uplinkBadMessagePercentage;    
 
@@ -334,7 +332,8 @@ void constructLemonTelemetryForStorage(struct LemonTelemetryForStorage& s, const
 
   s.is_fix = l.isFix;
   s.one_byte_zero_padding = 0;
-  s.two_byte_zero_padding = 0;      //
+  s.two_byte_zero_padding = 0;
+  s.four_byte_zero_padding = 0;
 
   if (writeTelemetryLogToSerial)
     USB_SERIAL_PRINTF("\nSTORAGE: l.isFix=%d -> s.is_fix=%d\n", l.isFix, s.is_fix);
@@ -423,8 +422,6 @@ bool decodeIntoLemonTelemetryForUpload(uint8_t* msg, const uint16_t length, stru
   l.gps_course_deg = ((float)decode_uint16(msg)) / 10.0;
   l.gps_knots = ((float)decode_uint16(msg)) / 10.0;
 
-  l.uplink_preamble_latency = decode_uint32(msg);
-  
   l.uplink_rx_latency = decode_uint32(msg);
   l.uplinkBadMessagePercentage = decode_float(msg);
 
@@ -616,7 +613,7 @@ void buildUplinkTelemetryMessageV6a(char* payload,
           "\"total_sensor_us\":%hu,\"compass_us\":%hu,\"temp_humid_us\":%hu,\"imu_us\":%hu,\"colour_us\":%hu,"
           "\"mako_roll\":%.1f,\"mako_pitch\":%.1f,"
           "\"mako_rx_good_checksum_msgs\":%hu,"
-          "\"uplink_preamble_latency\":%lu,\"uplink_rx_latency\":%lu,"
+          "\"uplink_rx_latency\":%lu,"
           "\"uplink_bad_percentage\":%.1f,"
           "\"mako_waymarker_e\":%d,\"mako_waymarker_label\":\"%s\",\"mako_direction_metric\":\"%s\","
           "\"uplink_good_msgs_from_mako\":%lu,\"uplink_bad_msgs_from_mako\":%lu,\"uplink_msg_length\":%hu,"
@@ -637,7 +634,7 @@ void buildUplinkTelemetryMessageV6a(char* payload,
           m.quietTimeMsBeforeUplink, // how long Mako waits before sending uplink reply
           m.total_sensor_acquisition_time_micros, m.compass_acquire_time_micros, m.temp_humid_acquire_time_micros, m.imu_acquire_time_micros, m.colour_acquire_time_micros,
           m.diver_roll_orientation, m.diver_pitch_orientation,
-          m.good_checksum_msgs,l.uplink_preamble_latency,    
+          m.good_checksum_msgs,
           l.uplink_rx_latency,l.uplinkBadMessagePercentage,
           m.way_marker_enum, m.way_marker_label, m.direction_metric,
           l.goodUplinkMessageCount,l.badUplinkMessageCount,l.uplinkMessageLength,

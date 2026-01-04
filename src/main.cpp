@@ -527,7 +527,6 @@ void incrementUplinkMessageMissedCount();
 // was 30 - using m5 gps temporarily 
 const uint32_t uplinkMessageLingerPeriodMs = 30;   // max milliseconds to wait for Mako pre-amble to reply
 uint32_t uplinkLingerTimeoutAt = 0;
-uint32_t preambleReceivedAfterMicroSeconds = 0;         // Latency between start of preamble and end of preamble received from Mako.
 uint32_t uplinkRxMicroSeconds = 0;                      // Latency between end of pre-amble received and good complete message received from Mako.
 uint32_t uplinkMessageListenTimer = 0;                  // Latency processing GPS message, send to mako and valid msg received from Mako.
 
@@ -623,7 +622,6 @@ struct LemonTelemetryForJson
   double    gps_course_deg;
   double    gps_knots;
 
-  uint32_t  uplink_preamble_latency;
   uint32_t  uplink_rx_latency;
 
   float     KBFromMako;
