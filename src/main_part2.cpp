@@ -710,8 +710,7 @@ struct LemonTelemetryForStorage
   uint16_t  gps_course_deg;
   uint16_t  gps_knots;                  
   
-  uint32_t  downlink_send_duration;   // must be on 4 byte boundary
-  uint32_t  uplink_preamble_latency;
+  uint32_t  uplink_preamble_latency; // must be on 4 byte boundary
   uint32_t  uplink_rx_latency;
   float     uplinkBadMessagePercentage; 
 
@@ -727,8 +726,7 @@ struct LemonTelemetryForStorage
 
   uint8_t   is_fix;
   uint8_t   one_byte_zero_padding;
-  uint16_t  two_byte_zero_padding;
-  uint32_t  four_byte_zero_padding;    // 80 bytes up to here, previously 108
+  uint16_t  two_byte_zero_padding;     // 72 bytes up to here, previously 108 - finish on 8 byte boundary
 };
 
 uint32_t getSizeOfLemonTelemetryForStorage()
@@ -1036,7 +1034,7 @@ bool checkForValidPreambleInReceiveBuffer(MakoDataPacket& makoPacket, int& pream
   return validPreambleFound;
 }
 
-bool checkForValidPreambleOnUplink()
+bool checkForValidPreambleOnUplink()  // no longer called - processed in separate task, replaced by checkForValidPreambleInReceiveBuffer
 {
   bool validPreambleFound = false;
 
@@ -1044,7 +1042,6 @@ bool checkForValidPreambleOnUplink()
   if (enableReadUplinkComms)
   {
     uint32_t nowUS = micros();
-    downlinkSendMessageDurationMicroSeconds = (uint32_t)(nowUS - downlinkSendMessageDurationMicroSeconds);
 
     uplinkLingerTimeoutAt = millis()+uplinkMessageLingerPeriodMs;
 
