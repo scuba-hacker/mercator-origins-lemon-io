@@ -621,7 +621,7 @@ void buildUplinkTelemetryMessageV6a(char* payload,
           "\"mako_waymarker_e\":%d,\"mako_waymarker_label\":\"%s\",\"mako_direction_metric\":\"%s\","
           "\"uplink_good_msgs_from_mako\":%lu,\"uplink_bad_msgs_from_mako\":%lu,\"uplink_msg_length\":%hu,"
           "\"msgs_to_mqtt\":%d,\"mqtt_msg_length\":%hu,\"KB_to_mqtt\":%.1f,\"KB_uplinked_from_mako\":%.1f,"
-          "\"console_downlink_msg\":%lu,\"geo_location\":\"Gozo, Malta\""
+          "\"console_downlink_msg\":%lu"
           "}",
 
           l.gps_hour, l.gps_minute, l.gps_second,l.gps_day, l.gps_month, l.gps_year,
@@ -643,7 +643,6 @@ void buildUplinkTelemetryMessageV6a(char* payload,
           l.goodUplinkMessageCount,l.badUplinkMessageCount,l.uplinkMessageLength,
           privateMQTTUploadCount, privateMQTTMessageLength,
           KBToPrivateMQTT, l.KBFromMako,l.consoleDownlinkMsgCount
-          // DO NOT POPULATE (HARDCODED IN SPRINTF STRING) geo_location
          );
 
   extern uint16_t privateMQTTMessageLength;
