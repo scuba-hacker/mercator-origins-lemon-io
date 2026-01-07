@@ -578,6 +578,10 @@ const char STATS_HTML[] = R"rawliteral(
     'Piano 3m',
     'Not-A-Skiff 8m',
     'Reclining Bear 8m',
+    'X34 Better Quarry? 4m',
+    'X35 New Boat 8m',
+    'X36 7m?',
+    'X37 4m?',
     'Cafe Jetty',
     'Mid Jetty',
     'Old Slipway'

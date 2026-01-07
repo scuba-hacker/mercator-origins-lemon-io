@@ -403,7 +403,8 @@ void OLEDWideDisplayManager::displayStatusScreen(
     float temperatureLantern, float humidityLantern, float humidityMako, float depth, 
     float max_depth, int dive_time, const char* lemonUptimeLabel, int gps_hour, int gps_minute, int timezone_offset,
     int max_pipeline_length, int pipeline_interruptions, float powerbank_voltage, bool makoReportsLeak
-) {
+) 
+{
     const bool testMakoLeakWarning = false;
     const bool testHumidityWarning = false;
 
@@ -629,18 +630,20 @@ void OLEDWideDisplayManager::displayStatusScreen(
     display.sendBuffer();
 }
 
-/*
 // original version without icons
 
-void OLEDWideDisplayManager::displayStatusScreen(
+void OLEDWideDisplayManager::displayStatusScreenTextOnly(
     uint32_t gpsMessagesReceived, uint32_t gpsFixes, uint32_t gpsNoFix,
     uint32_t gpsBadChecksum, uint32_t gpsBadLength, bool hasGPSDevice,
     bool hasGPSFix, double gpsHdop, uint8_t gpsSatellites,
     const String& ipAddress, uint32_t mqttUploads, bool wifiConnected,
     const String& wifiSSID, bool dnsConnected, bool ipConnected, bool mqttConnected, uint8_t latestLanternReedState,
     float temperatureLemon, float humidityLemon,
-    float temperatureLantern, float humidityLantern, float humidityMako, float depth, bool makoReportsLeak
-) {
+    float temperatureLantern, float humidityLantern, float humidityMako, float depth, 
+    float max_depth, int dive_time, const char* lemonUptimeLabel,  int gps_hour, int gps_minute, int timezone_offset,
+    int max_pipeline_length, int pipeline_backups, float powerbank_voltage, bool makoReportsLeak
+) 
+{
     const bool testMakoLeakWarning = false;
     const bool testHumidityWarning = false;
 
@@ -829,7 +832,3 @@ void OLEDWideDisplayManager::displayStatusScreen(
 
     display.sendBuffer();
 }
-
-
-
-*/

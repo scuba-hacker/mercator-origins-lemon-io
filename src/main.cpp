@@ -2,7 +2,7 @@
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-bool writeLogToSerial = true;
+bool writeLogToSerial = false;
 bool writeTelemetryLogToSerial = false; // writeLogToSerial must also be true if this is set to true
 bool writeMakoMsgDecodingLogToSerial = false; // writeLogToSerial must also be true if this is set to true
 
@@ -1930,6 +1930,8 @@ void loop()
     populateStatLabelWithDuration(millis(), lemonUptimeLabel);
 
     int timezone_offset = 0;  // hardcoded until offset can be retrieved via Tiger
+//     wideDisplayManager.displayStatusScreenTextOnly(
+
     wideDisplayManager.displayStatusScreen(
       gpsMessagesReceived, fixCount, gpsNoFixCount,
       goodUplinkMessageCount, badUplinkMessageCount+uplinkMessageMissingCount, hasGPSDevice,
