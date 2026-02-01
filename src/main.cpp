@@ -1248,13 +1248,6 @@ void setup()
       BUFFER_LOG_PRINTLN("Unable to initialize Adafruit Greyscale OLED - Adafruit Driver");
   }
 
-  if (testLgfxAdafruitDisplay)
-    LXdisplayManager.rotatedGrayBarTest();
-  else if (singleScreenTestAdafruitDisplay)
-    GSdisplayManager.drawAFewSnowflakes();
-  else if (fullTestAdafruitDisplay)
-    GSdisplayManager.fullDisplayTest();     // blocking 
-
   // Display startup status
   wideOLEDDisplay.begin();
   wideOLEDDisplay.setFont(u8g2_font_ncenB08_tr);
@@ -1262,6 +1255,13 @@ void setup()
 
   // initialize Memory LCD sceen
   initialiseMemoryLCDDisplay();
+
+  if (testLgfxAdafruitDisplay)
+    LXdisplayManager.rotatedGrayBarTest();
+  else if (singleScreenTestAdafruitDisplay)
+    GSdisplayManager.drawAFewSnowflakes();
+  else if (fullTestAdafruitDisplay)
+    GSdisplayManager.fullDisplayTest();     // blocking 
   
   initializeTempHumiditySensor();
 
@@ -1409,17 +1409,27 @@ void initialiseMemoryLCDDisplay()
     USB_SERIAL_PRINTLN("✓ Display initialized successfully!");
   }
   
-  USB_SERIAL_PRINTLN("Clearing display->..");
   memory_lcd_display->clearDisplay();
-  USB_SERIAL_PRINTLN("Display cleared!");
-  
-  // Verify buffer was allocated
-  uint8_t* buffer = memory_lcd_display->getBuffer();
-  if (buffer == NULL) {
-    USB_SERIAL_PRINTLN("ERROR: Display buffer allocation failed!");
-    while(1) { delay(1000); }
-  }
-  USB_SERIAL_PRINTF("Buffer allocated at: 0x%p\n", buffer);
+  // select u8g2 font from here: https://github.com/olikraus/u8g2/wiki/fntlistall
+  u8g2_for_adafruit_gfx.setFont(u8g2_font_logisoso58_tf);
+
+  const char mercator[] = "MERCATOR";
+  const char origins[] = "ORIGINS";
+  int16_t width = u8g2_for_adafruit_gfx.getUTF8Width(mercator);
+  int16_t height = 58;
+  u8g2_for_adafruit_gfx.setCursor((MEMORY_LCD_WIDTH - width)/2,MEMORY_LCD_HEIGHT/2 - height/2);
+  u8g2_for_adafruit_gfx.print(mercator);
+  width = u8g2_for_adafruit_gfx.getUTF8Width(origins);
+  u8g2_for_adafruit_gfx.setCursor((MEMORY_LCD_WIDTH - width)/2,MEMORY_LCD_HEIGHT/2 + height/2 + 5);
+  u8g2_for_adafruit_gfx.print(origins);
+
+  const char mark[] = "MARK JONES | 2023-2026";
+  u8g2_for_adafruit_gfx.setFont(u8g2_font_logisoso24_tr);
+  width = u8g2_for_adafruit_gfx.getUTF8Width(mark);
+  u8g2_for_adafruit_gfx.setCursor((MEMORY_LCD_WIDTH - width)/2, MEMORY_LCD_HEIGHT - 10);
+  u8g2_for_adafruit_gfx.print(mark);
+
+  memory_lcd_display->refresh();
 }
 
 void testMemoryDisplayCheckerboard()
