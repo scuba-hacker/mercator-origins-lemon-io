@@ -241,8 +241,6 @@ public:
     String getLocalIP() const { return WiFi.localIP().toString(); }
     String getGatewayIP() const { return String(IPLocalGateway); }
     bool isHaltingForOTA() const { return haltAllProcessingDuringOTAUpload; }
-    bool isRestartScheduled() const { return restartForGoodOTAScheduled; }
-    uint32_t getRestartTime() const { return restartAfterGoodOTAUpdateAt; }
     
     // Web interface requests
     String getShowOnMapRequest() const { return showOnMapRequest; }

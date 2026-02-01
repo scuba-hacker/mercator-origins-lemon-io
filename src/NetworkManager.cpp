@@ -58,7 +58,6 @@ NetworkManager::NetworkManager(const NetworkConfig& networkConfig,
     , lost_ip_label("Lost IP")
     , otaActive(false)
     , restartForGoodOTAScheduled(false)
-    , restartAfterGoodOTAUpdateAt(0)
     , haltAllProcessingDuringOTAUpload(false)
     , asyncWebServer(nullptr)
     , ws(nullptr)
@@ -129,7 +128,7 @@ void NetworkManager::begin() {
 
 void NetworkManager::loop() {
     // Handle OTA restart if scheduled
-    if (restartForGoodOTAScheduled && millis() >= restartAfterGoodOTAUpdateAt) {
+    if (restartForGoodOTAScheduled) {
         ESP.restart();
     }
     
@@ -1058,6 +1057,8 @@ void NetworkManager::prepareNetworkForOTA() {
 }
 
 void NetworkManager::uploadOTABeginCallback() {
+    haltAllProcessingDuringOTAUpload = true;
+
     // Enable OTA mode to suppress all normal display updates
     displayManager.setOTAMode(true);
     
@@ -1090,7 +1091,7 @@ void NetworkManager::uploadOTABeginCallback() {
     displayManager.display.sendBuffer();
     
     prepareNetworkForOTA();
-
+    
     if (prepareEntireSystemForOTA)
         prepareEntireSystemForOTA();
 }
@@ -1145,7 +1146,7 @@ void NetworkManager::uploadOTAProgressCallback(size_t progress, size_t total) {
 }
 
 void NetworkManager::uploadOTASucceededCallback() {
-    USB_SERIAL_PRINTF("OTA upload succeeded, scheduling restart in 3 seconds\n");
+    USB_SERIAL_PRINTF("OTA upload succeeded, scheduling restart in 1 second\n");
     
     // Show 100% completion - use same dimensions as progress callback
     int barWidth = 180;
@@ -1158,15 +1159,33 @@ void NetworkManager::uploadOTASucceededCallback() {
     displayManager.display.drawBox(barX + 1, barY + 1, barWidth - 2, barHeight - 2);  // Clear
     displayManager.display.setDrawColor(1);  // White (draw)
     displayManager.display.drawBox(barX + 1, barY + 1, barWidth - 2, barHeight - 2);  // Fill 100%
-    
+
     // Update display
     int tileX = barX / 8;
     int tileY = barY / 8;  
     int tileWidth = (barWidth / 8) + 2;
     int tileHeight = 2;
     displayManager.display.updateDisplayArea(tileX, tileY, tileWidth, tileHeight);
+
+    // Set large bold font and draw centered text
+    displayManager.display.setFont(u8g2_font_ncenB14_tr);
     
-    restartAfterGoodOTAUpdateAt = millis() + 3000;
+    const char* line1 = "OTA Update";
+    const char* line2 = "Complete";
+    
+    int line2Width = displayManager.display.getUTF8Width(line2);
+    int textDescent = -displayManager.display.getDescent();
+    int textHeight = displayManager.display.getMaxCharHeight();
+
+    int x2 = (256 - line2Width) / 2;
+    displayManager.display.setDrawColor(0);  // Black (erase)
+    displayManager.display.drawBox(0, 20+textDescent, 256, textHeight);
+    displayManager.display.setDrawColor(1);  // White (draw)
+
+    displayManager.display.drawUTF8(x2, 38, line2);  // Second line at y=38 (more spacing)
+
+    displayManager.display.sendBuffer();
+
     restartForGoodOTAScheduled = true;
 }
 

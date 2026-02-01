@@ -405,6 +405,8 @@ void OLEDWideDisplayManager::displayStatusScreen(
     int max_pipeline_length, int pipeline_interruptions, float powerbank_voltage, bool makoReportsLeak
 ) 
 {
+    const bool calcTimings = false;
+
     const bool testMakoLeakWarning = false;
     const bool testHumidityWarning = false;
 
@@ -510,10 +512,14 @@ void OLEDWideDisplayManager::displayStatusScreen(
                         x_icon_offset + (x_icon_gap + icon_size) * 5 - 1};
     const int row[2] = {icon_size-1, icon_size * 2 - 1};
 
+    unsigned long startClearDisplay = micros();
+
     // Clear display
     display.setDrawColor(0);
-    display.drawBox(0, 0, maxLineWidth, maxLineHeight);
+    display.drawBox(0, 0, maxLineWidth, maxLineHeight);     // Clear 1 millis @ 10 MHz
     display.setDrawColor(1);
+
+    unsigned long startDrawDisplay = micros();              // Draw takes 5.5 millis @ 10 MHz
 
     const int gps_col = 0, gps_row = 0;
     const int internet_col = 1, internet_row = 0;
@@ -627,7 +633,20 @@ void OLEDWideDisplayManager::displayStatusScreen(
     safeDrawStr(col[5]+8, text_y, lineBuffer);
     text_y += lineHeight;
 
-    display.sendBuffer();
+    unsigned long startSendBuffer = micros();
+
+    display.sendBuffer();       // Send takes 12 millis @ 10 MHz
+
+    if (calcTimings)
+    {
+        unsigned long clearBuffer = (startDrawDisplay - startClearDisplay);
+        unsigned long drawInBuffer = (startSendBuffer - startDrawDisplay);
+        unsigned long sendBuffer = (micros() - startSendBuffer);
+        
+        USB_SERIAL_PRINTF("Wide OLED: Display clears in %lu micros\n", clearBuffer);            // 1 millis @ 10 MHz
+        USB_SERIAL_PRINTF("Wide OLED: Driver draws buffer in %lu micros\n", drawInBuffer);      // 5.5 millis @ 10 MHz
+        USB_SERIAL_PRINTF("Wide OLED: Display refreshed in %lu micros\n", sendBuffer);          // 12 millis @ 10 MHz
+    }
 }
 
 // original version without icons

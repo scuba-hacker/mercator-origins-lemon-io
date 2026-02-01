@@ -143,7 +143,7 @@ void OLEDGSDisplayManager::fullDisplayTest() {
 
 void OLEDGSDisplayManager::drawAFewSnowflakes()
 {
-  uint32_t maxFrames = 20;
+  uint32_t maxFrames = 25;
   testdrawbitmap(logo16_glcd_bmp, LOGO16_GLCD_HEIGHT, LOGO16_GLCD_WIDTH, maxFrames);
 }
 

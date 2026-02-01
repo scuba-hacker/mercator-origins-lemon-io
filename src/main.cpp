@@ -6,7 +6,7 @@ bool writeLogToSerial = false;
 bool writeTelemetryLogToSerial = false; // writeLogToSerial must also be true if this is set to true
 bool writeMakoMsgDecodingLogToSerial = false; // writeLogToSerial must also be true if this is set to true
 
-// set USE_WEB_SERIAL in SerialConfig.h if required
+// set USE_WEB_SERIAL in SerialConfig.h if writing log to Web Socket required
 #include "SerialConfig.h"
 
 // DEBUG: Set to true to simulate GPS NO FIX for testing Mako timeout system
@@ -14,7 +14,7 @@ bool forceGPSMissingGGARMCForTesting = false;
 bool overrideGPSToNoFixForTesting = false;
 bool sendOneReEnableFixCommand = false;
 bool sendOneCeaseFixCommand = false;
-bool fastStartup = true;
+bool fastStartup = false;
 
 // Thread-safe GPS command flags (set by web handlers, processed by main loop)
 volatile bool pendingGPSTriggerNoFixBySatCountHigh = false;
@@ -59,6 +59,10 @@ UMS3 ProS3;
 #include <Adafruit_SSD1327.h>
 #include "LGFX_Adafruit_SSD1327.h"
 
+#include <Adafruit_GFX.h>
+#include <Adafruit_SharpMem.h>
+#include <U8g2_for_Adafruit_GFX.h>
+
 #include "driver/uart.h"
 #include "freertos/semphr.h"
 
@@ -85,8 +89,24 @@ extern const uint32_t MAP_HTML_SIZE;
 
 #define OLED_CS_ADA_WHITE          "XX" // undefined currently
 #define OLED_RST_ADA_BROWN          37  // May not be needed - can also use 0 Strapping Pin - we know nothing will pull low at boot so ok. Could also share with SPI reset line for wide oled.
+// U8G2 uses the FSPI hardware peripheral which is the default SPI on Pro S3 mapped to the SPI object.
 U8G2_SSD1322_NHD_256X64_F_4W_HW_SPI wideOLEDDisplay(U8G2_R0, OLED_CS_ORANGE, OLED_DC_PURPLE, OLED_RST_BROWN);
 
+#define BLACK 0
+#define WHITE 1
+
+// Use a POINTER to avoid static initialization issues
+// We'll create the object AFTER SPI.begin() is called
+Adafruit_SharpMem* memory_lcd_display = nullptr;
+U8G2_FOR_ADAFRUIT_GFX u8g2_for_adafruit_gfx;
+
+// Adafruit Memory LCD 2.7 inch 400x240
+#define MEMORY_LCD_CLK_SCL_YELLOW    36   // Shared with OLED CLK on FSPI bus
+#define MEMORY_DIN_MOSI_SDA_BLUE     35   // Shared with OLED MOSI on FSPI bus
+#define MEMORY_LCD_CS_GREEN           4   // Chip Select for LCD
+#define MEMORY_LCD_WIDTH            400   // pixels
+#define MEMORY_LCD_HEIGHT           240   // pixels
+#define MEMORY_LCD_SPI_FREQUENCY    10000000  // 15 MHz SPI clock (max for ESP32-S3 is 15MHz, ESP32-P4 29MHz)
 #define RANDOM_NUMBER_ADC_GPIO_13 A12       // no connection required - floating
 
 // ################### START UART SERIAL CONFIGURATION ############################
@@ -976,7 +996,7 @@ void initialiseUARTS()
   
   // Create Mako RS485 receive task on Core 1 (opposite core from GPS)
  
- xTaskCreatePinnedToCore(lanternRxTask,
+  xTaskCreatePinnedToCore(lanternRxTask,
                           "lanternRxTask",
                           4096,    // stack size
                           nullptr, // user parameters to pass to task
@@ -1074,6 +1094,7 @@ uint8_t latestLanternReedState = 0;
 
 void prepareSystemForOTA()
 {
+  USB_SERIAL_PRINTLN("prepareSystemForOTA: set haltAllProcessingDuringOTAUpload = true");
   haltAllProcessingDuringOTAUpload = true;
 
   // Disable processing flags first
@@ -1148,6 +1169,11 @@ void sendLemonStatus(e_lemon_status status, bool useBufferLog)
   serial_lantern_neopixels.write(status);
 }
 
+void initialiseMemoryLCDDisplay();
+void testMemoryDisplayCheckerboard();
+void testMemoryDisplayu8g2FontsText();
+void testMemoryDisplayu8g2FontsIcon();
+
 void setup()
 {
   delay(1500);
@@ -1203,6 +1229,10 @@ void setup()
 
   initialiseUARTS();
 
+  delay(3000);
+
+  USB_SERIAL_PRINTLN("=== UARTS INITIALISED ===");
+
   if (useLxDisplayManager)
   {
     LXdisplayManager.begin();
@@ -1230,6 +1260,9 @@ void setup()
   wideOLEDDisplay.setFont(u8g2_font_ncenB08_tr);
   wideDisplayManager.addDisplayLine("Lemon-IO Starting...");
 
+  // initialize Memory LCD sceen
+  initialiseMemoryLCDDisplay();
+  
   initializeTempHumiditySensor();
 
   privateMQTT.setConnectionCallbacks(
@@ -1347,6 +1380,168 @@ void setup()
   USB_SERIAL_PRINTF("Setup() completed in %d seconds",millis()/1000);
 }
 
+void initialiseMemoryLCDDisplay()
+{
+    // NOW create the display object AFTER SPI is initialized
+  USB_SERIAL_PRINTLN("\n=== Creating Display Object ===");
+  USB_SERIAL_PRINTLN("Creating display object (400x240, 12MHz SPI)...");
+  memory_lcd_display = new Adafruit_SharpMem(&SPI, MEMORY_LCD_CS_GREEN, MEMORY_LCD_WIDTH, MEMORY_LCD_HEIGHT, MEMORY_LCD_SPI_FREQUENCY);
+  if (memory_lcd_display == nullptr) {
+    USB_SERIAL_PRINTLN("ERROR: Failed to create display object!");
+    return;
+  }
+  USB_SERIAL_PRINTLN("✓ Display object created successfully!");
+
+  u8g2_for_adafruit_gfx.begin(*memory_lcd_display);     // connect u8g2 procedures to Adafruit GFX
+  u8g2_for_adafruit_gfx.setFontMode(0);                 // use u8g2 transparent mode (this is default)
+  u8g2_for_adafruit_gfx.setFontDirection(0);            // left to right (this is default)
+  u8g2_for_adafruit_gfx.setForegroundColor(BLACK);      // apply Adafruit GFX color
+  u8g2_for_adafruit_gfx.setBackgroundColor(WHITE);      // apply Adafruit GFX color
+
+  USB_SERIAL_PRINTLN("\n=== Initializing Display ===");
+  if (!memory_lcd_display->begin()) {
+    USB_SERIAL_PRINTLN("ERROR: Display failed to initialize!");
+    USB_SERIAL_PRINTLN("Check your wiring!");
+    while(1) { delay(1000); }
+  }
+  else
+  {
+    USB_SERIAL_PRINTLN("✓ Display initialized successfully!");
+  }
+  
+  USB_SERIAL_PRINTLN("Clearing display->..");
+  memory_lcd_display->clearDisplay();
+  USB_SERIAL_PRINTLN("Display cleared!");
+  
+  // Verify buffer was allocated
+  uint8_t* buffer = memory_lcd_display->getBuffer();
+  if (buffer == NULL) {
+    USB_SERIAL_PRINTLN("ERROR: Display buffer allocation failed!");
+    while(1) { delay(1000); }
+  }
+  USB_SERIAL_PRINTF("Buffer allocated at: 0x%p\n", buffer);
+}
+
+void testMemoryDisplayCheckerboard()
+{
+  const bool calcTimings = false;
+  // Total time to clear, draw and refresh the checkboard is ~33 millis @ 10MHz SPI
+  const uint32_t memoryLCDUpdateInterval = 3000;
+  static uint32_t nextLCDUpdateAt = 0;
+
+  static bool invertPattern = false;
+  static unsigned long counter = 0;
+    
+  if (millis() > nextLCDUpdateAt)
+    nextLCDUpdateAt = millis() + memoryLCDUpdateInterval;
+  else
+    return; // not time yet
+
+  unsigned long clearDisplayStart = micros();
+  // Clear screen
+  memory_lcd_display->clearDisplay();   // clear takes 118 micros @ 10MHz
+  
+  unsigned long drawInBufferStart = micros();
+
+  // Draw 20x20 pixel checkerboard
+  const int squareSize = 20;
+  
+  for (int y = 0; y < memory_lcd_display->height(); y += squareSize) {
+    for (int x = 0; x < memory_lcd_display->width(); x += squareSize) {
+      // Calculate if this square should be filled
+      // Checkerboard pattern: (x/size + y/size) % 2
+      int xSquare = x / squareSize;
+      int ySquare = y / squareSize;
+      bool shouldFill = ((xSquare + ySquare) % 2) == 0;
+      
+      // Invert the pattern on alternate frames
+      if (invertPattern) {
+        shouldFill = !shouldFill;
+      }
+
+      // it's half the time to clear the entire screen then only draw the blacks
+      if (shouldFill) {
+        // drawing just the blacks takes 21.6 millis
+        memory_lcd_display->fillRect(x, y, squareSize, squareSize, BLACK);
+      }
+//      else {
+//        // drawing the whites also takes 21.6 millis
+//        memory_lcd_display->fillRect(x, y, squareSize, squareSize, WHITE);
+//      }
+    }
+  }
+  
+  // Refresh display
+  unsigned long refreshStart = micros();
+  memory_lcd_display->refresh();          // refresh takes 11 millis @ 10MHz
+
+  if (calcTimings)
+  {
+    unsigned long clearTime = (drawInBufferStart - clearDisplayStart);
+    unsigned long drawInBuffer = (refreshStart - drawInBufferStart);
+    unsigned long refreshTime = (micros() - refreshStart);
+    
+    USB_SERIAL_PRINTF("Memory LCD: Display clears in %lu micros\n", clearTime);
+    USB_SERIAL_PRINTF("Memory LCD: Driver draws buffer in %lu micros\n", drawInBuffer);
+    USB_SERIAL_PRINTF("Memory LCD: Display refreshed in %lu micros\n", refreshTime);
+  }
+
+  // Toggle pattern for next frame
+  invertPattern = !invertPattern;
+}
+
+void testMemoryDisplayu8g2FontsText()
+{
+  const uint32_t memoryLCDUpdateInterval = 3000;
+  static uint32_t nextLCDUpdateAt = millis() + 1000;
+
+  if (millis() > nextLCDUpdateAt)
+    nextLCDUpdateAt = millis() + memoryLCDUpdateInterval;
+  else
+    return; // not time yet
+
+  memory_lcd_display->clearDisplay();                               // clear the graphcis buffer  
+  u8g2_for_adafruit_gfx.setFont(u8g2_font_logisoso58_tf);  // select u8g2 font from here: https://github.com/olikraus/u8g2/wiki/fntlistall
+  u8g2_for_adafruit_gfx.setCursor(0,100);                // start writing at this position
+  u8g2_for_adafruit_gfx.print(F("Hello World"));
+  u8g2_for_adafruit_gfx.setCursor(0,200);                // start writing at this position
+  u8g2_for_adafruit_gfx.print(F("1234567890"));          
+  memory_lcd_display->refresh();                                    // make everything visible
+}
+
+void testMemoryDisplayu8g2FontsIcon()
+{
+  const uint32_t memoryLCDUpdateInterval = 3000;
+  static uint32_t nextLCDUpdateAt = millis() + 2000;
+
+  if (millis() > nextLCDUpdateAt)
+    nextLCDUpdateAt = millis() + memoryLCDUpdateInterval;
+  else
+    return; // not time yet
+
+  memory_lcd_display->clearDisplay();                               // clear the graphcis buffer  
+  u8g2_for_adafruit_gfx.setFont(u8g2_font_open_iconic_all_8x_t);  // select u8g2 font from here: https://github.com/olikraus/u8g2/wiki/fntlistall
+
+  const int iconWidthHeight = 64 + 2;
+
+  int16_t x_pos = 64;
+  int16_t y_pos = 64;
+
+  // 400 x 240 display
+  uint16_t icon = 100;
+
+  for (int16_t x_pos = 4; x_pos <= MEMORY_LCD_WIDTH - iconWidthHeight; x_pos += iconWidthHeight)
+  {
+    for (int16_t y_pos = 68; y_pos <= MEMORY_LCD_HEIGHT; y_pos += iconWidthHeight)
+    {
+      u8g2_for_adafruit_gfx.drawGlyph(x_pos, y_pos, icon);
+      icon++;
+    }
+  }
+
+  memory_lcd_display->refresh();                                    // make everything visible
+}
+
 bool   newLemonTempHumidityRead=false;
 
 const uint32_t timeoutUntilNoGPSDetected = 10000;
@@ -1410,7 +1605,7 @@ void  sendPendingMakoCommands()
 }
 
 void loop()
-{  
+{ 
   // Handle NetworkManager processing (includes MQTT testing, OTA restart, etc.)
   networkManager.loop();
   
@@ -1421,6 +1616,10 @@ void loop()
     toggleStatusLED();
     return;
   }
+
+  testMemoryDisplayCheckerboard();
+  testMemoryDisplayu8g2FontsText();
+  testMemoryDisplayu8g2FontsIcon();
 
   sendPendingGPSUBXCommands();
 
