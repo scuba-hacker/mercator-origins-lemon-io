@@ -66,6 +66,7 @@ UMS3 ProS3;
 #include "driver/uart.h"
 #include "freertos/semphr.h"
 
+#include "MemoryLCDDisplayManager.h"
 #include "OLEDDisplayManager.h"
 #include "OLEDGSDisplayManager.h"
 #include "OLEDLXDisplayManager.h"
@@ -194,9 +195,13 @@ LGFX_I2C_Adafruit_SSD1327_128x128_Grey_OLE lgfxAdafruitDisplay;
 // Create display manager instance (256px wide, 4 lines max)
 const int oled_wide_display_width = 256;
 const int oled_wide_display_height = 64;
-OLEDWideDisplayManager   wideDisplayManager(wideOLEDDisplay, oled_wide_display_width, oled_wide_display_height, 4);
-OLEDGSDisplayManager GSdisplayManager(adafruitDisplay);
-OLEDLXDisplayManager LXdisplayManager(lgfxAdafruitDisplay);
+const int lcd_display_width = 400;
+const int lcd_display_height = 240;
+
+OLEDWideDisplayManager    wideDisplayManager(wideOLEDDisplay, oled_wide_display_width, oled_wide_display_height, 4);
+OLEDGSDisplayManager      GSdisplayManager(adafruitDisplay);
+OLEDLXDisplayManager      LXdisplayManager(lgfxAdafruitDisplay);
+MemoryLCDDisplayManager*  LCDdisplayManager = nullptr;
 
 #include <SPI.h>
 
@@ -1169,11 +1174,6 @@ void sendLemonStatus(e_lemon_status status, bool useBufferLog)
   serial_lantern_neopixels.write(status);
 }
 
-void initialiseMemoryLCDDisplay();
-void testMemoryDisplayCheckerboard();
-void testMemoryDisplayu8g2FontsText();
-void testMemoryDisplayu8g2FontsIcon();
-
 void setup()
 {
   delay(1500);
@@ -1248,13 +1248,15 @@ void setup()
       BUFFER_LOG_PRINTLN("Unable to initialize Adafruit Greyscale OLED - Adafruit Driver");
   }
 
-  // Display startup status
+  // Init OLED display and show startup status
   wideOLEDDisplay.begin();
   wideOLEDDisplay.setFont(u8g2_font_ncenB08_tr);
   wideDisplayManager.addDisplayLine("Lemon-IO Starting...");
 
-  // initialize Memory LCD sceen
-  initialiseMemoryLCDDisplay();
+  // Init Memory LCD display and show splash screen
+  memory_lcd_display = new Adafruit_SharpMem(&SPI, MEMORY_LCD_CS_GREEN, MEMORY_LCD_WIDTH, MEMORY_LCD_HEIGHT, MEMORY_LCD_SPI_FREQUENCY);
+  LCDdisplayManager = new MemoryLCDDisplayManager(*memory_lcd_display, u8g2_for_adafruit_gfx);
+  LCDdisplayManager->drawSplashScreen();
 
   if (testLgfxAdafruitDisplay)
     LXdisplayManager.rotatedGrayBarTest();
@@ -1380,178 +1382,6 @@ void setup()
   USB_SERIAL_PRINTF("Setup() completed in %d seconds",millis()/1000);
 }
 
-void initialiseMemoryLCDDisplay()
-{
-    // NOW create the display object AFTER SPI is initialized
-  USB_SERIAL_PRINTLN("\n=== Creating Display Object ===");
-  USB_SERIAL_PRINTLN("Creating display object (400x240, 12MHz SPI)...");
-  memory_lcd_display = new Adafruit_SharpMem(&SPI, MEMORY_LCD_CS_GREEN, MEMORY_LCD_WIDTH, MEMORY_LCD_HEIGHT, MEMORY_LCD_SPI_FREQUENCY);
-  if (memory_lcd_display == nullptr) {
-    USB_SERIAL_PRINTLN("ERROR: Failed to create display object!");
-    return;
-  }
-  USB_SERIAL_PRINTLN("✓ Display object created successfully!");
-
-  u8g2_for_adafruit_gfx.begin(*memory_lcd_display);     // connect u8g2 procedures to Adafruit GFX
-  u8g2_for_adafruit_gfx.setFontMode(0);                 // use u8g2 transparent mode (this is default)
-  u8g2_for_adafruit_gfx.setFontDirection(0);            // left to right (this is default)
-  u8g2_for_adafruit_gfx.setForegroundColor(BLACK);      // apply Adafruit GFX color
-  u8g2_for_adafruit_gfx.setBackgroundColor(WHITE);      // apply Adafruit GFX color
-
-  USB_SERIAL_PRINTLN("\n=== Initializing Display ===");
-  if (!memory_lcd_display->begin()) {
-    USB_SERIAL_PRINTLN("ERROR: Display failed to initialize!");
-    USB_SERIAL_PRINTLN("Check your wiring!");
-    while(1) { delay(1000); }
-  }
-  else
-  {
-    USB_SERIAL_PRINTLN("✓ Display initialized successfully!");
-  }
-  
-  memory_lcd_display->clearDisplay();
-  // select u8g2 font from here: https://github.com/olikraus/u8g2/wiki/fntlistall
-  u8g2_for_adafruit_gfx.setFont(u8g2_font_logisoso58_tf);
-
-  const char mercator[] = "MERCATOR";
-  const char origins[] = "ORIGINS";
-  int16_t width = u8g2_for_adafruit_gfx.getUTF8Width(mercator);
-  int16_t height = 58;
-  u8g2_for_adafruit_gfx.setCursor((MEMORY_LCD_WIDTH - width)/2,MEMORY_LCD_HEIGHT/2 - height/2);
-  u8g2_for_adafruit_gfx.print(mercator);
-  width = u8g2_for_adafruit_gfx.getUTF8Width(origins);
-  u8g2_for_adafruit_gfx.setCursor((MEMORY_LCD_WIDTH - width)/2,MEMORY_LCD_HEIGHT/2 + height/2 + 5);
-  u8g2_for_adafruit_gfx.print(origins);
-
-  const char mark[] = "MARK JONES | 2023-2026";
-  u8g2_for_adafruit_gfx.setFont(u8g2_font_logisoso24_tr);
-  width = u8g2_for_adafruit_gfx.getUTF8Width(mark);
-  u8g2_for_adafruit_gfx.setCursor((MEMORY_LCD_WIDTH - width)/2, MEMORY_LCD_HEIGHT - 10);
-  u8g2_for_adafruit_gfx.print(mark);
-
-  memory_lcd_display->refresh();
-}
-
-void testMemoryDisplayCheckerboard()
-{
-  const bool calcTimings = false;
-  // Total time to clear, draw and refresh the checkboard is ~33 millis @ 10MHz SPI
-  const uint32_t memoryLCDUpdateInterval = 3000;
-  static uint32_t nextLCDUpdateAt = 0;
-
-  static bool invertPattern = false;
-  static unsigned long counter = 0;
-    
-  if (millis() > nextLCDUpdateAt)
-    nextLCDUpdateAt = millis() + memoryLCDUpdateInterval;
-  else
-    return; // not time yet
-
-  unsigned long clearDisplayStart = micros();
-  // Clear screen
-  memory_lcd_display->clearDisplay();   // clear takes 118 micros @ 10MHz
-  
-  unsigned long drawInBufferStart = micros();
-
-  // Draw 20x20 pixel checkerboard
-  const int squareSize = 20;
-  
-  for (int y = 0; y < memory_lcd_display->height(); y += squareSize) {
-    for (int x = 0; x < memory_lcd_display->width(); x += squareSize) {
-      // Calculate if this square should be filled
-      // Checkerboard pattern: (x/size + y/size) % 2
-      int xSquare = x / squareSize;
-      int ySquare = y / squareSize;
-      bool shouldFill = ((xSquare + ySquare) % 2) == 0;
-      
-      // Invert the pattern on alternate frames
-      if (invertPattern) {
-        shouldFill = !shouldFill;
-      }
-
-      // it's half the time to clear the entire screen then only draw the blacks
-      if (shouldFill) {
-        // drawing just the blacks takes 21.6 millis
-        memory_lcd_display->fillRect(x, y, squareSize, squareSize, BLACK);
-      }
-//      else {
-//        // drawing the whites also takes 21.6 millis
-//        memory_lcd_display->fillRect(x, y, squareSize, squareSize, WHITE);
-//      }
-    }
-  }
-  
-  // Refresh display
-  unsigned long refreshStart = micros();
-  memory_lcd_display->refresh();          // refresh takes 11 millis @ 10MHz
-
-  if (calcTimings)
-  {
-    unsigned long clearTime = (drawInBufferStart - clearDisplayStart);
-    unsigned long drawInBuffer = (refreshStart - drawInBufferStart);
-    unsigned long refreshTime = (micros() - refreshStart);
-    
-    USB_SERIAL_PRINTF("Memory LCD: Display clears in %lu micros\n", clearTime);
-    USB_SERIAL_PRINTF("Memory LCD: Driver draws buffer in %lu micros\n", drawInBuffer);
-    USB_SERIAL_PRINTF("Memory LCD: Display refreshed in %lu micros\n", refreshTime);
-  }
-
-  // Toggle pattern for next frame
-  invertPattern = !invertPattern;
-}
-
-void testMemoryDisplayu8g2FontsText()
-{
-  const uint32_t memoryLCDUpdateInterval = 3000;
-  static uint32_t nextLCDUpdateAt = millis() + 1000;
-
-  if (millis() > nextLCDUpdateAt)
-    nextLCDUpdateAt = millis() + memoryLCDUpdateInterval;
-  else
-    return; // not time yet
-
-  memory_lcd_display->clearDisplay();                               // clear the graphcis buffer  
-  u8g2_for_adafruit_gfx.setFont(u8g2_font_logisoso58_tf);  // select u8g2 font from here: https://github.com/olikraus/u8g2/wiki/fntlistall
-  u8g2_for_adafruit_gfx.setCursor(0,100);                // start writing at this position
-  u8g2_for_adafruit_gfx.print(F("Hello World"));
-  u8g2_for_adafruit_gfx.setCursor(0,200);                // start writing at this position
-  u8g2_for_adafruit_gfx.print(F("1234567890"));          
-  memory_lcd_display->refresh();                                    // make everything visible
-}
-
-void testMemoryDisplayu8g2FontsIcon()
-{
-  const uint32_t memoryLCDUpdateInterval = 3000;
-  static uint32_t nextLCDUpdateAt = millis() + 2000;
-
-  if (millis() > nextLCDUpdateAt)
-    nextLCDUpdateAt = millis() + memoryLCDUpdateInterval;
-  else
-    return; // not time yet
-
-  memory_lcd_display->clearDisplay();                               // clear the graphcis buffer  
-  u8g2_for_adafruit_gfx.setFont(u8g2_font_open_iconic_all_8x_t);  // select u8g2 font from here: https://github.com/olikraus/u8g2/wiki/fntlistall
-
-  const int iconWidthHeight = 64 + 2;
-
-  int16_t x_pos = 64;
-  int16_t y_pos = 64;
-
-  // 400 x 240 display
-  uint16_t icon = 100;
-
-  for (int16_t x_pos = 4; x_pos <= MEMORY_LCD_WIDTH - iconWidthHeight; x_pos += iconWidthHeight)
-  {
-    for (int16_t y_pos = 68; y_pos <= MEMORY_LCD_HEIGHT; y_pos += iconWidthHeight)
-    {
-      u8g2_for_adafruit_gfx.drawGlyph(x_pos, y_pos, icon);
-      icon++;
-    }
-  }
-
-  memory_lcd_display->refresh();                                    // make everything visible
-}
-
 bool   newLemonTempHumidityRead=false;
 
 const uint32_t timeoutUntilNoGPSDetected = 10000;
@@ -1627,9 +1457,7 @@ void loop()
     return;
   }
 
-  testMemoryDisplayCheckerboard();
-  testMemoryDisplayu8g2FontsText();
-  testMemoryDisplayu8g2FontsIcon();
+//  LCDdisplayManager->rotateTestDisplay();
 
   sendPendingGPSUBXCommands();
 
@@ -2139,7 +1967,6 @@ void loop()
     populateStatLabelWithDuration(millis(), lemonUptimeLabel);
 
     int timezone_offset = 0;  // hardcoded until offset can be retrieved via Tiger
-//     wideDisplayManager.displayStatusScreenTextOnly(
 
     wideDisplayManager.displayStatusScreen(
       gpsMessagesReceived, fixCount, gpsNoFixCount,
@@ -2154,6 +1981,19 @@ void loop()
       telemetryPipeline.getMaximumDepth(), pipelineDrainingInterrupted, powerBankVolts, makoReportsLeak
     );
     
+    LCDdisplayManager->displayStatusScreen(
+      gpsMessagesReceived, fixCount, gpsNoFixCount,
+      goodUplinkMessageCount, badUplinkMessageCount+uplinkMessageMissingCount, hasGPSDevice,
+      hasGPSFix, gpsHdop, gpsSatellites,
+      ipAddress, privateMQTTUploadCount, wifiConnected,
+      wifiSSID, dnsConnected, ipConnected, mqttConnected,
+      latestLanternReedState, lemonTemp, lemonHumidity,
+      lanternTemp, lanternHumidity, makoHumidity, depth, 
+      max_depth, dive_time, lemonUptimeLabel, 
+      latestLemonTelemetry.gps_hour, latestLemonTelemetry.gps_minute, timezone_offset,
+      telemetryPipeline.getMaximumDepth(), pipelineDrainingInterrupted, powerBankVolts, makoReportsLeak
+    );
+
     lastStatusUpdate = now;
   }
   

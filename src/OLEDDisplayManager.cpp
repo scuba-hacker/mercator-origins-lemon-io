@@ -596,12 +596,12 @@ void OLEDWideDisplayManager::displayStatusScreen(
     text_y = lineHeight;
         
     // Current Depth
-    snprintf(lineBuffer, sizeof(lineBuffer), "Depth   %.02f m",depth);
+    snprintf(lineBuffer, sizeof(lineBuffer), "Depth   %.01f m",depth);
     safeDrawStr(text_x, text_y, lineBuffer);
     text_y += lineHeight;
 
     // Max Depth
-    snprintf(lineBuffer, sizeof(lineBuffer), "D.Max  %.02f m",max_depth);
+    snprintf(lineBuffer, sizeof(lineBuffer), "Max     %.01f m",max_depth);
     safeDrawStr(text_x, text_y, lineBuffer);
     text_y += lineHeight;
 
