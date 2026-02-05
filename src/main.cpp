@@ -1229,10 +1229,6 @@ void setup()
 
   initialiseUARTS();
 
-  delay(3000);
-
-  USB_SERIAL_PRINTLN("=== UARTS INITIALISED ===");
-
   if (useLxDisplayManager)
   {
     LXdisplayManager.begin();
@@ -1257,6 +1253,10 @@ void setup()
   memory_lcd_display = new Adafruit_SharpMem(&SPI, MEMORY_LCD_CS_GREEN, MEMORY_LCD_WIDTH, MEMORY_LCD_HEIGHT, MEMORY_LCD_SPI_FREQUENCY);
   LCDdisplayManager = new MemoryLCDDisplayManager(*memory_lcd_display, u8g2_for_adafruit_gfx);
   LCDdisplayManager->drawSplashScreen();
+
+  delay(3000);
+
+  USB_SERIAL_PRINTLN("=== UARTS INITIALISED ===");
 
   if (testLgfxAdafruitDisplay)
     LXdisplayManager.rotatedGrayBarTest();
