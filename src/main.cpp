@@ -677,7 +677,7 @@ void dumpHeapUsage(const char* msg, bool useBufferLog=false);
 char* customiseNMEASentence(char* sentence, int showOnMapIndex);
 char* getMQTTPayloadBuffer();
 bool doesHeadCommitRequireForce(BlockHeader& block);
-bool checkForValidPreambleInReceiveBuffer(MakoDataPacket& makoPacket, int& preambleStart);
+bool checkForValidPreambleInReceiveBuffer(MakoDataPacket& makoPacket, int& preambleStart, const char uplink_preamble_first_segment[], const char uplink_preamble_second_segment[]);
 bool checkForValidPreambleOnUplink();
 bool populateHeadWithMakoTelemetry(BlockHeader& headBlock, const bool validPreambleFound, const uint8_t* packetData = nullptr, int dataLength = 0);
 void populateHeadWithLemonTelemetryAndCommit(BlockHeader& headBlock);
@@ -1725,16 +1725,16 @@ void loop()
 
         int preambleStart = -1;
 
-        bool validPreambleFound = checkForValidPreambleInReceiveBuffer(makoPacket, preambleStart);
+        bool validPreambleFound = checkForValidPreambleInReceiveBuffer(makoPacket, preambleStart, "MBJ","AEJ");
 
         if (writeMakoMsgDecodingLogToSerial)
         {
           if (writeMakoMsgDecodingLogToSerial)
           {
             if (validPreambleFound)
-              USB_SERIAL_PRINTLN("3.0 preamble: Found");
+              USB_SERIAL_PRINTLN("3.0 preamble: Found MBJAEJ");
             else
-              USB_SERIAL_PRINTLN("3.1 preamble: ******** MISSING *********");
+              USB_SERIAL_PRINTLN("3.1 preamble: ******** MISSING MBJAEJ*********");
           }
         }
 
@@ -1879,6 +1879,44 @@ void loop()
           incrementUplinkMessageMissedCount();
         }
         processUplinkMessage = false; // stop waiting
+      }
+    }
+    else if (enableReadUplinkComms)
+    {
+      MakoDataPacket makoPacket;
+
+      // listen for unsolicited messages
+      if (makoQueue && xQueueReceive(makoQueue, &makoPacket, 0) == pdTRUE)
+      {
+        int preambleStart = -1;
+
+        bool validPreambleFound = checkForValidPreambleInReceiveBuffer(makoPacket, preambleStart, "AXY","JKL");
+
+        if (writeMakoMsgDecodingLogToSerial)
+        {
+          if (writeMakoMsgDecodingLogToSerial)
+          {
+            if (validPreambleFound)
+              USB_SERIAL_PRINTLN("X1.0 preamble: Found AXYJKL");
+            else
+              USB_SERIAL_PRINTLN("X1.1 preamble: ******** MISSING AXYJKL *********");
+          }
+        }
+
+        if (validPreambleFound)
+        {
+          // data starts at preambleStart, end is makoPacket.length - preambleStart
+          int dataLength = makoPacket.length-preambleStart;
+
+          const int maxMsgLength=256;
+          char asyncMakoMsg[maxMsgLength];
+
+          memset(asyncMakoMsg,0,maxMsgLength);
+          // always ensure last byte is 0
+          memcpy(asyncMakoMsg,makoPacket.data+preambleStart,(dataLength < maxMsgLength ? dataLength : maxMsgLength-1));
+
+          USB_SERIAL_PRINTF("MAKO AXY Message: %s\n",asyncMakoMsg);
+        }
       }
     }
   }

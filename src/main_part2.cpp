@@ -967,7 +967,9 @@ enum e_user_action{NO_USER_ACTION=0x0000, HIGHLIGHT_USER_ACTION=0x0001,RECORD_BR
   return forceHeadCommit;
 }
 
-bool checkForValidPreambleInReceiveBuffer(MakoDataPacket& makoPacket, int& preambleStart)
+bool checkForValidPreambleInReceiveBuffer(MakoDataPacket& makoPacket, int& preambleStart, 
+        const char uplink_preamble_first_segment[],
+        const char uplink_preamble_second_segment[])
 {
   // Process the received data - look for preamble and valid message
   bool validPreambleFound = false;
@@ -975,8 +977,8 @@ bool checkForValidPreambleInReceiveBuffer(MakoDataPacket& makoPacket, int& pream
 
   // State machine preamble detection - full pattern is "MBJMBJAEJ"
   // Look for "MBJ" first, then "AEJ" (allowing MBJAEJ, JMBJAEJ, BJMBJAEJ, MBJMBJAEJ)
-  char uplink_preamble_first_segment[] = "MBJ";
-  char uplink_preamble_second_segment[] = "AEJ";
+//  char uplink_preamble_first_segment[] = "MBJ";
+//  char uplink_preamble_second_segment[] = "AEJ";
   
   const char* nextByteToFind = uplink_preamble_first_segment;
   const char* nextSecondSegmentByteToFind = uplink_preamble_second_segment;
@@ -1028,7 +1030,7 @@ bool checkForValidPreambleInReceiveBuffer(MakoDataPacket& makoPacket, int& pream
               }
           }
           if (writeMakoMsgDecodingLogToSerial)
-            USB_SERIAL_PRINTF("2.0 preamble: Found MBJ...%s pattern, data starts at position %d\n", uplink_preamble_second_segment, preambleStart);
+            USB_SERIAL_PRINTF("2.0 preamble: Found %s...%s pattern, data starts at position %d\n", uplink_preamble_first_segment, uplink_preamble_second_segment, preambleStart);
       }
   }
   return validPreambleFound;
