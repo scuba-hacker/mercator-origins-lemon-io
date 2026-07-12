@@ -76,6 +76,10 @@ public:
     
     bool isConnected() const;
     bool canUpload() const;
+    // canUpload() without the duty-cycle throttle: true whenever the broker is
+    // reachable and uploads are enabled. Used for storage routing decisions
+    // (flash vs PSRAM), where a momentary throttle must not count as offline.
+    bool isUplinkUsable() const;
     
     MQTTConnectionResult publish(const char* topic, const char* payload, int qos = 1);
     

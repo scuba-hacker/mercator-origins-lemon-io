@@ -1,27 +1,13 @@
 /**
  * @file FlashTelemetryManager.cpp
- * @brief Implementation of marine telemetry manager with flash persistence
- * 
- * This file implements the FlashTelemetryManager class which provides a
- * compatibility layer between the new FlashRingBuffer (persistent) and
- * existing TelemetryPipeline (PSRAM-only) systems.
- * 
- * Key Implementation Features:
- * - Drop-in replacement for TelemetryPipeline (same API)
- * - Intelligent fallback from flash to PSRAM on failures
- * - Runtime mode switching for operational flexibility
- * - Block-to-record conversion for seamless integration
- * - Comprehensive error handling and logging
- * 
- * Marine Integration Strategy:
- * - Non-intrusive: Existing code unchanged, just replace TelemetryPipeline
- * - Battle-tested fallback: PSRAM mode continues proven operation
- * - Extended capability: Flash mode enables 8+ hour dive logging
- * - Operational safety: Can disable flash mode remotely if issues arise
- * 
- * @author Generated for Mercator Origins dive computer system
- * @version 1.0
- * @date 2024
+ * @brief Connectivity-aware routing between the PSRAM pipeline and flash ring.
+ *
+ * See FlashTelemetryManager.h for the routing rules. The invariants enforced
+ * here:
+ *  - flash records are removed ONLY from tailBlockCommitted() (delete-on-ack)
+ *  - when both stores hold data, the flash backlog (older) drains first
+ *  - the roundedUpPayloadSize block metadata survives the flash round-trip
+ *  - a session with continuous uplink and no backlog never writes flash
  */
 
 #include "FlashTelemetryManager.h"
@@ -29,104 +15,87 @@
 #include <Arduino.h>
 #include <cstring>
 
-// === Construction and Destruction ===
-
-/**
- * @brief Constructor - Initialize all systems to safe defaults
- * 
- * Marine Safety: Default to PSRAM-only mode (battle-tested) with flash disabled
- * This ensures system operates safely even if flash initialization fails
- */
 FlashTelemetryManager::FlashTelemetryManager() :
     m_storage_mode(PSRAM_ONLY),
     m_initialized(false),
     m_enable_flash_buffer(false),
+    m_uplink_available(false),
+    m_last_pull_source(SOURCE_NONE),
+    m_scratch_buffer(nullptr),
+    m_scratch_size(0),
+    m_next_flash_payload_id(1),
+    m_flash_pull_pending(false),
     m_flash_writes(0),
     m_flash_reads(0),
     m_psram_fallbacks(0),
-    m_fn_millis(nullptr),
-    m_has_pending_head_block(false),
-    m_temp_buffer(nullptr) {
+    m_migrated_blocks(0),
+    m_max_flash_records(0),
+    m_last_drain_ms(0),
+    m_fn_millis(nullptr) {
 }
 
 FlashTelemetryManager::~FlashTelemetryManager() {
     teardown();
 }
 
-/**
- * @brief Complete system initialization with marine safety priorities
- * @param fn_millis Timing function for diagnostics
- * @param maxBlockBufferMemoryUsageKB PSRAM limit for fallback mode
- * @param maxBlockBufferMemoryUsageBytesRemainder Additional PSRAM bytes
- * @return true if system ready for operation
- * 
- * Marine Initialization Strategy:
- * 1. Always initialize PSRAM pipeline first (guaranteed fallback)
- * 2. Attempt flash buffer initialization if enabled
- * 3. Run flash self-test to validate reliability
- * 4. Fall back to PSRAM if flash fails any validation
- * 5. Provide detailed diagnostics for marine troubleshooting
- * 
- * Safety Philosophy:
- * - PSRAM-only operation is always available (battle-tested)
- * - Flash operation is enhanced capability, not critical requirement
- * - System continues to function even if flash completely fails
- */
-bool FlashTelemetryManager::init(long unsigned int (*fn_millis)(void), 
-                                const uint16_t maxBlockBufferMemoryUsageKB,
-                                const uint16_t maxBlockBufferMemoryUsageBytesRemainder) {
-    
-    USB_SERIAL_PRINTLN("FlashTelemetryManager::init() - Starting initialization");
-    
+// ---------------------------------------------------------------------------
+// Lifecycle
+// ---------------------------------------------------------------------------
+
+bool FlashTelemetryManager::init(long unsigned int (*fn_millis)(void),
+                                 const uint16_t maxBlockBufferMemoryUsageKB,
+                                 const uint16_t maxBlockBufferMemoryUsageBytesRemainder) {
+    USB_SERIAL_PRINTLN("FlashTelemetryManager::init() - starting");
+
     if (m_initialized) {
-        USB_SERIAL_PRINTLN("FlashTelemetryManager already initialized");
         return true;
     }
-    
+
     m_fn_millis = fn_millis;
-    
-    // Allocate temporary buffer
-    m_temp_buffer = (uint8_t*)malloc(TEMP_BUFFER_SIZE);
-    if (!m_temp_buffer) {
-        USB_SERIAL_PRINTLN("FlashTelemetryManager::init() - Failed to allocate temp buffer");
+
+    // PSRAM pipeline first - it is the guaranteed fallback.
+    if (!m_psram_pipeline.init(fn_millis, maxBlockBufferMemoryUsageKB,
+                               maxBlockBufferMemoryUsageBytesRemainder)) {
+        USB_SERIAL_PRINTLN("FlashTelemetryManager::init() - PSRAM pipeline init failed");
         return false;
     }
-    
-    // Always initialize PSRAM pipeline as fallback
-    if (!m_psram_pipeline.init(fn_millis, maxBlockBufferMemoryUsageKB, maxBlockBufferMemoryUsageBytesRemainder)) {
-        USB_SERIAL_PRINTLN("FlashTelemetryManager::init() - Failed to initialize PSRAM pipeline");
+
+    // Scratch block used to serve flash records through the BlockHeader API.
+    // Sized to the configured block payload (s_overrideMaxPayloadSize must have
+    // been called by now), with headroom for any stored record.
+    uint16_t block_max = BlockHeader::s_getMaxPayloadSize();
+    m_scratch_size = (block_max > FlashRingBuffer::MAX_MESSAGE_SIZE)
+                         ? block_max : FlashRingBuffer::MAX_MESSAGE_SIZE;
+    m_scratch_buffer = (uint8_t*)malloc(m_scratch_size);
+    if (!m_scratch_buffer) {
+        USB_SERIAL_PRINTLN("FlashTelemetryManager::init() - scratch allocation failed");
         teardown();
         return false;
     }
-    
-    // Try to initialize flash buffer if enabled
+    m_scratch_block = BlockHeader(m_scratch_buffer);
+
     if (m_enable_flash_buffer) {
         if (m_flash_buffer.init(fn_millis)) {
-            USB_SERIAL_PRINTLN("FlashTelemetryManager::init() - Flash buffer initialized successfully");
             m_storage_mode = FLASH_ONLY;
-            
-            // Run self-test
-            if (!m_flash_buffer.performSelfTest()) {
-                USB_SERIAL_PRINTLN("FlashTelemetryManager::init() - Flash buffer self-test failed, falling back to PSRAM");
-                m_storage_mode = PSRAM_ONLY;
-                m_psram_fallbacks++;
+            USB_SERIAL_PRINTF("FlashTelemetryManager::init() - flash ready, %u persisted records waiting\n",
+                              m_flash_buffer.getRecordCount());
+            // Read-only structural check; never destroys or writes data.
+            if (!m_flash_buffer.performPowerOnSelfTest(true)) {
+                USB_SERIAL_PRINTLN("FlashTelemetryManager::init() - POST reported issues; continuing (data is CRC-checked on read)");
             }
         } else {
-            USB_SERIAL_PRINTLN("FlashTelemetryManager::init() - Flash buffer initialization failed, using PSRAM only");
+            USB_SERIAL_PRINTLN("FlashTelemetryManager::init() - flash init FAILED, falling back to PSRAM");
             m_storage_mode = PSRAM_ONLY;
             m_psram_fallbacks++;
         }
     } else {
-        USB_SERIAL_PRINTLN("FlashTelemetryManager::init() - Flash buffer disabled, using PSRAM only");
         m_storage_mode = PSRAM_ONLY;
     }
-    
+
     m_initialized = true;
-    
-    USB_SERIAL_PRINTF("FlashTelemetryManager::init() - Initialized in %s mode\n", 
-              (m_storage_mode == FLASH_ONLY) ? "FLASH" : 
-              (m_storage_mode == PSRAM_ONLY) ? "PSRAM" : "HYBRID");
-    
+
+    USB_SERIAL_PRINTF("FlashTelemetryManager::init() - mode: %s\n",
+                      (m_storage_mode == FLASH_ONLY) ? "FLASH (connectivity-aware)" : "PSRAM only");
     printStatus();
     return true;
 }
@@ -135,167 +104,202 @@ void FlashTelemetryManager::teardown() {
     if (m_initialized) {
         prepareForShutdown();
     }
-    
     m_flash_buffer.teardown();
     m_psram_pipeline.teardown();
-    
-    if (m_temp_buffer) {
-        free(m_temp_buffer);
-        m_temp_buffer = nullptr;
+    if (m_scratch_buffer) {
+        free(m_scratch_buffer);
+        m_scratch_buffer = nullptr;
     }
-    
     m_initialized = false;
 }
 
+// ---------------------------------------------------------------------------
+// Configuration
+// ---------------------------------------------------------------------------
+
 void FlashTelemetryManager::setStorageMode(StorageMode mode) {
-    USB_SERIAL_PRINTF("FlashTelemetryManager::setStorageMode() - Switching to mode %d\n", mode);
+    USB_SERIAL_PRINTF("FlashTelemetryManager::setStorageMode() - mode %d\n", (int)mode);
     m_storage_mode = mode;
 }
 
 void FlashTelemetryManager::enableFlashBuffer(bool enable) {
-    USB_SERIAL_PRINTF("FlashTelemetryManager::enableFlashBuffer() - %s flash buffer\n", 
-              enable ? "Enabling" : "Disabling");
+    USB_SERIAL_PRINTF("FlashTelemetryManager::enableFlashBuffer() - %s\n",
+                      enable ? "enable" : "disable");
     m_enable_flash_buffer = enable;
-    
     if (!enable && m_storage_mode != PSRAM_ONLY) {
-        USB_SERIAL_PRINTLN("FlashTelemetryManager::enableFlashBuffer() - Switching to PSRAM mode");
         m_storage_mode = PSRAM_ONLY;
     }
 }
 
-// === TelemetryPipeline-Compatible API Implementation ===
-
-/**
- * @brief Get block header for new telemetry data - Drop-in TelemetryPipeline replacement
- * @return BlockHeader for data population
- * 
- * Marine Compatibility Strategy:
- * - Always use PSRAM pipeline to get block structure (maintains compatibility)
- * - Store reference to block for later conversion to flash format if needed
- * - Ensures existing telemetry code continues to work unchanged
- * 
- * This method maintains 100% API compatibility with TelemetryPipeline
- */
-BlockHeader FlashTelemetryManager::getHeadBlockForPopulating() {
-    if (!m_initialized) {
-        USB_SERIAL_PRINTLN("FlashTelemetryManager::getHeadBlockForPopulating() - Not initialized");
-        return BlockHeader(); // Return invalid block
+void FlashTelemetryManager::setUplinkAvailable(bool available) {
+    if (available != m_uplink_available) {
+        USB_SERIAL_PRINTF("FlashTelemetryManager::setUplinkAvailable() - uplink %s (flash backlog: %u records)\n",
+                          available ? "AVAILABLE" : "LOST",
+                          m_flash_buffer.isInitialized() ? m_flash_buffer.getRecordCount() : 0);
     }
-    
-    // Always get block from PSRAM pipeline for compatibility
-    // We'll convert it to flash record during commit if needed
-    m_current_head_block = m_psram_pipeline.getHeadBlockForPopulating();
-    m_has_pending_head_block = true;
-    
-    return m_current_head_block;
+    m_uplink_available = available;
 }
 
-/**
- * @brief Commit populated telemetry block - Critical marine data persistence
- * @param head Populated block header with telemetry data
- * @param pipelineFull Returns true if storage system is full
- * @return true if commit successful
- * 
- * Marine Storage Strategy:
- * - FLASH_ONLY mode: Convert block to flash record for persistence
- * - PSRAM mode: Use traditional PSRAM storage (battle-tested)
- * - Automatic fallback: If flash write fails, fall back to PSRAM
- * 
- * Critical for Marine Operation:
- * This is where dive telemetry data is actually persisted. The fallback
- * mechanism ensures data is never lost even if the flash system fails.
- */
-bool FlashTelemetryManager::commitPopulatedHeadBlock(BlockHeader head, bool& pipelineFull) {
-    if (!m_initialized || !m_has_pending_head_block) {
-        USB_SERIAL_PRINTLN("FlashTelemetryManager::commitPopulatedHeadBlock() - Invalid state");
+// ---------------------------------------------------------------------------
+// Data path
+// ---------------------------------------------------------------------------
+
+BlockHeader FlashTelemetryManager::getHeadBlockForPopulating() {
+    if (!m_initialized) {
+        USB_SERIAL_PRINTLN("FlashTelemetryManager::getHeadBlockForPopulating() - not initialized");
+        return BlockHeader();
+    }
+    // The PSRAM head block always serves as the population scratch area.
+    // In flash routing it is simply never committed to the PSRAM pipeline,
+    // so the same block is reused each cycle.
+    return m_psram_pipeline.getHeadBlockForPopulating();
+}
+
+bool FlashTelemetryManager::commitBlockToFlash(BlockHeader& block) {
+    uint16_t payload_size = block.getPayloadSize();
+    if (payload_size < FlashRingBuffer::MIN_MESSAGE_SIZE ||
+        payload_size > FlashRingBuffer::MAX_MESSAGE_SIZE) {
         return false;
     }
-    
-    pipelineFull = false;
-    bool success = false;
-    
-    if (m_storage_mode == FLASH_ONLY && m_flash_buffer.isInitialized()) {
-        // Convert BlockHeader to flash record
-        success = convertBlockToFlashRecord(head);
-        if (success) {
-            m_flash_writes++;
-            USB_SERIAL_PRINTF("FlashTelemetryManager::commitPopulatedHeadBlock() - Committed %u bytes to flash\n", 
-                      head.getPayloadSize());
-        } else {
-            USB_SERIAL_PRINTLN("FlashTelemetryManager::commitPopulatedHeadBlock() - Flash write failed, trying PSRAM fallback");
-            m_psram_fallbacks++;
-            success = m_psram_pipeline.commitPopulatedHeadBlock(head, pipelineFull);
-        }
-    } else {
-        // Use PSRAM pipeline
-        success = m_psram_pipeline.commitPopulatedHeadBlock(head, pipelineFull);
+    uint16_t max_payload = 0;
+    uint8_t* buffer = block.getBuffer(max_payload);
+    if (!buffer) {
+        return false;
     }
-    
-    m_has_pending_head_block = false;
-    return success;
+    uint16_t meta = block.getRoundedUpPayloadSize();
+    if (!m_flash_buffer.appendRecord(buffer, payload_size, meta)) {
+        return false;
+    }
+    m_flash_writes++;
+    uint32_t count = m_flash_buffer.getRecordCount();
+    if (count > m_max_flash_records) {
+        m_max_flash_records = count;
+    }
+    return true;
+}
+
+void FlashTelemetryManager::migratePsramBacklogToFlash() {
+    // Blocks committed to PSRAM while the uplink was up but not yet uploaded
+    // are older than the block being committed now - move them to flash first
+    // so ordering and persistence are preserved.
+    BlockHeader block;
+    while (m_psram_pipeline.pullTailBlock(block)) {
+        if (!commitBlockToFlash(block)) {
+            // Leave the block in PSRAM rather than lose it.
+            USB_SERIAL_PRINTLN("FlashTelemetryManager::migratePsramBacklogToFlash() - migration halted (flash append failed)");
+            break;
+        }
+        m_psram_pipeline.tailBlockCommitted();
+        m_migrated_blocks++;
+    }
+}
+
+bool FlashTelemetryManager::commitPopulatedHeadBlock(BlockHeader head, bool& pipelineFull) {
+    if (!m_initialized) {
+        return false;
+    }
+
+    pipelineFull = false;
+
+    bool route_to_flash = flashActive() &&
+                          (!m_uplink_available || !m_flash_buffer.isEmpty());
+
+    if (route_to_flash) {
+        migratePsramBacklogToFlash();
+
+        if (commitBlockToFlash(head)) {
+            return true;
+        }
+        USB_SERIAL_PRINTLN("FlashTelemetryManager::commitPopulatedHeadBlock() - flash commit failed, PSRAM fallback");
+        m_psram_fallbacks++;
+    }
+
+    return m_psram_pipeline.commitPopulatedHeadBlock(head, pipelineFull);
 }
 
 bool FlashTelemetryManager::pullTailBlock(BlockHeader& header) {
     if (!m_initialized) {
-        USB_SERIAL_PRINTLN("FlashTelemetryManager::pullTailBlock() - Not initialized");
         return false;
     }
-    
-    bool success = false;
-    
-    if (m_storage_mode == FLASH_ONLY && m_flash_buffer.isInitialized()) {
-        // Try to read from flash buffer first
-        success = convertFlashRecordToBlock(header);
-        if (success) {
-            m_flash_reads++;
-            USB_SERIAL_PRINTF("FlashTelemetryManager::pullTailBlock() - Read %u bytes from flash\n", 
-                      header.getPayloadSize());
+
+    if (flashActive() && !m_flash_buffer.isEmpty()) {
+        // The spooler only pulls when it can upload. If everything flushed has
+        // been served but records are still waiting in the RAM assembly
+        // buffer, push them to flash now so the backlog can finish draining.
+        if (m_flash_buffer.getFlushedRecordCount() == 0 &&
+            m_flash_buffer.getAssemblyRecordCount() > 0) {
+            m_flash_buffer.flush();
+        }
+
+        while (true) {
+            uint16_t len = 0, meta = 0;
+            if (!m_flash_buffer.peekOldestRecord(m_scratch_buffer, m_scratch_size, len, meta)) {
+                break;  // nothing flushed and readable - fall through to PSRAM
+            }
+            if (len > BlockHeader::s_getMaxPayloadSize()) {
+                // Cannot be represented as a block - discard rather than wedge.
+                USB_SERIAL_PRINTF("FlashTelemetryManager::pullTailBlock() - dropping %u byte record (exceeds block payload %u)\n",
+                                  len, BlockHeader::s_getMaxPayloadSize());
+                m_flash_buffer.consumeOldestRecord();
+                continue;
+            }
+
+            m_scratch_block.setPayloadId(m_next_flash_payload_id);
+            m_scratch_block.setPayloadSize(len);
+            m_scratch_block.setRoundedUpPayloadSize(meta);
+            header = m_scratch_block;
+
+            m_last_pull_source = SOURCE_FLASH;
+            if (!m_flash_pull_pending) {
+                m_flash_pull_pending = true;
+                m_flash_reads++;
+            }
             return true;
         }
     }
-    
-    // Fall back to PSRAM pipeline
-    success = m_psram_pipeline.pullTailBlock(header);
-    if (!success && m_storage_mode == FLASH_ONLY) {
-        // No data in either buffer
-        return false;
+
+    if (m_psram_pipeline.pullTailBlock(header)) {
+        m_last_pull_source = SOURCE_PSRAM;
+        return true;
     }
-    
-    return success;
+
+    m_last_pull_source = SOURCE_NONE;
+    return false;
 }
 
 void FlashTelemetryManager::tailBlockCommitted() {
-    // The block has been successfully uploaded via MQTT
-    // In flash mode, we already deleted the record during pullTailBlock
-    // In PSRAM mode, we need to commit the tail block
-    
-    if (m_storage_mode == PSRAM_ONLY || shouldUsePsramFallback()) {
+    // The upload of the last pulled block has been acknowledged - only now is
+    // the record removed from storage (delete-on-ack).
+    if (m_last_pull_source == SOURCE_FLASH) {
+        m_flash_buffer.consumeOldestRecord();
+        m_flash_pull_pending = false;
+        m_next_flash_payload_id++;
+    } else if (m_last_pull_source == SOURCE_PSRAM) {
         m_psram_pipeline.tailBlockCommitted();
     }
+    m_last_pull_source = SOURCE_NONE;
+    m_last_drain_ms = m_fn_millis ? m_fn_millis() : 0;
 }
 
-// Status methods - delegate to appropriate backend
+// ---------------------------------------------------------------------------
+// Status
+// ---------------------------------------------------------------------------
+
 bool FlashTelemetryManager::pipelineEmpty() const {
     if (!m_initialized) {
         return true;
     }
-    
-    if (m_storage_mode == FLASH_ONLY && m_flash_buffer.isInitialized()) {
-        return m_flash_buffer.isEmpty() && m_psram_pipeline.pipelineEmpty();
-    }
-    
-    return m_psram_pipeline.pipelineEmpty();
+    bool flash_empty = !m_flash_buffer.isInitialized() || m_flash_buffer.isEmpty();
+    return flash_empty && m_psram_pipeline.pipelineEmpty();
 }
 
 bool FlashTelemetryManager::pipelineFull() const {
     if (!m_initialized) {
         return false;
     }
-    
-    if (m_storage_mode == FLASH_ONLY && m_flash_buffer.isInitialized()) {
-        return m_flash_buffer.isFull();
+    if (flashActive()) {
+        return m_flash_buffer.isFull();  // effectively never (drop-oldest)
     }
-    
     return m_psram_pipeline.pipelineFull();
 }
 
@@ -303,410 +307,222 @@ uint16_t FlashTelemetryManager::getPipelineLength() const {
     if (!m_initialized) {
         return 0;
     }
-    
-    if (m_storage_mode == FLASH_ONLY && m_flash_buffer.isInitialized()) {
-        // Return flash record count, clamped to uint16_t range
-        uint32_t count = m_flash_buffer.getRecordCount();
-        return (count > UINT16_MAX) ? UINT16_MAX : (uint16_t)count;
+    uint32_t total = m_psram_pipeline.getPipelineLength();
+    if (m_flash_buffer.isInitialized()) {
+        total += m_flash_buffer.getRecordCount();  // O(1), cached counters
     }
-    
-    return m_psram_pipeline.getPipelineLength();
+    return (total > UINT16_MAX) ? UINT16_MAX : (uint16_t)total;
 }
 
 bool FlashTelemetryManager::isPipelineDraining() const {
     if (!m_initialized) {
         return true;
     }
-    
-    if (m_storage_mode == FLASH_ONLY && m_flash_buffer.isInitialized()) {
-        // Flash buffer is "draining" if it's not full and we're actively reading
-        return !m_flash_buffer.isFull();
+    if (getPipelineLength() == 0) {
+        return true;
     }
-    
-    return m_psram_pipeline.isPipelineDraining();
+    // Same semantics as TelemetryPipeline: draining while tail commits have
+    // happened within the last 10 seconds.
+    return m_fn_millis && (m_fn_millis() < m_last_drain_ms + 10000);
 }
 
-// Flash-specific methods
-uint32_t FlashTelemetryManager::getFlashRecordCount() const {
-    if (m_flash_buffer.isInitialized()) {
-        return m_flash_buffer.getRecordCount();
+uint16_t FlashTelemetryManager::getMaximumDepth() const {
+    uint32_t flash_high = (m_max_flash_records > UINT16_MAX)
+                              ? UINT16_MAX : m_max_flash_records;
+    uint16_t psram_high = m_psram_pipeline.getMaximumDepth();
+    return (flash_high > psram_high) ? (uint16_t)flash_high : psram_high;
+}
+
+uint16_t FlashTelemetryManager::getMaximumPipelineLength() const {
+    if (flashActive()) {
+        // Theoretical flash capacity in max-size records fits comfortably in u16.
+        uint32_t capacity = FlashRingBuffer::TOTAL_SECTORS * 4;
+        return (capacity > UINT16_MAX) ? UINT16_MAX : (uint16_t)capacity;
     }
-    return 0;
+    return m_psram_pipeline.getMaximumPipelineLength();
+}
+
+uint16_t FlashTelemetryManager::getHeadBlockIndex() const {
+    // Diagnostic only: in flash mode the sector indices are the closest analogue.
+    return flashActive() ? (uint16_t)(getFlashUsedSpace() / FlashRingBuffer::SECTOR_SIZE)
+                         : m_psram_pipeline.getHeadBlockIndex();
+}
+
+uint16_t FlashTelemetryManager::getTailBlockIndex() const {
+    return flashActive() ? 0 : m_psram_pipeline.getTailBlockIndex();
+}
+
+uint32_t FlashTelemetryManager::getFlashRecordCount() const {
+    return m_flash_buffer.isInitialized() ? m_flash_buffer.getRecordCount() : 0;
 }
 
 uint32_t FlashTelemetryManager::getFlashUsedSpace() const {
-    if (m_flash_buffer.isInitialized()) {
-        return m_flash_buffer.getUsedSpace();
-    }
-    return 0;
+    return m_flash_buffer.isInitialized() ? m_flash_buffer.getUsedSpace() : 0;
 }
 
 uint32_t FlashTelemetryManager::getFlashFreeSpace() const {
-    if (m_flash_buffer.isInitialized()) {
-        return m_flash_buffer.getFreeSpace();
-    }
-    return 0;
+    return m_flash_buffer.isInitialized() ? m_flash_buffer.getFreeSpace() : 0;
 }
 
 uint32_t FlashTelemetryManager::getFlashWriteCount() const {
-    if (m_flash_buffer.isInitialized()) {
-        return m_flash_buffer.getWriteCount();
-    }
-    return 0;
+    return m_flash_buffer.isInitialized() ? m_flash_buffer.getWriteCount() : 0;
 }
+
+// ---------------------------------------------------------------------------
+// Debug and maintenance
+// ---------------------------------------------------------------------------
 
 void FlashTelemetryManager::printStatus() const {
     USB_SERIAL_PRINTLN("=== FlashTelemetryManager Status ===");
-    USB_SERIAL_PRINTF("Storage Mode: %s\n", 
-              (m_storage_mode == FLASH_ONLY) ? "FLASH_ONLY" : 
-              (m_storage_mode == PSRAM_ONLY) ? "PSRAM_ONLY" : "HYBRID");
-    USB_SERIAL_PRINTF("Flash Buffer Enabled: %s\n", m_enable_flash_buffer ? "Yes" : "No");
-    USB_SERIAL_PRINTF("Flash Writes: %u\n", m_flash_writes);
-    USB_SERIAL_PRINTF("Flash Reads: %u\n", m_flash_reads);
-    USB_SERIAL_PRINTF("PSRAM Fallbacks: %u\n", m_psram_fallbacks);
-    
+    USB_SERIAL_PRINTF("Mode: %s, flash enabled: %s, uplink: %s\n",
+                      (m_storage_mode == FLASH_ONLY) ? "FLASH_ONLY" :
+                      (m_storage_mode == PSRAM_ONLY) ? "PSRAM_ONLY" : "HYBRID",
+                      m_enable_flash_buffer ? "yes" : "no",
+                      m_uplink_available ? "available" : "unavailable");
+    USB_SERIAL_PRINTF("Stats: %u flash writes, %u flash reads, %u PSRAM fallbacks, %u migrated blocks\n",
+                      m_flash_writes, m_flash_reads, m_psram_fallbacks, m_migrated_blocks);
+    USB_SERIAL_PRINTF("High-water: %u flash records\n", m_max_flash_records);
+
     if (m_flash_buffer.isInitialized()) {
-        USB_SERIAL_PRINTLN("--- Flash Buffer Status ---");
         m_flash_buffer.printStatus();
+    } else {
+        USB_SERIAL_PRINTLN("Flash buffer: not initialized");
     }
-    
-    USB_SERIAL_PRINTLN("--- PSRAM Pipeline Status ---");
-    USB_SERIAL_PRINTF("PSRAM Pipeline Length: %u\n", m_psram_pipeline.getPipelineLength());
-    USB_SERIAL_PRINTF("PSRAM Pipeline Empty: %s\n", m_psram_pipeline.pipelineEmpty() ? "Yes" : "No");
-    USB_SERIAL_PRINTF("PSRAM Pipeline Full: %s\n", m_psram_pipeline.pipelineFull() ? "Yes" : "No");
-    USB_SERIAL_PRINTLN("================================");
+
+    USB_SERIAL_PRINTF("PSRAM pipeline: %u blocks, empty=%s, full=%s\n",
+                      m_psram_pipeline.getPipelineLength(),
+                      m_psram_pipeline.pipelineEmpty() ? "yes" : "no",
+                      m_psram_pipeline.pipelineFull() ? "yes" : "no");
+    USB_SERIAL_PRINTLN("====================================");
 }
 
 bool FlashTelemetryManager::performSelfTest() {
-    USB_SERIAL_PRINTLN("FlashTelemetryManager::performSelfTest() - Running self-test");
-    
     if (!m_initialized) {
-        USB_SERIAL_PRINTLN("FlashTelemetryManager::performSelfTest() - Not initialized");
         return false;
     }
-    
-    bool flash_test_passed = true;
-    if (m_flash_buffer.isInitialized()) {
-        flash_test_passed = m_flash_buffer.performSelfTest();
-        USB_SERIAL_PRINTF("FlashTelemetryManager::performSelfTest() - Flash test: %s\n", 
-                  flash_test_passed ? "PASSED" : "FAILED");
+    if (!m_flash_buffer.isInitialized()) {
+        USB_SERIAL_PRINTLN("FlashTelemetryManager::performSelfTest() - flash not initialized, nothing to test");
+        return true;
     }
-    
-    USB_SERIAL_PRINTF("FlashTelemetryManager::performSelfTest() - Overall result: %s\n", 
-              flash_test_passed ? "PASSED" : "FAILED");
-    
-    return flash_test_passed;
+    // Safe by design: destructive parts only run on an empty ring.
+    return m_flash_buffer.performSelfTest();
 }
 
 void FlashTelemetryManager::prepareForShutdown() {
-    USB_SERIAL_PRINTLN("FlashTelemetryManager::prepareForShutdown() - Preparing for shutdown");
-    
+    USB_SERIAL_PRINTLN("FlashTelemetryManager::prepareForShutdown()");
     if (m_flash_buffer.isInitialized()) {
         m_flash_buffer.prepareForShutdown();
     }
 }
 
-// === Helper Methods for Block/Record Conversion ===
+// ---------------------------------------------------------------------------
+// Diagnostics - available whenever the flash buffer initialized
+// ---------------------------------------------------------------------------
 
-/**
- * @brief Convert TelemetryPipeline block to FlashRingBuffer record
- * @param block BlockHeader with telemetry data to convert
- * @return true if conversion and storage successful
- * 
- * Critical Conversion Process:
- * - Extract payload buffer and size from BlockHeader
- * - Store directly as binary record in FlashRingBuffer
- * - Maintains data integrity through CRC protection in flash layer
- * 
- * Marine Safety:
- * This conversion enables existing telemetry code to work unchanged
- * while gaining persistent storage capabilities for extended marine operations
- */
-bool FlashTelemetryManager::convertBlockToFlashRecord(const BlockHeader& block) {
-    if (!block.isBlockValid() || !m_flash_buffer.isInitialized()) {
-        return false;
+#define REQUIRE_FLASH_INITIALIZED(retval)                                          \
+    if (!m_flash_buffer.isInitialized()) {                                         \
+        USB_SERIAL_PRINTLN("FlashTelemetryManager - flash buffer not initialized"); \
+        return retval;                                                             \
     }
-    
-    uint16_t payload_size = block.getPayloadSize();
-    if (payload_size == 0) {
-        return false;
-    }
-    
-    uint16_t max_payload_size;
-    uint8_t* block_buffer = const_cast<BlockHeader&>(block).getBuffer(max_payload_size);
-    
-    return m_flash_buffer.appendRecord(block_buffer, payload_size);
-}
 
-bool FlashTelemetryManager::convertFlashRecordToBlock(BlockHeader& block) {
-    if (!m_flash_buffer.isInitialized()) {
-        return false;
-    }
-    
-    uint16_t actual_length;
-    if (!m_flash_buffer.readOldestRecord(m_temp_buffer, TEMP_BUFFER_SIZE, actual_length)) {
-        return false;
-    }
-    
-    // Delete the record we just read
-    if (!m_flash_buffer.deleteOldestRecord()) {
-        USB_SERIAL_PRINTLN("FlashTelemetryManager::convertFlashRecordToBlock() - Warning: failed to delete record");
-    }
-    
-    // Create a BlockHeader and populate it
-    block = m_psram_pipeline.getHeadBlockForPopulating();
-    uint16_t max_payload_size;
-    uint8_t* block_buffer = const_cast<BlockHeader&>(block).getBuffer(max_payload_size);
-    
-    if (actual_length > max_payload_size) {
-        USB_SERIAL_PRINTF("FlashTelemetryManager::convertFlashRecordToBlock() - Record too large: %u > %u\n", 
-                  actual_length, max_payload_size);
-        return false;
-    }
-    
-    memcpy(block_buffer, m_temp_buffer, actual_length);
-    block.setPayloadSize(actual_length);
-    
-    return true;
-}
-
-bool FlashTelemetryManager::shouldUsePsramFallback() const {
-    return (m_storage_mode == PSRAM_ONLY || !m_flash_buffer.isInitialized());
-}
-
-bool FlashTelemetryManager::factoryReset() {
-    USB_SERIAL_PRINTLN("FlashTelemetryManager::factoryReset() - Starting factory reset");
-    
-    // Reset flash buffer
-    bool flash_reset_success = true;
-    if (m_flash_buffer.isInitialized()) {
-        flash_reset_success = m_flash_buffer.factoryReset();
-    }
-    
-    // Clear statistics
-    m_flash_writes = 0;
-    m_flash_reads = 0;
-    m_psram_fallbacks = 0;
-    
-    // Reset state
-    m_has_pending_head_block = false;
-    
-    USB_SERIAL_PRINTF("FlashTelemetryManager::factoryReset() - Factory reset %s\n", 
-              flash_reset_success ? "successful" : "failed");
-    
-    return flash_reset_success;
-}
-
-bool FlashTelemetryManager::clearAllFlashData() {
-    USB_SERIAL_PRINTLN("FlashTelemetryManager::clearAllFlashData() - Clearing all flash data");
-    
-    if (!m_flash_buffer.isInitialized()) {
-        USB_SERIAL_PRINTLN("FlashTelemetryManager::clearAllFlashData() - Flash buffer not initialized");
-        return false;
-    }
-    
-    return m_flash_buffer.clearAllData();
-}
-
-bool FlashTelemetryManager::repairFlashCorruption() {
-    USB_SERIAL_PRINTLN("FlashTelemetryManager::repairFlashCorruption() - Repairing flash corruption");
-    
-    if (!m_flash_buffer.isInitialized()) {
-        USB_SERIAL_PRINTLN("FlashTelemetryManager::repairFlashCorruption() - Flash buffer not initialized");
-        return false;
-    }
-    
-    return m_flash_buffer.repairCorruption();
-}
-
-// Extended diagnostic methods - delegate to FlashRingBuffer
 bool FlashTelemetryManager::performPowerOnSelfTest(bool auto_repair) {
-    if (m_storage_mode != FLASH_ONLY) {
-        USB_SERIAL_PRINTF("FlashTelemetryManager::performPowerOnSelfTest() - Not in flash mode (mode: %d)\n", (int)m_storage_mode);
-        return false;
-    }
-    
-    if (!m_flash_buffer.isInitialized()) {
-        USB_SERIAL_PRINTLN("FlashTelemetryManager::performPowerOnSelfTest() - Flash buffer not initialized");
-        return false;
-    }
-    
+    REQUIRE_FLASH_INITIALIZED(false);
     return m_flash_buffer.performPowerOnSelfTest(auto_repair);
 }
 
 bool FlashTelemetryManager::performDeepSectorValidation() {
-    if (m_storage_mode != FLASH_ONLY) {
-        USB_SERIAL_PRINTF("FlashTelemetryManager::performDeepSectorValidation() - Not in flash mode (mode: %d)\n", (int)m_storage_mode);
-        return false;
-    }
-    
-    if (!m_flash_buffer.isInitialized()) {
-        USB_SERIAL_PRINTLN("FlashTelemetryManager::performDeepSectorValidation() - Flash buffer not initialized");
-        return false;
-    }
-    
+    REQUIRE_FLASH_INITIALIZED(false);
     return m_flash_buffer.performDeepSectorValidation();
 }
 
 bool FlashTelemetryManager::performPowerLossRecoveryTest() {
-    if (m_storage_mode != FLASH_ONLY) {
-        USB_SERIAL_PRINTF("FlashTelemetryManager::performPowerLossRecoveryTest() - Not in flash mode (mode: %d)\n", (int)m_storage_mode);
-        return false;
-    }
-    
-    if (!m_flash_buffer.isInitialized()) {
-        USB_SERIAL_PRINTLN("FlashTelemetryManager::performPowerLossRecoveryTest() - Flash buffer not initialized");
-        return false;
-    }
-    
+    REQUIRE_FLASH_INITIALIZED(false);
     return m_flash_buffer.performPowerLossRecoveryTest();
 }
 
 bool FlashTelemetryManager::performStressTest(uint32_t num_records) {
-    if (m_storage_mode != FLASH_ONLY) {
-        USB_SERIAL_PRINTF("FlashTelemetryManager::performStressTest() - Not in flash mode (mode: %d)\n", (int)m_storage_mode);
-        return false;
-    }
-    
-    if (!m_flash_buffer.isInitialized()) {
-        USB_SERIAL_PRINTLN("FlashTelemetryManager::performStressTest() - Flash buffer not initialized");
-        return false;
-    }
-    
+    REQUIRE_FLASH_INITIALIZED(false);
     return m_flash_buffer.performStressTest(num_records);
 }
 
-//=============================================================================
-// FAILURE INJECTION METHODS FOR TESTING
-//=============================================================================
+bool FlashTelemetryManager::factoryReset() {
+    USB_SERIAL_PRINTLN("FlashTelemetryManager::factoryReset()");
+    bool ok = true;
+    if (m_flash_buffer.isInitialized()) {
+        ok = m_flash_buffer.factoryReset();
+    }
+    m_flash_writes = 0;
+    m_flash_reads = 0;
+    m_psram_fallbacks = 0;
+    m_migrated_blocks = 0;
+    m_max_flash_records = 0;
+    m_flash_pull_pending = false;
+    m_last_pull_source = SOURCE_NONE;
+    return ok;
+}
+
+bool FlashTelemetryManager::clearAllFlashData() {
+    REQUIRE_FLASH_INITIALIZED(false);
+    m_flash_pull_pending = false;
+    m_last_pull_source = SOURCE_NONE;
+    return m_flash_buffer.clearAllData();
+}
+
+bool FlashTelemetryManager::repairFlashCorruption() {
+    REQUIRE_FLASH_INITIALIZED(false);
+    return m_flash_buffer.repairCorruption();
+}
+
+// ---------------------------------------------------------------------------
+// Failure injection pass-throughs (TESTING_MODE builds only)
+// ---------------------------------------------------------------------------
 
 #ifdef TESTING_MODE
 
 bool FlashTelemetryManager::injectSectorCorruption(uint32_t sector_index) {
-    if (m_storage_mode != FLASH_ONLY) {
-        USB_SERIAL_PRINTF("FlashTelemetryManager::injectSectorCorruption() - Not in flash mode (mode: %d)\n", (int)m_storage_mode);
-        return false;
-    }
-    
-    if (!m_flash_buffer.isInitialized()) {
-        USB_SERIAL_PRINTLN("FlashTelemetryManager::injectSectorCorruption() - Flash buffer not initialized");
-        return false;
-    }
-    
+    REQUIRE_FLASH_INITIALIZED(false);
     return m_flash_buffer.injectSectorCorruption(sector_index);
 }
 
 bool FlashTelemetryManager::corruptPersistedState() {
-    if (m_storage_mode != FLASH_ONLY) {
-        USB_SERIAL_PRINTF("FlashTelemetryManager::corruptPersistedState() - Not in flash mode (mode: %d)\n", (int)m_storage_mode);
-        return false;
-    }
-    
-    if (!m_flash_buffer.isInitialized()) {
-        USB_SERIAL_PRINTLN("FlashTelemetryManager::corruptPersistedState() - Flash buffer not initialized");
-        return false;
-    }
-    
+    REQUIRE_FLASH_INITIALIZED(false);
     return m_flash_buffer.corruptPersistedState();
 }
 
 bool FlashTelemetryManager::simulateIncompleteWrite() {
-    if (m_storage_mode != FLASH_ONLY) {
-        USB_SERIAL_PRINTF("FlashTelemetryManager::simulateIncompleteWrite() - Not in flash mode (mode: %d)\n", (int)m_storage_mode);
-        return false;
-    }
-    
-    if (!m_flash_buffer.isInitialized()) {
-        USB_SERIAL_PRINTLN("FlashTelemetryManager::simulateIncompleteWrite() - Flash buffer not initialized");
-        return false;
-    }
-    
+    REQUIRE_FLASH_INITIALIZED(false);
     return m_flash_buffer.simulateIncompleteWrite();
 }
 
 bool FlashTelemetryManager::corruptRingPointers() {
-    if (m_storage_mode != FLASH_ONLY) {
-        USB_SERIAL_PRINTF("FlashTelemetryManager::corruptRingPointers() - Not in flash mode (mode: %d)\n", (int)m_storage_mode);
-        return false;
-    }
-    
-    if (!m_flash_buffer.isInitialized()) {
-        USB_SERIAL_PRINTLN("FlashTelemetryManager::corruptRingPointers() - Flash buffer not initialized");
-        return false;
-    }
-    
+    REQUIRE_FLASH_INITIALIZED(false);
     return m_flash_buffer.corruptRingPointers();
 }
 
 bool FlashTelemetryManager::acceleratedWearTest(uint32_t cycles) {
-    if (m_storage_mode != FLASH_ONLY) {
-        USB_SERIAL_PRINTF("FlashTelemetryManager::acceleratedWearTest() - Not in flash mode (mode: %d)\n", (int)m_storage_mode);
-        return false;
-    }
-    
-    if (!m_flash_buffer.isInitialized()) {
-        USB_SERIAL_PRINTLN("FlashTelemetryManager::acceleratedWearTest() - Flash buffer not initialized");
-        return false;
-    }
-    
+    REQUIRE_FLASH_INITIALIZED(false);
     return m_flash_buffer.acceleratedWearTest(cycles);
 }
 
 bool FlashTelemetryManager::injectRandomCorruption(uint32_t num_sectors) {
-    if (m_storage_mode != FLASH_ONLY) {
-        USB_SERIAL_PRINTF("FlashTelemetryManager::injectRandomCorruption() - Not in flash mode (mode: %d)\n", (int)m_storage_mode);
-        return false;
-    }
-    
-    if (!m_flash_buffer.isInitialized()) {
-        USB_SERIAL_PRINTLN("FlashTelemetryManager::injectRandomCorruption() - Flash buffer not initialized");
-        return false;
-    }
-    
+    REQUIRE_FLASH_INITIALIZED(false);
     return m_flash_buffer.injectRandomCorruption(num_sectors);
 }
 
 bool FlashTelemetryManager::simulatePartitionFailure() {
-    if (m_storage_mode != FLASH_ONLY) {
-        USB_SERIAL_PRINTF("FlashTelemetryManager::simulatePartitionFailure() - Not in flash mode (mode: %d)\n", (int)m_storage_mode);
-        return false;
-    }
-    
-    if (!m_flash_buffer.isInitialized()) {
-        USB_SERIAL_PRINTLN("FlashTelemetryManager::simulatePartitionFailure() - Flash buffer not initialized");
-        return false;
-    }
-    
+    REQUIRE_FLASH_INITIALIZED(false);
     return m_flash_buffer.simulatePartitionFailure();
 }
 
 bool FlashTelemetryManager::injectCRCCorruption(uint32_t sector_index) {
-    if (m_storage_mode != FLASH_ONLY) {
-        USB_SERIAL_PRINTF("FlashTelemetryManager::injectCRCCorruption() - Not in flash mode (mode: %d)\n", (int)m_storage_mode);
-        return false;
-    }
-    
-    if (!m_flash_buffer.isInitialized()) {
-        USB_SERIAL_PRINTLN("FlashTelemetryManager::injectCRCCorruption() - Flash buffer not initialized");
-        return false;
-    }
-    
+    REQUIRE_FLASH_INITIALIZED(false);
     return m_flash_buffer.injectCRCCorruption(sector_index);
 }
 
 void FlashTelemetryManager::enableFailureInjection() {
-    if (m_storage_mode != FLASH_ONLY) {
-        USB_SERIAL_PRINTF("FlashTelemetryManager::enableFailureInjection() - Not in flash mode (mode: %d)\n", (int)m_storage_mode);
-        USB_SERIAL_PRINTLN("FlashTelemetryManager::enableFailureInjection() - Failure injection only works in FLASH_ONLY mode");
-        return;
+    if (m_flash_buffer.isInitialized()) {
+        m_flash_buffer.enableFailureInjection();
     }
-    
-    if (!m_flash_buffer.isInitialized()) {
-        USB_SERIAL_PRINTLN("FlashTelemetryManager::enableFailureInjection() - Flash buffer not initialized");
-        return;
-    }
-    
-    m_flash_buffer.enableFailureInjection();
 }
 
 #endif // TESTING_MODE

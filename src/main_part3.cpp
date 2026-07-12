@@ -223,6 +223,14 @@ void getNextTelemetryMessagesUploadedToPrivateMQTT()
   const uint8_t maxTailPullsPerCycle = 50;   // allow up to 50 messages per cycle (per second)
   uint8_t tailPulls = maxTailPullsPerCycle;
 
+#ifdef USE_FLASH_TELEMETRY
+  // Drives the flash bypass: online with no backlog -> telemetry stays in
+  // PSRAM and flash is never written; offline -> records persist to flash.
+  // Deliberately ignores the upload duty-cycle throttle - a momentary
+  // throttle must not count as "offline" and divert data into flash.
+  telemetryPipeline.setUplinkAvailable(privateMQTT.isUplinkUsable());
+#endif
+
   if (!privateMQTT.canUpload()) // upload throttle and connectivity check.
     return;
 

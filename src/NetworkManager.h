@@ -144,7 +144,10 @@ private:
     bool webSerialInitialised;
     
     // External dependencies (injected)
-    TelemetryPipeline* telemetryPipeline;
+    // Type-erased pipeline queries so either TelemetryPipeline or
+    // FlashTelemetryManager can be injected (they share the same API).
+    std::function<uint16_t()> getTelemetryPipelineLength;
+    std::function<bool()> isTelemetryPipelineDraining;
     std::function<String()> getStatsCallback;
     std::function<void()> updateButtonsCallback;
     std::function<bool()> isDevNetworkCallback;
@@ -191,7 +194,12 @@ public:
     void loop();
     
     // External dependency injection
-    void setTelemetryPipeline(TelemetryPipeline* pipeline) { telemetryPipeline = pipeline; }
+    // Accepts TelemetryPipeline or FlashTelemetryManager (identical query API).
+    template <typename TPipeline>
+    void setTelemetryPipeline(TPipeline* pipeline) {
+        getTelemetryPipelineLength = [pipeline]() -> uint16_t { return pipeline->getPipelineLength(); };
+        isTelemetryPipelineDraining = [pipeline]() -> bool { return pipeline->isPipelineDraining(); };
+    }
     void setGetStatsCallback(std::function<String()> callback);
     void setIsDevNetworkCallback(std::function<bool()> callback) { isDevNetworkCallback = callback; }
     void setPrepareEntireSystemForOTA(std::function<void()> callback) { prepareEntireSystemForOTA = callback; }

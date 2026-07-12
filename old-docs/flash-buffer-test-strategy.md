@@ -1,5 +1,19 @@
 # Flash Buffer Test Strategy for Web Serial Access
 
+> **Accuracy note (July 2026):** the storage engine was rewritten — see
+> `flash-feature.md` for the authoritative design and `bugs-and-suggestions.md`
+> for what changed. The test procedures below still apply, with these
+> behavioural differences:
+>
+> - `STRESS` and `RECOVERY` **refuse to run unless the flash ring is empty**
+>   (they will never touch a real backlog). Use `R` (factory reset) first when
+>   testing on a device with stored data you don't need.
+> - `POST` is **read-only** and completes in well under a second.
+> - Records are removed from flash only after MQTT acknowledges the upload
+>   (delete-on-ack) — a dropped connection mid-spool re-sends, never loses.
+> - Flash is bypassed entirely while the uplink is usable and no backlog
+>   exists, so an online bench session shows zero flash writes by design.
+
 ## Implementation vs CLAUDE.md Requirements Analysis
 
 The flash buffer implementation **significantly exceeds** CLAUDE.md requirements:

@@ -79,7 +79,6 @@ NetworkManager::NetworkManager(const NetworkConfig& networkConfig,
     , telegramBot(nullptr)
 #endif
     , webSerialInitialised(false)
-    , telemetryPipeline(nullptr)
 {
     // Set static instance for callbacks
     instance = this;
@@ -952,6 +951,10 @@ void NetworkManager::webSerialReceiveMessage(uint8_t *data, size_t len) {
         if (webSerialExtendedCommandCallback) {
             webSerialExtendedCommandCallback("RECOVERY");
         }
+    } else if (webSerialExtendedCommandCallback) {
+        // Forward anything else (e.g. TESTING_MODE failure-injection commands)
+        // to the extended handler, which reports unknown commands itself.
+        webSerialExtendedCommandCallback(command);
     } else {
         WebSerial.printf(">>> Unknown command: '%s'\n", command.c_str());
     }
@@ -961,9 +964,9 @@ void NetworkManager::checkConnectivity() {
     // Check connectivity if pipeline is backed up OR if forced for display testing
     const uint16_t pipelineBackedUpLength = 10;
 
-    bool shouldCheckConnectivity = forceConnectivityCheckForDisplay || 
-        (telemetryPipeline->getPipelineLength() > pipelineBackedUpLength && 
-         telemetryPipeline->isPipelineDraining() == false &&
+    bool shouldCheckConnectivity = forceConnectivityCheckForDisplay ||
+        (getTelemetryPipelineLength && getTelemetryPipelineLength() > pipelineBackedUpLength &&
+         isTelemetryPipelineDraining && isTelemetryPipelineDraining() == false &&
          millis() > lastCheckForInternetConnectivityAt + checkInternetConnectivityDutyCycle);
     
     forceConnectivityCheckForDisplay = false;
@@ -995,7 +998,7 @@ void NetworkManager::checkConnectivity() {
             WiFi.reconnect();
         }
     } 
-    else if (telemetryPipeline->isPipelineDraining())
+    else if (isTelemetryPipelineDraining && isTelemetryPipelineDraining())
     {
         // If pipeline is draining normally, then clear any previous connectivity failure flags
         lastInternetConnectivityStatus = true;

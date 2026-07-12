@@ -1,5 +1,13 @@
 # Failure Injection API Reference
 
+> **Accuracy note (July 2026):** the storage engine was rewritten
+> (`flash-feature.md` is authoritative). The injection method names and the
+> WebSerial commands below are unchanged, but their internals now target the
+> new on-flash format (24-byte sector header: magic@0, seq@4, hdr_crc@8,
+> close marker@12). `acceleratedWearTest` additionally requires an empty ring.
+> Diagnostics no longer require FLASH_ONLY mode — they work whenever the flash
+> buffer initialized.
+
 ## Overview
 
 This document provides a complete API reference for the failure injection system, including method signatures, parameters, return values, and usage examples.

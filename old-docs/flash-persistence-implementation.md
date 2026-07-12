@@ -1,8 +1,16 @@
 # Flash Persistence Implementation Guide
 
+> **Accuracy note (July 2026):** the storage engine was rewritten —
+> `flash-feature.md` is now the authoritative implementation guide and
+> supersedes the low-level detail in this document (the sector header is now
+> 24 bytes with a separate close marker, records carry a meta field, sequence
+> numbers are stamped once, consumption is cursor-based with delete-on-MQTT-ack,
+> and all boot checks are read-only). The partition layout section below is
+> still correct.
+
 ## Overview
 
-This document explains the complete flash persistence system implemented for the Mercator Origins Lemon-IO device. The system provides power-safe, persistent storage for telemetry data using a 2MB flash ring buffer with advanced RAM buffering optimization.
+This document explains the flash persistence system implemented for the Mercator Origins Lemon-IO device. The system provides power-safe, persistent storage for telemetry data using a 10MB flash ring buffer with RAM assembly buffering.
 
 ## Architecture Overview
 

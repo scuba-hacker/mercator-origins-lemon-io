@@ -1,5 +1,10 @@
 # Flash Buffer Failure Injection Implementation Guide
 
+> **Accuracy note (July 2026):** the storage engine was rewritten
+> (`flash-feature.md` is authoritative). Command routing described here is
+> unchanged; implementation details referencing the old sector/record layout
+> or "auto-repair erases" are historical.
+
 ## Overview
 
 This document describes the complete implementation of the failure injection system for the Mercator Origins flash buffer testing. The system provides comprehensive failure simulation capabilities to validate the robustness and recovery mechanisms of the flash persistence system.

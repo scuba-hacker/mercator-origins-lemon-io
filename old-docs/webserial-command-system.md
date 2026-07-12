@@ -1,5 +1,11 @@
 # WebSerial Command System Documentation
 
+> **Accuracy note (July 2026):** the flash storage engine was rewritten
+> (`flash-feature.md` is authoritative). The command set and routing below are
+> current; note that `STRESS`/`RECOVERY` now refuse to run on a non-empty
+> ring, `POST` is read-only, and the `R` serial command performs a real
+> factory reset.
+
 ## Overview
 
 The Lemon-IO device features a comprehensive WebSerial command system that provides remote access to the production flash persistence system through a web browser interface. This system enables both operational control of the dual-pipeline telemetry system and advanced diagnostic capabilities for field deployment validation.

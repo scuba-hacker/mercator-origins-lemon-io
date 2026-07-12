@@ -97,9 +97,13 @@ bool MercatorMQTT::isConnected() const {
 }
 
 bool MercatorMQTT::canUpload() const {
+    if (millis() < lastUploadAt + uploadMinDutyMs) return false;
+    return isUplinkUsable();
+}
+
+bool MercatorMQTT::isUplinkUsable() const {
     if (!enableUpload || !enableConnect) return false;
     if (WiFi.status() != WL_CONNECTED) return false;
-    if (millis() < lastUploadAt + uploadMinDutyMs) return false;
     return isConnected();
 }
 

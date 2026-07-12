@@ -475,8 +475,16 @@ void processSerialCommand(char command) {
     case 'R':
     case 'r':
       // Reset flash buffer (factory reset)
-      USB_SERIAL_PRINTLN(">>> TESTING: Performing flash buffer factory reset...");
-      // TODO: Call flash buffer factory reset when integrated
+#ifdef USE_FLASH_TELEMETRY
+      USB_SERIAL_PRINTLN(">>> Performing flash buffer factory reset...");
+      if (telemetryPipeline.factoryReset()) {
+        USB_SERIAL_PRINTLN(">>> Flash buffer factory reset complete");
+      } else {
+        USB_SERIAL_PRINTLN(">>> Flash buffer factory reset FAILED");
+      }
+#else
+      USB_SERIAL_PRINTLN(">>> Flash persistence disabled at compile time - nothing to reset");
+#endif
       break;
       
     case 'S':
@@ -494,6 +502,18 @@ void processSerialCommand(char command) {
       USB_SERIAL_PRINTF("MQTT Status: %s\n", privateMQTT.isConnected() ? "Connected" : "Disconnected");
       USB_SERIAL_PRINTF("Pipeline Length: %u records\n", telemetryPipeline.getPipelineLength());
       USB_SERIAL_PRINTF("Pipeline Draining: %s\n", telemetryPipeline.isPipelineDraining() ? "YES" : "NO");
+#ifdef USE_FLASH_TELEMETRY
+      USB_SERIAL_PRINTF("Flash Records: %u (%u KB used, %u KB free)\n",
+                        telemetryPipeline.getFlashRecordCount(),
+                        telemetryPipeline.getFlashUsedSpace() / 1024,
+                        telemetryPipeline.getFlashFreeSpace() / 1024);
+      USB_SERIAL_PRINTF("Uplink For Routing: %s\n", telemetryPipeline.isUplinkAvailable() ? "AVAILABLE" : "UNAVAILABLE");
+      USB_SERIAL_PRINTF("Flash Stats: %u writes, %u reads, %u PSRAM fallbacks, %u migrated\n",
+                        telemetryPipeline.getTotalFlashWrites(),
+                        telemetryPipeline.getTotalFlashReads(),
+                        telemetryPipeline.getPsramFallbacks(),
+                        telemetryPipeline.getMigratedBlocks());
+#endif
       USB_SERIAL_PRINTLN("");
       USB_SERIAL_PRINTLN("Testing Simulation States:");
       USB_SERIAL_PRINTF("WiFi Testing Blocked: %s\n", wifiTestingBlocked ? "YES" : "NO");
