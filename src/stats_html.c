@@ -584,7 +584,8 @@ const char STATS_HTML[] = R"rawliteral(
     'X37 4m?',
     'Cafe Jetty',
     'Mid Jetty',
-    'Old Slipway'
+    'Old Slipway',
+    'Tapwood Jetty'
     ];
 
    // Sort the array alphabetically
