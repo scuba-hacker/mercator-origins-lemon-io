@@ -585,7 +585,16 @@ const char STATS_HTML[] = R"rawliteral(
     'Cafe Jetty',
     'Mid Jetty',
     'Old Slipway',
-    'Tapwood Jetty'
+    'Tapwood Jetty',
+    'X60 Pool Entrance',
+    'X61 Silica Works',
+    'X62 Steep Cliffs',
+    'X63 Shallow Shelf',
+    'X64 The Beach',
+    'X65 The Nook',
+    'X66 Challenger Deep',
+    'X67 Rolling Hills',
+    'X68 The Lagoon'
     ];
 
    // Sort the array alphabetically
