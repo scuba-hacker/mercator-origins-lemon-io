@@ -1060,6 +1060,14 @@ void NetworkManager::prepareNetworkForOTA() {
 }
 
 void NetworkManager::uploadOTABeginCallback() {
+    // Async web-task boundary: request main-task preparation and wait. The
+    // callback must not touch display, MQTT, WebSerial, or telemetry objects.
+    if (prepareEntireSystemForOTA) {
+        prepareEntireSystemForOTA();
+    }
+}
+
+void NetworkManager::prepareForOTAOnMainTask() {
     haltAllProcessingDuringOTAUpload = true;
 
     // Enable OTA mode to suppress all normal display updates
@@ -1094,9 +1102,6 @@ void NetworkManager::uploadOTABeginCallback() {
     displayManager.display.sendBuffer();
     
     prepareNetworkForOTA();
-    
-    if (prepareEntireSystemForOTA)
-        prepareEntireSystemForOTA();
 }
 
 void NetworkManager::uploadOTAProgressCallback(size_t progress, size_t total) {

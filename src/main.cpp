@@ -252,6 +252,13 @@ Button redButton = Button(RED_BUTTON_GPIO, true, DEBOUNCE_MS);
 
 volatile bool haltAllProcessingDuringOTAUpload = false;
 
+// OTA preparation handshake between the async web task (which may only
+// request) and the main loop (which owns the telemetry/flash objects and
+// performs the preparation). See prepareSystemForOTA() and loop().
+#include <atomic>
+std::atomic<bool> otaPreparationRequested{false};
+std::atomic<bool> otaPreparationDone{false};
+
 volatile bool haltGPSTaskWhilstUBXTransactionsOngoing = false;
 
 // START FEATURE ENABLE FLAGS
@@ -690,6 +697,11 @@ void constructLemonTelemetryForStorage(struct LemonTelemetryForStorage& s, const
 void processSerialCommands();
 void processSerialCommand(char command);
 void processExtendedCommand(const String& command);
+// WebSerial commands arrive on the async web server task and are queued for
+// main-loop execution (flash/telemetry classes are main-loop-task only).
+void init_webserial_command_mutex();
+void queueWebSerialCommand(const String& command);
+void processQueuedWebSerialCommands();
 void initializeTelemetrySystem();
 void loadTestingPreferences();
 void saveTestingPreferences();
@@ -779,6 +791,7 @@ void read_and_clear_command_for_mako(String& commandToSend);
 void write_command_for_mako(const String& command);
 void init_command_to_mako_mutex();
 SemaphoreHandle_t send_command_to_mako_mutex;
+SemaphoreHandle_t webserial_command_mutex;
 
 uint32_t getSizeOfLemonTelemetryForStorage();
 class mqttConnectionTest
@@ -1099,6 +1112,24 @@ uint8_t latestLanternReedState = 0;
 
 void prepareSystemForOTA()
 {
+  // Persist telemetry FIRST, while the pipeline and its tasks are still
+  // intact and logging is still enabled. The OTA transition cannot be
+  // aborted from here and ends in a reboot, so anything not persisted now is
+  // lost - a failure must at least be reported, never silent.
+#ifdef USE_FLASH_TELEMETRY
+  if (!telemetryPipeline.prepareForShutdown()) {
+    USB_SERIAL_PRINTLN("prepareSystemForOTA: *** WARNING: TELEMETRY COULD NOT BE PERSISTED ***");
+    USB_SERIAL_PRINTLN("prepareSystemForOTA: *** unsent records WILL BE LOST by the OTA reboot ***");
+  }
+#else
+  USB_SERIAL_PRINTLN("prepareSystemForOTA: PSRAM build - unsent telemetry is lost by the OTA reboot");
+#endif
+
+  // NetworkManager owns the display, MQTT disconnect, WebSocket, and
+  // WebSerial shutdown. Run all of it here on the main task, never in the
+  // async OTA callback.
+  networkManager.prepareForOTAOnMainTask();
+
   USB_SERIAL_PRINTLN("prepareSystemForOTA: set haltAllProcessingDuringOTAUpload = true");
   haltAllProcessingDuringOTAUpload = true;
 
@@ -1192,6 +1223,7 @@ void setup()
   statusLEDColourPurple();
 
   init_command_to_mako_mutex();
+  init_webserial_command_mutex();
 
   // Initialize Lemon Serial Queue
   lanternQueue = xQueueCreate(LANTERN_QUEUE_SIZE, sizeof(LanternDataPacket));
@@ -1287,14 +1319,30 @@ void setup()
   networkManager.setTelemetryPipeline(&telemetryPipeline);
   networkManager.setGetStatsCallback([]() { return getStats(); });
   networkManager.setIsDevNetworkCallback([]() { return devNetworkInUse(); });
-  networkManager.setPrepareEntireSystemForOTA([]() { prepareSystemForOTA(); });
+  // The OTA begin callback runs on the async web task. It only requests work
+  // and waits; every shutdown action runs on the main task. There is no unsafe
+  // timeout path that starts OTA before telemetry persistence completes.
+  networkManager.setPrepareEntireSystemForOTA([]() {
+    otaPreparationDone.store(false);
+    otaPreparationRequested.store(true);
+    uint32_t next_warning = millis() + 15000;
+    while (!otaPreparationDone.load()) {
+      vTaskDelay(pdMS_TO_TICKS(10));
+      if ((int32_t)(millis() - next_warning) >= 0) {
+        Serial.println("OTA: still waiting for main-task shutdown; upload remains blocked");
+        next_warning = millis() + 15000;
+      }
+    }
+  });
   
-  // Set up WebSerial command callbacks
+  // Set up WebSerial command callbacks. These run on the async web server
+  // task, so they only enqueue - the main loop executes the commands
+  // (FlashRingBuffer/FlashTelemetryManager are main-loop-task only).
   networkManager.setWebSerialCommandCallback([](char command) {
-    processSerialCommand(command);
+    queueWebSerialCommand(String(command));
   });
   networkManager.setWebSerialExtendedCommandCallback([](const String& command) {
-    processExtendedCommand(command);
+    queueWebSerialCommand(command);
   });
   
   networkManager.begin();
@@ -1445,13 +1493,24 @@ void  sendPendingMakoCommands()
 }
 
 void loop()
-{ 
+{
+  // OTA preparation request from the async web task: the telemetry and flash
+  // classes are single-task (this task) objects, so the async OTA callback
+  // only REQUESTS preparation and waits - the work happens here, on the
+  // owning task, before anything is halted or torn down.
+  if (otaPreparationRequested.load() && !otaPreparationDone.load())
+  {
+    prepareSystemForOTA();
+    otaPreparationDone.store(true);
+    otaPreparationRequested.store(false);
+  }
+
   // Handle NetworkManager processing (includes MQTT testing, OTA restart, etc.)
   networkManager.loop();
-  
+
   // Cut short event loop when halting processing during OTA upload
   if (networkManager.isHaltingForOTA())
-  {  
+  {
     delay(100);
     toggleStatusLED();
     return;
@@ -1467,6 +1526,9 @@ void loop()
 
   // Process serial commands for testing
   processSerialCommands();
+
+  // Execute WebSerial commands queued by the async web server task
+  processQueuedWebSerialCommands();
 
   updateButtonsAndBuzzer();
 

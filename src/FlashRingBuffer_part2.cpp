@@ -5,10 +5,13 @@
  * Compiled by inclusion from FlashRingBuffer.cpp (project idiom); the guard
  * below makes the standalone PlatformIO compile of this file a no-op.
  *
- * IMPORTANT: every routine in this file is READ-ONLY against stored telemetry.
- * The only functions that erase anything are repairCorruption() (erases
- * sectors whose headers are invalid, i.e. that hold no readable data),
- * clearAllData() and factoryReset() - all explicit user actions.
+ * IMPORTANT: nothing in this file ever erases or rewrites a sector holding
+ * readable records. The functions that write at all are POST/repairCorruption()
+ * (erase sectors whose headers are invalid, i.e. that hold no readable data),
+ * clearAllData() and factoryReset() (explicit user actions), and
+ * performPowerOnSelfTest() with auto_repair - whose repair path may invoke
+ * repairCorruption(), the torn-head journal rescue, and the NVS cursor save
+ * inside the recovery rescan.
  */
 
 #ifdef BUILD_INCLUDE_FLASHRINGBUFFER_PART2
@@ -17,17 +20,123 @@
 // Power-on self-test: read-only structural scan
 // ---------------------------------------------------------------------------
 
+bool FlashRingBuffer::countNonblankInvalidHeaderSectors(bool deep_blank_check,
+                                                        uint32_t& anomalies) const {
+    anomalies = 0;
+
+    uint8_t* image = nullptr;
+    if (deep_blank_check) {
+#ifdef TESTING_MODE
+        image = m_seams.fail_diag_alloc ? nullptr : (uint8_t*)malloc(SECTOR_SIZE);
+#else
+        image = (uint8_t*)malloc(SECTOR_SIZE);
+#endif
+        if (!image) {
+            // Resource exhaustion IS a failed verification - never silently
+            // degrade a requested deep proof to a shallow check.
+            USB_SERIAL_PRINTLN("FlashRingBuffer::countNonblankInvalidHeaderSectors() - deep verification buffer unavailable, verification INCOMPLETE");
+            return false;
+        }
+    }
+
+    uint32_t count = 0;
+    for (uint32_t sector = 0; sector < RING_SECTORS; sector++) {
+        SectorHeader header;
+        if (!readSectorHeader(sector, header)) {
+            count++;  // unreadable counts as an anomaly, never as "clean"
+            continue;
+        }
+        if (headerValid(header)) {
+            continue;
+        }
+        bool blank = true;
+        const uint8_t* raw = (const uint8_t*)&header;
+        for (uint32_t i = 0; i < SECTOR_HEADER_SIZE; i++) {
+            if (raw[i] != 0xFF) {
+                blank = false;
+                break;
+            }
+        }
+        if (blank && deep_blank_check) {
+            // Header erased but the body may not be (failed/partial erase):
+            // only a full-sector read proves blankness.
+            if (readBytes(sector * SECTOR_SIZE, image, SECTOR_SIZE) != ESP_OK ||
+                !regionIsErased(image, 0, SECTOR_SIZE)) {
+                blank = false;
+            }
+        }
+        if (!blank) {
+            count++;
+        }
+        if ((sector & (deep_blank_check ? 0x3F : 0xFF)) == 0) {
+            delay(1);
+        }
+    }
+
+    if (image) {
+        free(image);
+    }
+    anomalies = count;
+    return true;  // verification completed at the requested level
+}
+
+bool FlashRingBuffer::verifyStructuralState() const {
+    // Recheck every structural condition of POST's initial health result so
+    // post-repair verification cannot pass while the original complaint (for
+    // example a second open sector, or an open sector that is not the RAM
+    // head) is still present. RAM and flash must AGREE on the open sector.
+    uint32_t open_sectors = 0;
+    uint32_t open_sector = RING_SECTORS;
+    for (uint32_t sector = 0; sector < RING_SECTORS; sector++) {
+        SectorHeader header;
+        if (!readSectorHeader(sector, header) || !headerValid(header)) {
+            continue;
+        }
+        if (!headerClosed(header)) {
+            open_sectors++;
+            open_sector = sector;
+        }
+        if ((sector & 0xFF) == 0) {
+            delay(1);
+        }
+    }
+
+    bool open_agrees = m_head_open
+        ? (open_sectors == 1 && open_sector == m_head_sector)
+        : (open_sectors == 0);
+
+    bool consistent =
+        m_head_sector < RING_SECTORS &&
+        m_tail_sector < RING_SECTORS &&
+        m_tail_offset <= SECTOR_SIZE &&
+        m_head_write_offset >= SECTOR_HEADER_SIZE &&
+        m_head_write_offset <= SECTOR_SIZE &&
+        open_agrees;
+    if (!consistent) {
+        USB_SERIAL_PRINTF("FlashRingBuffer::verifyStructuralState() - INCONSISTENT (%u open on flash, open sector %u, RAM head %u %s)\n",
+                          open_sectors, open_sector, m_head_sector,
+                          m_head_open ? "open" : "closed");
+    }
+    return consistent;
+}
+
 bool FlashRingBuffer::performPowerOnSelfTest(bool auto_repair) {
-    USB_SERIAL_PRINTLN("=== FlashRingBuffer Power-On Self-Test (read-only) ===");
+    USB_SERIAL_PRINTLN("=== FlashRingBuffer Power-On Self-Test ===");
     uint32_t start_time = m_fn_millis ? m_fn_millis() : 0;
 
     FlashDiagnostics diag;
     memset(&diag, 0, sizeof(diag));
-    diag.total_sectors = TOTAL_SECTORS;
+    diag.total_sectors = RING_SECTORS;
     diag.partition_found = (m_partition != nullptr);
 
     if (!diag.partition_found) {
+        // Critical exit: a store with no partition must not stay active -
+        // otherwise appendRecord() keeps accepting records into the RAM
+        // assembly, reports them persisted, and loses them at reboot.
         USB_SERIAL_PRINTLN("POST: CRITICAL - flash partition not found");
+        if (m_initialized) {
+            enterFatalState("POST: partition not found");
+        }
         return false;
     }
 
@@ -36,12 +145,16 @@ bool FlashRingBuffer::performPowerOnSelfTest(bool auto_repair) {
     diag.partition_accessible = readSectorHeader(0, probe);
     if (!diag.partition_accessible) {
         USB_SERIAL_PRINTLN("POST: CRITICAL - flash partition not readable");
+        if (m_initialized) {
+            enterFatalState("POST: partition not readable");
+        }
         return false;
     }
 
     uint32_t invalid_nonblank = 0;
+    bool open_nonhead = false;
 
-    for (uint32_t sector = 0; sector < TOTAL_SECTORS; sector++) {
+    for (uint32_t sector = 0; sector < RING_SECTORS; sector++) {
         SectorHeader header;
         if (!readSectorHeader(sector, header)) {
             invalid_nonblank++;
@@ -49,13 +162,24 @@ bool FlashRingBuffer::performPowerOnSelfTest(bool auto_repair) {
         }
 
         if (!headerValid(header)) {
-            diag.erased_sectors++;
-            // Distinguish blank from garbage only for in-map anomalies; a
-            // garbage sector outside the ring gets erased when the head
-            // reaches it, so it is not an operational problem.
-            if (mapGet(sector)) {
-                USB_SERIAL_PRINTF("POST: WARNING - sector %u in map but header invalid\n", sector);
+            // Distinguish truly blank sectors from nonblank sectors whose
+            // header is invalid. The latter were excluded from the ring by
+            // recovery and their records are unreadable - report them even
+            // after a restart, when they are no longer in the runtime map.
+            const uint8_t* raw = (const uint8_t*)&header;
+            bool blank = true;
+            for (uint32_t i = 0; i < SECTOR_HEADER_SIZE; i++) {
+                if (raw[i] != 0xFF) { blank = false; break; }
+            }
+            if (!blank) {
+                USB_SERIAL_PRINTF("POST: WARNING - sector %u contains data but its header is invalid (records unreadable, excluded from ring)\n",
+                                  sector);
                 invalid_nonblank++;
+            } else if (mapGet(sector)) {
+                USB_SERIAL_PRINTF("POST: WARNING - sector %u in map but blank\n", sector);
+                invalid_nonblank++;
+            } else {
+                diag.erased_sectors++;
             }
             continue;
         }
@@ -67,7 +191,10 @@ bool FlashRingBuffer::performPowerOnSelfTest(bool auto_repair) {
         } else {
             diag.open_sectors++;
             if (sector != m_head_sector) {
-                USB_SERIAL_PRINTF("POST: WARNING - sector %u is open but is not the head sector\n", sector);
+                // Records in a stray open sector cannot be ordered or
+                // counted; this is a health failure, not just a warning.
+                USB_SERIAL_PRINTF("POST: sector %u is open but is not the head sector - structural corruption\n", sector);
+                open_nonhead = true;
             }
         }
 
@@ -76,14 +203,17 @@ bool FlashRingBuffer::performPowerOnSelfTest(bool auto_repair) {
         }
     }
 
-    // Consistency between the scan and the RAM state.
+    // Consistency between the scan and the RAM state, including agreement on
+    // the open sector: if RAM says the head is open there must be exactly one
+    // open sector on flash (the head itself); if RAM says closed, none.
     bool state_consistent =
-        m_head_sector < TOTAL_SECTORS &&
-        m_tail_sector < TOTAL_SECTORS &&
+        m_head_sector < RING_SECTORS &&
+        m_tail_sector < RING_SECTORS &&
         m_tail_offset <= SECTOR_SIZE &&
         m_head_write_offset >= SECTOR_HEADER_SIZE &&
         m_head_write_offset <= SECTOR_SIZE &&
-        diag.open_sectors <= 1;
+        !open_nonhead &&
+        (m_head_open ? diag.open_sectors == 1 : diag.open_sectors == 0);
 
     if (m_fn_millis) {
         diag.diagnostic_duration_ms = m_fn_millis() - start_time;
@@ -92,29 +222,71 @@ bool FlashRingBuffer::performPowerOnSelfTest(bool auto_repair) {
     USB_SERIAL_PRINTLN("=== POST Report ===");
     USB_SERIAL_PRINTF("Sectors: %u in use (%u closed, %u open), %u free\n",
                       diag.in_use_sectors, diag.closed_sectors,
-                      diag.open_sectors, TOTAL_SECTORS - diag.in_use_sectors);
+                      diag.open_sectors, RING_SECTORS - diag.in_use_sectors);
     USB_SERIAL_PRINTF("Records in closed sectors: %u\n", diag.total_records);
     USB_SERIAL_PRINTF("Unread records (incl. open head): %u\n", m_record_count);
     USB_SERIAL_PRINTF("State consistent: %s\n", state_consistent ? "Yes" : "NO");
     USB_SERIAL_PRINTF("Header anomalies: %u\n", invalid_nonblank);
     USB_SERIAL_PRINTF("Duration: %u ms\n", diag.diagnostic_duration_ms);
 
-    bool healthy = state_consistent && invalid_nonblank == 0;
+    // A ring in the fatal state is never healthy on the initial pass - with
+    // auto_repair this forces the full rescan + verification below, which is
+    // the supported path back to a trusted state.
+    bool healthy = state_consistent && invalid_nonblank == 0 && !m_fatal;
 
     if (!healthy && auto_repair) {
+        bool repair_ok = true;
+        bool repair_modified_flash = false;
+        if (invalid_nonblank > 0) {
+            // Sectors with programmed bytes but no valid header hold no
+            // readable records (recovery cannot order them), so erasing is
+            // the only repair - it returns them to the free pool.
+            USB_SERIAL_PRINTLN("POST: erasing nonblank sectors with invalid headers");
+            repair_ok = eraseCorruptSectors(repair_modified_flash);
+        }
         USB_SERIAL_PRINTLN("POST: anomalies found - re-running recovery scan");
-        // Recovery scan is read-only (except torn-head rescue) and rebuilds
-        // all RAM state from flash, which resolves map/state drift.
-        memset(m_sector_map, 0, sizeof(m_sector_map));
-        uint32_t saved_write_count = m_write_count;
-        m_record_count = 0;
-        m_tail_cache_valid = false;
-        invalidatePeek();
+        // TRANSACTIONAL: scanAndRecover() builds a complete candidate state
+        // and publishes it only on success - the live state is never
+        // pre-cleared or partially overwritten here. On failure it either
+        // retains the previous trusted state (flash unmodified) or enters
+        // the fatal state itself; both outcomes are decided centrally there.
         FlashDiagnostics rediag;
         memset(&rediag, 0, sizeof(rediag));
-        healthy = scanAndRecover(&rediag);
-        m_write_count = saved_write_count;
-        USB_SERIAL_PRINTF("POST: recovery re-scan %s\n", healthy ? "OK" : "FAILED");
+        bool scan_ok = scanAndRecover(&rediag, repair_modified_flash);
+
+        healthy = repair_ok && scan_ok;
+        // Verify, not assume: recount anomalies (with the full-sector blank
+        // proof - a failed erase can leave an erased header over a programmed
+        // body) and recheck the structural conditions of the initial result.
+        // An INCOMPLETE verification is a FAILED verification.
+        if (healthy) {
+            uint32_t remaining = 0;
+            if (!countNonblankInvalidHeaderSectors(true, remaining)) {
+                USB_SERIAL_PRINTLN("POST: deep verification could not be completed - result is FAILED");
+                healthy = false;
+            } else if (remaining > 0) {
+                USB_SERIAL_PRINTF("POST: %u header anomalies REMAIN after repair\n", remaining);
+                healthy = false;
+            }
+        }
+        if (healthy && !verifyStructuralState()) {
+            USB_SERIAL_PRINTLN("POST: structural inconsistency REMAINS after repair");
+            healthy = false;
+        }
+
+        if (healthy && m_fatal) {
+            // A fully verified repair re-earns trust (e.g. POST rerun after a
+            // previous fatal diagnostic).
+            USB_SERIAL_PRINTLN("POST: verified repair complete - clearing fatal state");
+            m_fatal = false;
+        }
+        if (!healthy && !m_fatal) {
+            // Auto-repair is a trust boundary. If any destructive repair,
+            // recovery, or final proof fails, normal operation must not resume
+            // on bookkeeping captured before the transaction began.
+            enterFatalState("POST repair/recovery/verification failed");
+        }
+        USB_SERIAL_PRINTF("POST: repair + re-scan + verification %s\n", healthy ? "OK" : "FAILED");
     }
 
     USB_SERIAL_PRINTF("=== POST Complete: %s ===\n", healthy ? "PASSED" : "FAILED");
@@ -135,7 +307,11 @@ bool FlashRingBuffer::performDeepSectorValidation() {
 
     uint32_t start_time = m_fn_millis ? m_fn_millis() : 0;
 
+#ifdef TESTING_MODE
+    uint8_t* image = m_seams.fail_diag_alloc ? nullptr : (uint8_t*)malloc(SECTOR_SIZE);
+#else
     uint8_t* image = (uint8_t*)malloc(SECTOR_SIZE);
+#endif
     if (!image) {
         USB_SERIAL_PRINTLN("Deep validation: buffer allocation failed");
         return false;
@@ -145,10 +321,24 @@ bool FlashRingBuffer::performDeepSectorValidation() {
     uint32_t sectors_checked = 0, sectors_with_issues = 0;
     uint32_t records_validated = 0, corrupted_records = 0;
 
-    for (uint32_t sector = 0; sector < TOTAL_SECTORS; sector++) {
+    for (uint32_t sector = 0; sector < RING_SECTORS; sector++) {
         SectorHeader header;
-        if (!readSectorHeader(sector, header) || !headerValid(header)) {
-            continue;  // not in use
+        if (!readSectorHeader(sector, header)) {
+            sectors_with_issues++;
+            passed = false;
+            continue;
+        }
+        if (!headerValid(header)) {
+            // Not in use - but a nonblank sector with an invalid header holds
+            // unreadable (excluded) records and must be reported.
+            if (readBytes(sector * SECTOR_SIZE, image, SECTOR_SIZE) == ESP_OK &&
+                !regionIsErased(image, 0, SECTOR_SIZE)) {
+                USB_SERIAL_PRINTF("Deep validation: sector %u contains data but its header is invalid (records unreadable)\n",
+                                  sector);
+                sectors_with_issues++;
+                passed = false;
+            }
+            continue;
         }
 
         sectors_checked++;
@@ -223,39 +413,66 @@ bool FlashRingBuffer::performExtendedDiagnostics() {
 // ---------------------------------------------------------------------------
 
 bool FlashRingBuffer::repairCorruption() {
-    USB_SERIAL_PRINTLN("FlashRingBuffer::repairCorruption() - erasing unreadable sectors");
+    // Public repair has the same all-or-fatal contract as POST. Keeping the
+    // destructive helper private prevents callers from erasing sectors
+    // without rebuilding and verifying the complete runtime state.
+    return performPowerOnSelfTest(true);
+}
+
+bool FlashRingBuffer::eraseCorruptSectors(bool& flash_modified) {
+    USB_SERIAL_PRINTLN("FlashRingBuffer::eraseCorruptSectors() - erasing unreadable sectors");
+
+    flash_modified = false;
 
     if (!m_initialized) {
         return false;
     }
 
+#ifdef TESTING_MODE
+    uint8_t* image = m_seams.fail_diag_alloc ? nullptr : (uint8_t*)malloc(SECTOR_SIZE);
+#else
     uint8_t* image = (uint8_t*)malloc(SECTOR_SIZE);
+#endif
     if (!image) {
         return false;
     }
 
     uint32_t erased = 0;
+    uint32_t unreadable = 0;
+    uint32_t erase_failures = 0;
 
-    for (uint32_t sector = 0; sector < TOTAL_SECTORS; sector++) {
+    // The repair journal sector is deliberately outside this loop.
+    for (uint32_t sector = 0; sector < RING_SECTORS; sector++) {
         SectorHeader header;
-        bool readable = readSectorHeader(sector, header);
+        if (!readSectorHeader(sector, header)) {
+            // A transient read failure is not proof the sector holds garbage
+            // - never erase on failed evidence.
+            USB_SERIAL_PRINTF("FlashRingBuffer::eraseCorruptSectors() - sector %u unreadable, NOT erasing\n", sector);
+            unreadable++;
+            continue;
+        }
 
-        if (readable && headerValid(header)) {
+        if (headerValid(header)) {
             continue;  // holds (potentially) valid data - never touched here
         }
 
-        // Invalid header: erase only if the sector is not already blank.
-        bool blank = false;
-        if (readable && readBytes(sector * SECTOR_SIZE, image, SECTOR_SIZE) == ESP_OK) {
-            blank = regionIsErased(image, 0, SECTOR_SIZE);
+        // Invalid header: erase only if the sector is confirmed not blank.
+        if (readBytes(sector * SECTOR_SIZE, image, SECTOR_SIZE) != ESP_OK) {
+            USB_SERIAL_PRINTF("FlashRingBuffer::eraseCorruptSectors() - sector %u body unreadable, NOT erasing\n", sector);
+            unreadable++;
+            continue;
+        }
+        if (regionIsErased(image, 0, SECTOR_SIZE)) {
+            continue;  // already blank
         }
 
-        if (!blank) {
-            USB_SERIAL_PRINTF("FlashRingBuffer::repairCorruption() - erasing garbage sector %u\n", sector);
-            if (eraseSector(sector) == ESP_OK) {
-                erased++;
-            }
+        USB_SERIAL_PRINTF("FlashRingBuffer::eraseCorruptSectors() - erasing garbage sector %u\n", sector);
+        if (eraseSector(sector) == ESP_OK) {
+            erased++;
+            flash_modified = true;
             mapSet(sector, false);
+        } else {
+            erase_failures++;  // leave the map untouched - nothing changed
         }
 
         if ((sector & 0x3F) == 0) {
@@ -264,8 +481,9 @@ bool FlashRingBuffer::repairCorruption() {
     }
 
     free(image);
-    USB_SERIAL_PRINTF("FlashRingBuffer::repairCorruption() - complete, %u sectors erased\n", erased);
-    return true;
+    USB_SERIAL_PRINTF("FlashRingBuffer::eraseCorruptSectors() - %u sectors erased, %u erase failures, %u unreadable\n",
+                      erased, erase_failures, unreadable);
+    return erase_failures == 0 && unreadable == 0;
 }
 
 bool FlashRingBuffer::clearAllData() {
@@ -296,6 +514,8 @@ bool FlashRingBuffer::clearAllData() {
     resetRuntimeState();
     m_write_count = preserved_write_count;
     m_next_seq = preserved_next_seq;
+    // The whole partition is now blank - no sector needs a pre-open erase.
+    memset(m_erased_map, 0xFF, sizeof(m_erased_map));
     savePersistedState();
 
     USB_SERIAL_PRINTF("FlashRingBuffer::clearAllData() - erased %u bytes\n", erased_bytes);

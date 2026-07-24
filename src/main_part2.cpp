@@ -436,6 +436,8 @@ void processSerialCommand(char command) {
     case 'd':
       // Disconnect WiFi for testing
       if (!wifiTestingBlocked) {
+        USB_SERIAL_PRINTLN(">>> TESTING: WARNING - disconnecting WiFi kills WebSerial and the blocked");
+        USB_SERIAL_PRINTLN(">>> TESTING: state persists across reboots. Recovery: send 'C' via USB serial.");
         wifiTestingBlocked = true;
         WiFi.disconnect(true);  // Disconnect and disable auto-reconnect
         saveTestingPreferences();
@@ -486,7 +488,23 @@ void processSerialCommand(char command) {
       USB_SERIAL_PRINTLN(">>> Flash persistence disabled at compile time - nothing to reset");
 #endif
       break;
-      
+
+    case 'X':
+    case 'x':
+      // Prepare for safe power-off: flush flash, save cursor, lock writes.
+#ifdef USE_FLASH_TELEMETRY
+      USB_SERIAL_PRINTLN(">>> Preparing for safe shutdown...");
+      if (telemetryPipeline.prepareForShutdown()) {
+        USB_SERIAL_PRINTLN(">>> SAFE TO POWER OFF - telemetry stopped, PSRAM migrated, flash flushed and locked");
+        USB_SERIAL_PRINTLN(">>> (new telemetry is dropped from now on; power cycle to resume capture)");
+      } else {
+        USB_SERIAL_PRINTLN(">>> NOT SAFE TO POWER OFF - see log above; normal capture continues, retry X");
+      }
+#else
+      USB_SERIAL_PRINTLN(">>> PSRAM build: no flash to flush - any unsent telemetry is lost at power off");
+#endif
+      break;
+
     case 'S':
     case 's':
       // Show status
@@ -526,13 +544,14 @@ void processSerialCommand(char command) {
       // Show help
       USB_SERIAL_PRINTLN("=== LEMON-IO COMMAND REFERENCE ===");
       USB_SERIAL_PRINTLN("Production Commands:");
-      USB_SERIAL_PRINTLN("F/f - Toggle flash persistence on/off");
+      USB_SERIAL_PRINTLN("F/f - Show flash persistence compile-time setting");
       USB_SERIAL_PRINTLN("S/s - Show system status");
       USB_SERIAL_PRINTLN("R/r - Factory reset flash storage");
+      USB_SERIAL_PRINTLN("X/x - Prepare safe shutdown (flush flash, lock writes)");
       USB_SERIAL_PRINTLN("H/h/? - Show this help");
       USB_SERIAL_PRINTLN("");
       USB_SERIAL_PRINTLN("Testing/Simulation Commands:");
-      USB_SERIAL_PRINTLN("D/d - Disconnect WiFi (simulate offline)");
+      USB_SERIAL_PRINTLN("D/d - Disconnect WiFi (simulate offline; WARNING: kills WebSerial, recover with C via USB)");
       USB_SERIAL_PRINTLN("C/c - Connect WiFi (simulate online)");
       USB_SERIAL_PRINTLN("");
       USB_SERIAL_PRINTLN("Flash Diagnostic Commands (Web Interface):");
@@ -543,15 +562,16 @@ void processSerialCommand(char command) {
       #ifdef TESTING_MODE
       USB_SERIAL_PRINTLN("");
       USB_SERIAL_PRINTLN("Failure Injection Commands (TESTING_MODE builds):");
-      USB_SERIAL_PRINTLN("CORRUPT_SECTOR [num] - Corrupt sector magic number");
-      USB_SERIAL_PRINTLN("CORRUPT_STATE - Corrupt EEPROM state (requires restart)");
+      USB_SERIAL_PRINTLN("CORRUPT_SECTOR [num] - Corrupt sector magic number (free sectors only)");
+      USB_SERIAL_PRINTLN("CORRUPT_STATE - Corrupt NVS cursor state (requires restart)");
       USB_SERIAL_PRINTLN("SIMULATE_POWER_LOSS - Simulate power-loss during write");
       USB_SERIAL_PRINTLN("CORRUPT_POINTERS - Corrupt ring buffer pointers");
       USB_SERIAL_PRINTLN("WEAR_TEST [cycles] - Accelerated wear testing");
       USB_SERIAL_PRINTLN("RANDOM_CORRUPT [num] - Random sector corruption");
       USB_SERIAL_PRINTLN("PARTITION_FAIL - Simulate partition failure");
       USB_SERIAL_PRINTLN("CORRUPT_CRC [num] - Corrupt sector CRC");
-      USB_SERIAL_PRINTLN("ENABLE_FAIL_INJECT - Enable failure injection mode");
+      USB_SERIAL_PRINTLN("ENABLE_FAIL_INJECT - Print failure-injection status");
+      USB_SERIAL_PRINTLN("TEST_MATRIX - Run the deterministic review-test matrix (empty ring)");
       #endif
       USB_SERIAL_PRINTLN("===================================");
       break;
@@ -610,12 +630,122 @@ void write_command_for_mako(const String& command) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// WebSerial command queue
+//
+// WebSerial messages arrive on the async web server task, but the telemetry
+// pipeline and flash classes are main-loop-task only. The async callback only
+// ENQUEUES here; processQueuedWebSerialCommands() executes the commands from
+// the main loop (same deferral pattern as the % Mako relay above).
+// ---------------------------------------------------------------------------
+
+static const uint8_t MAX_QUEUED_WEBSERIAL_COMMANDS = 4;
+static String webSerialCommandQueue[MAX_QUEUED_WEBSERIAL_COMMANDS];
+static uint8_t webSerialCommandCount = 0;
+
+void init_webserial_command_mutex() {
+  webserial_command_mutex = xSemaphoreCreateMutex();
+  configASSERT(webserial_command_mutex);
+}
+
+// Called on the async web server task - must not touch telemetry state.
+void queueWebSerialCommand(const String& command) {
+  bool queued = false;
+  if (xSemaphoreTake(webserial_command_mutex, pdMS_TO_TICKS(5)) == pdTRUE) {
+    if (webSerialCommandCount < MAX_QUEUED_WEBSERIAL_COMMANDS) {
+      webSerialCommandQueue[webSerialCommandCount++] = command;
+      queued = true;
+    }
+    xSemaphoreGive(webserial_command_mutex);
+  }
+  if (!queued) {
+    // Safe here: WebSerial writes are what this task exists for.
+    WebSerial.printf(">>> Command queue full - '%s' dropped, retry shortly\n", command.c_str());
+  }
+}
+
+// Called from the main loop task.
+void processQueuedWebSerialCommands() {
+  String pending[MAX_QUEUED_WEBSERIAL_COMMANDS];
+  uint8_t count = 0;
+  if (xSemaphoreTake(webserial_command_mutex, pdMS_TO_TICKS(1)) == pdTRUE) {
+    count = webSerialCommandCount;
+    for (uint8_t i = 0; i < count; i++) {
+      pending[i] = webSerialCommandQueue[i];
+      webSerialCommandQueue[i] = "";
+    }
+    webSerialCommandCount = 0;
+    xSemaphoreGive(webserial_command_mutex);
+  }
+  for (uint8_t i = 0; i < count; i++) {
+    if (pending[i].length() == 1) {
+      processSerialCommand(pending[i].charAt(0));
+    } else {
+      processExtendedCommand(pending[i]);
+    }
+  }
+}
+
+#ifdef TESTING_MODE
+// Exact-token command with an optional single numeric argument:
+// "<token>" (uses default_value) or "<token> <n>" with n strictly numeric and
+// within [min_value, max_value]. Returns true when the token matches either
+// form; arg_ok reports whether the argument was usable (an error is printed
+// here when it is not). "<token>GARBAGE" does NOT match.
+static bool matchCommandWithArg(const String& command, const char* token,
+                                long default_value, long min_value, long max_value,
+                                long& value, bool& arg_ok) {
+  size_t token_len = strlen(token);
+  if (command == token) {
+    value = default_value;
+    arg_ok = true;
+    return true;
+  }
+  if (!command.startsWith(token) || command.charAt(token_len) != ' ') {
+    return false;
+  }
+  String arg = command.substring(token_len + 1);
+  arg.trim();
+  arg_ok = arg.length() > 0 && arg.length() <= 9;
+  for (unsigned int i = 0; i < arg.length() && arg_ok; i++) {
+    if (!isDigit(arg.charAt(i))) {
+      arg_ok = false;
+    }
+  }
+  if (arg_ok) {
+    value = arg.toInt();
+    if (value < min_value || value > max_value) {
+      arg_ok = false;
+    }
+  }
+  if (!arg_ok) {
+    USB_SERIAL_PRINTF(">>> PARAMETER ERROR: %s takes a number %ld-%ld\n",
+                      token, min_value, max_value);
+  }
+  return true;
+}
+#endif // TESTING_MODE
+
 // Process extended WebSerial commands (flash diagnostics)
 void processExtendedCommand(const String& command) {
+#ifdef TESTING_MODE
+  long injectArg = 0;
+  bool injectArgOk = false;
+#endif
+
   if (command.startsWith("%")) {
     // send entire message to Mako on main thread
     write_command_for_mako(command);
   }
+#ifndef USE_FLASH_TELEMETRY
+  // PSRAM build: the TelemetryPipeline compatibility stubs would report
+  // PASSED without testing anything - report honestly instead.
+  else if (command == "POST" || command == "DEEP" ||
+           command == "STRESS" || command == "RECOVERY") {
+    USB_SERIAL_PRINTF(">>> DIAGNOSTIC: %s NOT AVAILABLE IN PSRAM BUILD (no flash ring to test)\n",
+                      command.c_str());
+  }
+#else
   else if (command == "POST") {
     USB_SERIAL_PRINTLN(">>> DIAGNOSTIC: Running Power-On Self Test...");
     bool result = telemetryPipeline.performPowerOnSelfTest(true);
@@ -633,16 +763,16 @@ void processExtendedCommand(const String& command) {
     bool result = telemetryPipeline.performPowerLossRecoveryTest();
     USB_SERIAL_PRINTF(">>> DIAGNOSTIC: Power-Loss Recovery Test %s\n", result ? "PASSED" : "FAILED");
   }
+#endif
   // Failure injection commands (only available in TESTING_MODE builds)
   #ifdef TESTING_MODE
-  else if (command.startsWith("CORRUPT_SECTOR")) {
-    int sector_num = 5; // Default sector
-    if (command.indexOf(' ') > 0) {
-      sector_num = command.substring(command.indexOf(' ') + 1).toInt();
+  else if (matchCommandWithArg(command, "CORRUPT_SECTOR", 5, 0,
+                               (long)FlashRingBuffer::RING_SECTORS - 1, injectArg, injectArgOk)) {
+    if (injectArgOk) {
+      USB_SERIAL_PRINTF(">>> FAILURE INJECTION: Corrupting sector %ld...\n", injectArg);
+      bool result = telemetryPipeline.injectSectorCorruption((uint32_t)injectArg);
+      USB_SERIAL_PRINTF(">>> FAILURE INJECTION: Sector corruption %s\n", result ? "INJECTED" : "FAILED (refused or not supported)");
     }
-    USB_SERIAL_PRINTF(">>> FAILURE INJECTION: Corrupting sector %d...\n", sector_num);
-    bool result = telemetryPipeline.injectSectorCorruption(sector_num);
-    USB_SERIAL_PRINTF(">>> FAILURE INJECTION: Sector corruption %s\n", result ? "INJECTED" : "FAILED (not in flash mode or not supported)");
   } else if (command == "CORRUPT_STATE") {
     USB_SERIAL_PRINTLN(">>> FAILURE INJECTION: Corrupting EEPROM state...");
     bool result = telemetryPipeline.corruptPersistedState();
@@ -660,22 +790,19 @@ void processExtendedCommand(const String& command) {
     USB_SERIAL_PRINTLN(">>> FAILURE INJECTION: Corrupting ring buffer pointers...");
     bool result = telemetryPipeline.corruptRingPointers();
     USB_SERIAL_PRINTF(">>> FAILURE INJECTION: Pointer corruption %s\n", result ? "INJECTED" : "FAILED (not in flash mode or not supported)");
-  } else if (command.startsWith("WEAR_TEST")) {
-    int cycles = 100; // Default cycles
-    if (command.indexOf(' ') > 0) {
-      cycles = command.substring(command.indexOf(' ') + 1).toInt();
+  } else if (matchCommandWithArg(command, "WEAR_TEST", 100, 1, 10000, injectArg, injectArgOk)) {
+    if (injectArgOk) {
+      USB_SERIAL_PRINTF(">>> FAILURE INJECTION: Running accelerated wear test (%ld cycles)...\n", injectArg);
+      bool result = telemetryPipeline.acceleratedWearTest((uint32_t)injectArg);
+      USB_SERIAL_PRINTF(">>> FAILURE INJECTION: Wear test %s\n", result ? "COMPLETED" : "FAILED (refused or not supported)");
     }
-    USB_SERIAL_PRINTF(">>> FAILURE INJECTION: Running accelerated wear test (%d cycles)...\n", cycles);
-    bool result = telemetryPipeline.acceleratedWearTest(cycles);
-    USB_SERIAL_PRINTF(">>> FAILURE INJECTION: Wear test %s\n", result ? "COMPLETED" : "FAILED (not in flash mode or not supported)");
-  } else if (command.startsWith("RANDOM_CORRUPT")) {
-    int num_sectors = 3; // Default number of sectors
-    if (command.indexOf(' ') > 0) {
-      num_sectors = command.substring(command.indexOf(' ') + 1).toInt();
+  } else if (matchCommandWithArg(command, "RANDOM_CORRUPT", 3, 1,
+                                 (long)FlashRingBuffer::RING_SECTORS / 4, injectArg, injectArgOk)) {
+    if (injectArgOk) {
+      USB_SERIAL_PRINTF(">>> FAILURE INJECTION: Injecting random corruption (%ld sectors)...\n", injectArg);
+      bool result = telemetryPipeline.injectRandomCorruption((uint32_t)injectArg);
+      USB_SERIAL_PRINTF(">>> FAILURE INJECTION: Random corruption %s\n", result ? "INJECTED" : "FAILED or PARTIAL (see log above)");
     }
-    USB_SERIAL_PRINTF(">>> FAILURE INJECTION: Injecting random corruption (%d sectors)...\n", num_sectors);
-    bool result = telemetryPipeline.injectRandomCorruption(num_sectors);
-    USB_SERIAL_PRINTF(">>> FAILURE INJECTION: Random corruption %s\n", result ? "INJECTED" : "FAILED (not in flash mode or not supported)");
   } else if (command == "PARTITION_FAIL") {
     USB_SERIAL_PRINTLN(">>> FAILURE INJECTION: Simulating partition failure...");
     bool result = telemetryPipeline.simulatePartitionFailure();
@@ -685,19 +812,30 @@ void processExtendedCommand(const String& command) {
     } else {
       USB_SERIAL_PRINTF(">>> FAILURE INJECTION: Partition failure FAILED (not in flash mode or not supported)\n");
     }
-  } else if (command.startsWith("CORRUPT_CRC")) {
-    int sector_num = 7; // Default sector
-    if (command.indexOf(' ') > 0) {
-      sector_num = command.substring(command.indexOf(' ') + 1).toInt();
+  } else if (matchCommandWithArg(command, "CORRUPT_CRC", 7, 0,
+                                 (long)FlashRingBuffer::RING_SECTORS - 1, injectArg, injectArgOk)) {
+    if (injectArgOk) {
+      USB_SERIAL_PRINTF(">>> FAILURE INJECTION: Corrupting sector %ld CRC...\n", injectArg);
+      bool result = telemetryPipeline.injectCRCCorruption((uint32_t)injectArg);
+      USB_SERIAL_PRINTF(">>> FAILURE INJECTION: CRC corruption %s\n", result ? "INJECTED" : "FAILED (refused or not supported)");
     }
-    USB_SERIAL_PRINTF(">>> FAILURE INJECTION: Corrupting sector %d CRC...\n", sector_num);
-    bool result = telemetryPipeline.injectCRCCorruption(sector_num);
-    USB_SERIAL_PRINTF(">>> FAILURE INJECTION: CRC corruption %s\n", result ? "INJECTED" : "FAILED (not in flash mode or not supported)");
+  } else if (command == "TEST_MATRIX") {
+    USB_SERIAL_PRINTLN(">>> TEST MATRIX: running deterministic review tests (sol-code-review-5)...");
+#ifdef USE_FLASH_TELEMETRY
+    bool storage_ok = telemetryPipeline.runReviewTestMatrix();
+#else
+    bool storage_ok = false;
+    USB_SERIAL_PRINTLN(">>> TEST MATRIX: storage matrix NOT AVAILABLE IN PSRAM BUILD");
+#endif
+    bool mqtt_ok = privateMQTT.runAckStateTests();
+    USB_SERIAL_PRINTF(">>> TEST MATRIX: %s\n",
+                      (storage_ok && mqtt_ok) ? "ALL PASSED" : "FAILURES (see above)");
   } else if (command == "ENABLE_FAIL_INJECT") {
-    USB_SERIAL_PRINTLN(">>> FAILURE INJECTION: Checking failure injection mode...");
+    // Status print only - there is NO runtime gate; every injection command
+    // compiled in by TESTING_MODE is callable regardless of this command.
+    USB_SERIAL_PRINTLN(">>> FAILURE INJECTION: Status check (this command does not arm or disarm anything)");
     telemetryPipeline.enableFailureInjection();
-    USB_SERIAL_PRINTLN(">>> FAILURE INJECTION: If using FlashTelemetryManager in FLASH_ONLY mode, failure injection is available");
-    USB_SERIAL_PRINTLN(">>> FAILURE INJECTION: If using TelemetryPipeline (PSRAM mode), failure injection is not supported");
+    USB_SERIAL_PRINTLN(">>> FAILURE INJECTION: TESTING_MODE build - injection commands are active whenever the flash ring is initialized");
   }
   #endif
   

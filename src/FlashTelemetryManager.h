@@ -63,10 +63,12 @@ private:
     bool        m_initialized;
     bool        m_enable_flash_buffer;
     bool        m_uplink_available;    // set from the MQTT upload path
+    bool        m_shutdown_prepared;   // quiesced by prepareForShutdown()
     PullSource  m_last_pull_source;    // routes tailBlockCommitted correctly
 
     // === Scratch block for serving flash records as BlockHeaders ===
     uint8_t*    m_scratch_buffer;
+    uint8_t*    m_fallback_buffer;      // preserves current block during salvage
     uint16_t    m_scratch_size;
     BlockHeader m_scratch_block;
     uint32_t    m_next_flash_payload_id;
@@ -84,10 +86,27 @@ private:
 
     // === Helpers ===
     bool flashActive() const {
-        return m_storage_mode == FLASH_ONLY && m_flash_buffer.isInitialized();
+        // A fatal ring (failed runtime recovery - bookkeeping untrusted) is
+        // treated as absent: commits and pulls route to PSRAM until a
+        // verified repair, factory reset, or reboot restores trust.
+        return m_storage_mode == FLASH_ONLY && m_flash_buffer.isInitialized() &&
+               !m_flash_buffer.isFatal();
     }
     bool commitBlockToFlash(BlockHeader& block);   // payload+meta -> flash record
-    void migratePsramBacklogToFlash();             // preserve ordering going offline
+    bool commitBlockToPsram(BlockHeader& block, bool& pipelineFull);
+    bool migratePsramBacklogToFlash();             // preserve ordering going offline
+    // Invariant: records accepted into the flash RAM assembly were reported
+    // as persisted. Transfer is peek -> destination commit -> source consume,
+    // so a full or failed PSRAM commit leaves the source record intact.
+    bool salvageAssemblyToPsram();
+    bool preserveCurrentAndFallback(BlockHeader& block, bool& pipelineFull);
+
+    #ifdef TESTING_MODE
+    struct ManagerFaultSeams {
+        uint32_t fail_psram_commit_countdown;
+        uint32_t fail_migration_countdown;
+    } m_manager_seams;
+    #endif
 
 public:
     FlashTelemetryManager();
@@ -145,7 +164,14 @@ public:
     // === Debug and maintenance ===
     void printStatus() const;
     bool performSelfTest();            // safe: read-only when data is stored
-    void prepareForShutdown();         // flush flash, lock writes: safe power-off
+    /** @brief System-level safe shutdown: quiesces telemetry (new commits and
+     *  tail pulls are refused from here on), migrates any pending PSRAM blocks
+     *  to flash, verifies PSRAM is empty, then flushes and locks the flash
+     *  ring. Returns true - and stays quiesced - only when every step verified
+     *  successful; on failure normal operation resumes so it can be retried.
+     *  Returns false when flash is unavailable (volatile-only operation can
+     *  never be a safe persistent shutdown). */
+    bool prepareForShutdown();
 
     // === Diagnostics (available whenever the flash buffer initialized) ===
     bool performPowerOnSelfTest(bool auto_repair = true);
@@ -169,6 +195,11 @@ public:
     bool simulatePartitionFailure();
     bool injectCRCCorruption(uint32_t sector_index);
     void enableFailureInjection();
+
+    /** @brief Deterministic review-test matrix: manager-level cases (assembly
+     *  salvage to PSRAM when the ring goes fatal, routing after demotion)
+     *  followed by the full ring-level matrix. Requires empty pipelines. */
+    bool runReviewTestMatrix();
     #endif
 };
 

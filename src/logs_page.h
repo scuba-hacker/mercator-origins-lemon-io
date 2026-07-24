@@ -319,17 +319,16 @@ const char LOGS_PAGE_HTML[] PROGMEM = R"rawliteral(
             <select id="commandDropdown" class="command-dropdown">
                 <option value="">-- Select Command --</option>
                 <option value="S">Show System Status</option>
-                <option value="F">Toggle Flash Buffer Enable/Disable</option>
-                <option value="R">Factory Reset Flash Buffer</option>
-                <option value="D">Disconnect WiFi (Simulate Offline)</option>
+                <option value="F">Show Flash Persistence Setting</option>
+                <option value="R">Factory Reset Flash Buffer (DESTRUCTIVE)</option>
+                <option value="X">Prepare Safe Shutdown (flush + lock flash)</option>
+                <option value="D">Disconnect WiFi (WARNING: kills this console; recover with C via USB)</option>
                 <option value="C">Connect WiFi (Simulate Online)</option>
                 <option value="H">Show Help</option>
                 <option value="POST">Run Power-On Self Test</option>
                 <option value="DEEP">Run Deep Sector Validation</option>
                 <option value="STRESS">Run Stress Test (100 records)</option>
                 <option value="RECOVERY">Run Power-Loss Recovery Test</option>
-                <option value="ota-off">OTA Off</option>
-                <option value="reboot">Reboot</option>
             </select>
             <button class="btn-send" onclick="sendDropdownMessage()">Send</button>
             <button class="btn-text-size" onclick="decreaseTextSize()" title="Smaller Text">A-</button>
@@ -576,7 +575,18 @@ const char LOGS_PAGE_HTML[] PROGMEM = R"rawliteral(
         function sendDropdownMessage() {
             const dropdown = document.getElementById('commandDropdown');
             const command = dropdown.value;
-            
+
+            // Guard the commands that destroy data or sever this console.
+            if (command === 'R' &&
+                !confirm('Factory reset erases ALL stored telemetry in the flash ring buffer. Continue?')) {
+                return;
+            }
+            if (command === 'D' &&
+                !confirm('Disconnecting WiFi will DISCONNECT THIS CONSOLE and the blocked state persists across reboots. ' +
+                         'Recovery requires sending C over USB serial. Continue?')) {
+                return;
+            }
+
             if (command && ws && ws.readyState === WebSocket.OPEN) {
                 ws.send(command);
                 addToConsole('>>> Sent (dropdown): ' + command + '\n');

@@ -3,6 +3,7 @@
 #include <PicoMQTT.h>
 #include <AsyncMqttClient.h>
 #include <WiFi.h>
+#include <atomic>
 
 enum class MQTTConnectionResult {
     SUCCESS = 0,
@@ -42,6 +43,38 @@ private:
     uint32_t lastUploadAt;
     const int16_t payloadSize;
     char* payloadBuffer;
+
+    // QoS 1 acknowledgment ownership for the TLS path. The awaited key binds
+    // a packet ID to the client that issued it. Timed-out IDs are quarantined
+    // for that client, so a delayed callback can never satisfy a later attempt
+    // after the 16-bit ID is reused. Atomics bridge the async TCP task and main.
+    enum class AckSource : uint8_t { NONE = 0, LOCAL = 1, REMOTE = 2 };
+    std::atomic<uint32_t> awaitedAckKey;
+    std::atomic<uint32_t> satisfiedAckKey;
+    uint8_t quarantinedPacketIds[2][8192];
+    static const uint32_t PUBACK_TIMEOUT_MS = 3000;
+
+    static uint32_t ackKey(AckSource source, uint16_t packetId) {
+        return (static_cast<uint32_t>(source) << 16) | packetId;
+    }
+    void resetAckAttempt() { awaitedAckKey.store(0); satisfiedAckKey.store(0); }
+    void armAckAttempt(AckSource source, uint16_t packetId) {
+        satisfiedAckKey.store(0);
+        awaitedAckKey.store(ackKey(source, packetId));
+    }
+    void noteAck(AckSource source, uint16_t packetId) {
+        uint32_t key = ackKey(source, packetId);
+        if (awaitedAckKey.load() == key) {
+            satisfiedAckKey.store(key);
+        }
+    }
+    bool ackAttemptSatisfied() const {
+        uint32_t awaited = awaitedAckKey.load();
+        return awaited != 0 && satisfiedAckKey.load() == awaited;
+    }
+    bool packetIdQuarantined(AckSource source, uint16_t packetId) const;
+    void quarantinePacketId(AckSource source, uint16_t packetId);
+    void clearPacketIdQuarantine(AckSource source, uint16_t packetId);
     
     bool usingDevNetwork;
     bool enableConnect;
@@ -108,4 +141,11 @@ public:
     }
 
     static const char* getDisconnectReason(AsyncMqttClientDisconnectReason reason);
+
+#ifdef TESTING_MODE
+    /** @brief Deterministic checks of the acknowledgment transaction:
+     *  retained/wrapped IDs, mismatched acks, acks with no attempt armed,
+     *  and the fresh-match success path. Prints PASS/FAIL per case. */
+    bool runAckStateTests();
+#endif
 };

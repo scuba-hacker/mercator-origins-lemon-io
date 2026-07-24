@@ -53,6 +53,50 @@
  *    otherwise it falls back to the start of the oldest sector (worst case:
  *    some already-uploaded records are re-uploaded, never lost).
  *
+ * =========================================================================
+ * STATE MODEL
+ * =========================================================================
+ * The ring is always in exactly one of these states:
+ *
+ *  UNINITIALIZED      m_initialized == false
+ *  TRUSTED            m_initialized && !m_fatal && !m_writes_disabled
+ *  SHUTDOWN_LOCKED    m_initialized && !m_fatal && m_writes_disabled
+ *  FATAL              m_initialized && m_fatal
+ *
+ * (Recovery-in-progress is transient inside init()/POST and never observable
+ * by callers: scanAndRecover() builds a complete candidate state and commits
+ * it atomically - see RecoveredState.)
+ *
+ * Operation admission by state:
+ *
+ *  operation             TRUSTED  SHUTDOWN_LOCKED  FATAL  UNINITIALIZED
+ *  appendRecord            yes         no            no        no
+ *  flush                   yes         yes*          no        no
+ *  peek/consume            yes         yes           no        no
+ *  peek/consume assembly   yes         yes           yes       no
+ *  POST / DEEP             yes         yes           yes**     no
+ *  repairCorruption        yes         yes           yes       no
+ *  factoryReset/clearAll   yes         yes           yes       no
+ *  prepareForShutdown      yes         yes (noop)    no***     no
+ *  teardown                yes         yes           yes****   yes
+ *
+ *  *    flush of an empty assembly is a no-op success; with content it obeys
+ *       the same admission as the write path that filled it.
+ *  **   POST on a FATAL ring always takes the full repair+verify path; a
+ *       fully verified repair is the only runtime transition FATAL->TRUSTED
+ *       (besides factoryReset and re-init).
+ *  ***  fails: a fatal ring cannot verify persistence.
+ *  **** persists nothing (untrusted cursor is never written to NVS).
+ *
+ * FATAL is entered ONLY through enterFatalState(), the single central
+ * transition for: a critical POST exit (partition missing/unreadable), a
+ * failed recovery that modified flash or found structural corruption,
+ * unresolved committed-journal disposition, a partition that disappears at
+ * runtime, and the PARTITION_FAIL injection. It invalidates the peek and
+ * tail-cache state; FlashTelemetryManager observes isFatal() and routes
+ * telemetry to PSRAM (salvaging the RAM assembly first - no record accepted
+ * as "persisted" is ever silently stranded).
+ *
  * Thread safety: NOT thread-safe. Call from a single task.
  * RAM usage: two 4KB buffers (assembly + tail read cache) + ~400B state.
  */
@@ -62,6 +106,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <string.h>
 #include <Preferences.h>
 
 extern "C" {
@@ -97,6 +142,33 @@ struct RecordHeader {
     uint16_t meta;          // caller metadata (BlockHeader roundedUpPayloadSize)
     uint16_t reserved;      // written as 0
 } __attribute__((packed));
+
+/**
+ * @brief Header of the repair-journal sector (the last physical sector,
+ * excluded from the ring). Used to make torn-head repair a durable
+ * copy-on-write transaction:
+ *
+ *   1. journal erased, rescued record bytes written at JOURNAL_HEADER_SIZE
+ *   2. this header written LAST (= the commit point)
+ *   3. damaged ring sector erased and rebuilt from the journal
+ *   4. journal erased (transaction complete)
+ *
+ * Boot recovery replays any committed journal before scanning, so a power cut
+ * at any point during repair is recoverable and the replay is idempotent.
+ */
+struct JournalHeader {
+    uint32_t magic;         // 0x4C4E524A "JRNL"
+    uint32_t target_sector; // ring sector being rebuilt
+    uint32_t seq;           // that sector's original seq (restamped verbatim)
+    uint32_t data_len;      // rescued record bytes stored after this header
+    uint32_t data_crc;      // CRC32 over the rescued record bytes
+    uint32_t hdr_crc;       // CRC32 over the 20 bytes above
+} __attribute__((packed));
+// Exactly the SectorHeader size, so the journal's data area always holds the
+// largest possible rescued extent (SECTOR_SIZE - SECTOR_HEADER_SIZE) and a
+// rescue never has to drop a valid trailing record to fit.
+static_assert(sizeof(JournalHeader) == sizeof(SectorHeader),
+              "journal data area must cover the full rescued record extent");
 
 /**
  * @brief State persisted in ESP32 NVS ("flashring"/"state2").
@@ -141,9 +213,14 @@ public:
     static const uint32_t SECTOR_SIZE        = 4096;
     static const uint32_t RING_BUFFER_SIZE   = 10 * 1024 * 1024;            // 10MB partition
     static const uint32_t TOTAL_SECTORS      = RING_BUFFER_SIZE / SECTOR_SIZE; // 2560
+    // Last physical sector is the repair journal; the ring uses the rest.
+    static const uint32_t RING_SECTORS       = TOTAL_SECTORS - 1;           // 2559
+    static const uint32_t JOURNAL_SECTOR     = TOTAL_SECTORS - 1;
     static const uint32_t SECTOR_HEADER_SIZE = sizeof(SectorHeader);        // 24
     static const uint32_t RECORD_HEADER_SIZE = sizeof(RecordHeader);        // 8
+    static const uint32_t JOURNAL_HEADER_SIZE = sizeof(JournalHeader);      // 24
     static const uint32_t SECTOR_MAGIC       = 0x42474F4C;                  // "LOGB"
+    static const uint32_t JOURNAL_MAGIC      = 0x4C4E524A;                  // "JRNL"
     static const uint32_t USABLE_SECTOR_SIZE = SECTOR_SIZE - SECTOR_HEADER_SIZE; // 4072
 
     // === Message size constraints ===
@@ -161,6 +238,11 @@ private:
     Preferences            m_preferences;
     bool                   m_initialized;
     bool                   m_writes_disabled;   // set by prepareForShutdown()
+    // Set when a runtime recovery fails (e.g. POST rescan or journal clear):
+    // the RAM bookkeeping can no longer be trusted to describe the partition,
+    // so every read/write entry point refuses until a successful repair,
+    // factory reset, or reboot. FlashTelemetryManager routes to PSRAM.
+    bool                   m_fatal;
     long unsigned int    (*m_fn_millis)(void);
 
     // === Head (write) state ===
@@ -205,6 +287,13 @@ private:
     // === In-use sector bitmap (1 bit per sector, 320 bytes) ===
     uint8_t  m_sector_map[TOTAL_SECTORS / 8];
 
+    // === Known-erased bitmap (RAM only, 320 bytes) ===
+    // Set when a sector is erased this boot, cleared by any program op into
+    // it. Lets openNextHeadSector() skip re-erasing a sector that
+    // advanceTailSector() already reclaimed (one erase per reuse cycle).
+    // Starts all-clear at boot, so the first cycle erases conservatively.
+    uint8_t  m_erased_map[TOTAL_SECTORS / 8];
+
     // === Low-level flash helpers ===
     bool      findPartition();
     esp_err_t eraseSector(uint32_t sector_index);
@@ -220,8 +309,30 @@ private:
     void mapSet(uint32_t sector, bool in_use);
     bool mapGet(uint32_t sector) const;
     uint32_t mapCountInUse() const;
-    // next in-use sector strictly after 'from' (wraps); returns TOTAL_SECTORS if none
+    // next in-use sector strictly after 'from' (wraps); returns RING_SECTORS if none
     uint32_t mapNextInUse(uint32_t from) const;
+    void mapSetErased(uint32_t sector, bool erased);
+    bool mapGetErased(uint32_t sector) const;
+
+    // POST/repair helper: counts ring sectors whose header is unreadable or
+    // invalid-but-nonblank (their records are unreadable and excluded from
+    // the ring). With deep_blank_check the full sector body is read, so a
+    // sector with an erased header but programmed body is also counted.
+    // Returns false when the requested verification level could NOT be
+    // completed (e.g. buffer allocation failure) - the count is then not a
+    // proof and the caller must treat verification as failed.
+    bool countNonblankInvalidHeaderSectors(bool deep_blank_check,
+                                           uint32_t& anomalies) const;
+
+    // Recheck of the structural conditions in POST's initial health result:
+    // head/tail bounds, offsets, and RAM/flash agreement on the open sector
+    // (if any open sector exists it must be exactly the RAM head, and
+    // m_head_open must match).
+    bool verifyStructuralState() const;
+
+    // THE single transition into the FATAL state (see the state model at the
+    // top of this file). Invalidates peek and tail-cache state.
+    void enterFatalState(const char* context);
 
     // === Header helpers ===
     bool readSectorHeader(uint32_t sector, SectorHeader& header) const;
@@ -242,10 +353,61 @@ private:
     bool advanceTailSector();      // reclaim (erase) tail sector, move to next
     uint32_t tailSectorDataEnd() const; // valid data end offset of tail sector
 
-    // === Recovery ===
-    bool scanAndRecover(FlashDiagnostics* diag);
+    // === Recovery (transactional) ===
+    /**
+     * Complete candidate runtime state built by a recovery scan. The live
+     * members are replaced only by applyRecoveredState() after the whole scan
+     * and every verification succeeded - a scan that fails halfway can never
+     * leave partial or stale bookkeeping live.
+     */
+    struct RecoveredState {
+        uint8_t  sector_map[TOTAL_SECTORS / 8];
+        uint32_t head_sector;
+        uint32_t head_seq;
+        bool     head_open;
+        uint32_t head_write_offset;
+        uint32_t head_used;
+        uint32_t head_record_count;
+        bool     ring_virgin;
+        uint32_t tail_sector;
+        uint32_t tail_seq;
+        uint32_t tail_offset;
+        uint32_t tail_consumed;
+        uint32_t record_count;
+        uint32_t next_seq;
+    };
+    // one canonical empty-ring state (preserves seq monotonicity)
+    void canonicalEmptyState(RecoveredState& s) const;
+    // atomically publish a verified candidate as the live state
+    void applyRecoveredState(const RecoveredState& s);
+    /**
+     * Build a complete candidate state from flash. Returns false on failure;
+     * out-params report whether flash was modified (journal replay / torn
+     * rescue) and whether the previous live state may be kept (only when
+     * flash was NOT modified, journal disposition is resolved, and no
+     * structural corruption was found - otherwise the caller must go FATAL
+     * at runtime / fail init at boot).
+     */
+    bool buildRecoveredState(RecoveredState& out, FlashDiagnostics* diag,
+                             bool& flash_modified, bool& keep_old_state_ok);
+    bool scanAndRecover(FlashDiagnostics* diag, bool flash_already_modified = false);
     bool rescueTornHeadSector(uint32_t sector, uint32_t valid_end,
                               uint32_t valid_count);
+    // journal transaction pieces (see JournalHeader)
+    bool writeRepairJournal(uint32_t target_sector, uint32_t seq,
+                            const uint8_t* records, uint32_t data_len);
+    bool rebuildSectorFromRecords(uint32_t target_sector, uint32_t seq,
+                                  const uint8_t* records, uint32_t data_len);
+    // Resolves any committed journal before scanning: replay-and-clear, or
+    // discard-and-clear. Returns false whenever a committed journal's
+    // disposition could not be fully resolved (INCLUDING a failed erase in a
+    // discard branch) - normal operation must then not resume.
+    bool replayRepairJournal(bool& flash_modified);
+
+    // Destructive half of POST repair. The caller must pass the resulting
+    // flash_modified flag into scanAndRecover(), so a failed recovery can
+    // never retain bookkeeping from before an erase.
+    bool eraseCorruptSectors(bool& flash_modified);
 
     // === Persistent state ===
     bool loadPersistedState(FlashRingPersistedState& out) const;
@@ -265,6 +427,11 @@ public:
     bool init(long unsigned int (*fn_millis)(void));
     void teardown();
     bool isInitialized() const { return m_initialized; }
+    /** @brief True after a failed runtime recovery: bookkeeping is untrusted,
+     *  all data operations refuse, and the manager must route to PSRAM.
+     *  Cleared by a fully successful POST auto-repair, factory reset, or
+     *  reinitialization. */
+    bool isFatal() const { return m_fatal; }
 
     // === Write path ===
     /**
@@ -291,6 +458,19 @@ public:
     /** @brief Remove the record returned by the last peek. Call after MQTT ack. */
     bool consumeOldestRecord();
 
+    /** @brief Copy the oldest RAM assembly record without removing it. */
+    bool peekOldestAssemblyRecord(uint8_t* payload, uint16_t max_length,
+                                  uint16_t& length, uint16_t& meta) const;
+
+    /** @brief Remove the record returned by peekOldestAssemblyRecord(). */
+    bool consumeOldestAssemblyRecord();
+
+    /** @brief Compatibility wrapper that peeks then consumes atomically from
+     *  the caller's perspective. New transfer code should use the two-phase
+     *  API so source removal happens only after the destination commits. */
+    bool drainOldestAssemblyRecord(uint8_t* payload, uint16_t max_length,
+                                   uint16_t& length, uint16_t& meta);
+
     // === Status (all O(1) except getUsedSpace which counts the bitmap) ===
     uint32_t getRecordCount() const { return m_record_count + m_assembly_count; }
     uint32_t getFlushedRecordCount() const { return m_record_count; }
@@ -313,9 +493,12 @@ public:
     bool performSelfTest();
 
     /**
-     * @brief Read-only structural health scan of every sector header plus the
-     * head/tail sectors in detail. Never modifies data. auto_repair currently
-     * only logs what repairCorruption() would do.
+     * @brief Structural health scan of every ring sector header plus a state
+     * consistency check. The scan itself is read-only; with auto_repair it
+     * MAY write on anomalies: erasing garbage-header sectors
+     * (repairCorruption), a torn-head journal rescue, and the NVS cursor
+     * save inside the recovery rescan. A failed rescan marks the ring fatal
+     * (see isFatal()); a fully verified repair clears an existing fatal state.
      */
     bool performPowerOnSelfTest(bool auto_repair = true);
 
@@ -331,14 +514,16 @@ public:
 
     // === Shutdown ===
     /** @brief Flush assembly buffer, save cursor, block further writes.
-     *  After this returns it is safe to cut power. */
-    void prepareForShutdown();
-    void emergencyFlush();
+     *  Returns true only when both persistence steps verified successful -
+     *  power may be cut safely ONLY then. On failure writes stay enabled so
+     *  the operation can be retried. */
+    bool prepareForShutdown();
+    bool emergencyFlush();
 
     // === Reset and repair ===
     bool factoryReset();     // erase everything + clear NVS + reinit
     bool clearAllData();     // erase all sectors (keeps NVS namespace)
-    bool repairCorruption(); // erase sectors with invalid headers outside the ring
+    bool repairCorruption(); // full repair + recovery + verification transaction
 
     // === Failure injection (TESTING_MODE builds only) ===
     #ifdef TESTING_MODE
@@ -351,6 +536,49 @@ public:
     bool simulatePartitionFailure();
     bool injectCRCCorruption(uint32_t sector_index);
     void enableFailureInjection();
+
+    // --- Deterministic fault seams ---------------------------------------
+    // All zero/false = inert (and the struct does not exist outside
+    // TESTING_MODE builds). A countdown of N makes the N-th subsequent
+    // guarded operation fail once; the seam then re-arms to inert.
+    struct FaultSeams {
+        uint32_t fail_read_countdown;          // partition reads
+        uint32_t fail_program_countdown;       // partition program ops
+        uint32_t fail_erase_countdown;         // ring-sector erases
+        uint32_t fail_journal_erase_countdown; // erases of JOURNAL_SECTOR
+        uint32_t fail_nvs_save_countdown;      // savePersistedState()
+        bool     fail_diag_alloc;              // diagnostic buffer allocation
+        bool     fail_recovery_before_sector_scan; // after journal/NVS, before headers
+    };
+    FaultSeams& faultSeams() { return m_seams; }
+    void clearFaultSeams() { memset(&m_seams, 0, sizeof(m_seams)); }
+
+    /**
+     * @brief Deterministic review-test matrix (sol-code-review-5.md): runs
+     * the ring-level cases with explicit post-state assertions, printing
+     * PASS/FAIL per case. Requires an empty ring and leaves it reset.
+     */
+    bool runReviewTestMatrix();
+
+    /** @brief Test hook: enter the fatal state directly (manager-level
+     *  salvage tests need a deterministic fatal transition). */
+    void testForceFatal() { enterFatalState("test-forced"); }
+    bool testRestorePartitionAccess();
+    bool testResetForMatrix() { return matrixReset(); }
+    #endif
+
+private:
+    #ifdef TESTING_MODE
+    mutable FaultSeams m_seams;
+    static bool seamFire(uint32_t& countdown) {
+        if (countdown == 0) return false;
+        return --countdown == 0;
+    }
+    // one review-test case: prints and accumulates the result
+    void matrixCase(const char* name, bool passed, bool& all_passed);
+    // between-case cleanup: erase the sectors the cases touch (cheap, not the
+    // whole partition), clear seams/NVS, reinitialize to a virgin ring
+    bool matrixReset();
     #endif
 };
 

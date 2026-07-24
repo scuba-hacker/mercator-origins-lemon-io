@@ -41,6 +41,9 @@ FlashRingBuffer::FlashRingBuffer() :
     m_assembly(nullptr),
     m_tail_cache(nullptr) {
     resetRuntimeState();
+#ifdef TESTING_MODE
+    clearFaultSeams();
+#endif
 }
 
 FlashRingBuffer::~FlashRingBuffer() {
@@ -70,6 +73,8 @@ void FlashRingBuffer::resetRuntimeState() {
     m_first_unflushed_ms = 0;
     m_max_unflushed_ms = DEFAULT_MAX_UNFLUSHED_MS;
 
+    m_fatal = false;
+
     m_tail_cache_sector = 0;
     m_tail_cache_extent = 0;
     m_tail_cache_valid = false;
@@ -80,6 +85,7 @@ void FlashRingBuffer::resetRuntimeState() {
     m_peek_offset = 0;
 
     memset(m_sector_map, 0, sizeof(m_sector_map));
+    memset(m_erased_map, 0, sizeof(m_erased_map));
 }
 
 // ---------------------------------------------------------------------------
@@ -146,8 +152,10 @@ bool FlashRingBuffer::init(long unsigned int (*fn_millis)(void)) {
 }
 
 void FlashRingBuffer::teardown() {
-    if (m_initialized) {
-        // Persist anything still pending so a deliberate teardown loses nothing.
+    if (m_initialized && !m_fatal) {
+        // Persist anything still pending so a deliberate teardown loses
+        // nothing. Skipped entirely in the fatal state - the bookkeeping is
+        // untrusted and saving its cursor to NVS would poison the next boot.
         if (m_assembly_used > 0 && !m_writes_disabled) {
             flush();
         }
@@ -194,37 +202,92 @@ bool FlashRingBuffer::findPartition() {
 }
 
 esp_err_t FlashRingBuffer::eraseSector(uint32_t sector_index) {
-    if (sector_index >= TOTAL_SECTORS || !m_partition) {
+    if (sector_index >= TOTAL_SECTORS) {
         return ESP_ERR_INVALID_ARG;
     }
+    if (!m_partition) {
+        // Central partition-loss policy: a store that cannot erase must not
+        // keep accepting or serving telemetry.
+        if (m_initialized) {
+            enterFatalState("partition unavailable (erase)");
+        }
+        return ESP_ERR_INVALID_ARG;
+    }
+#ifdef TESTING_MODE
+    if (sector_index == JOURNAL_SECTOR
+            ? seamFire(m_seams.fail_journal_erase_countdown)
+            : seamFire(m_seams.fail_erase_countdown)) {
+        USB_SERIAL_PRINTF("SEAM: injected erase failure, sector %u\n", sector_index);
+        return ESP_FAIL;
+    }
+#endif
     esp_err_t err = esp_partition_erase_range(m_partition, sector_index * SECTOR_SIZE, SECTOR_SIZE);
     if (err != ESP_OK) {
         USB_SERIAL_PRINTF("FlashRingBuffer::eraseSector() - sector %u failed: %s\n",
                           sector_index, esp_err_to_name(err));
+        if (m_initialized) {
+            enterFatalState("partition erase failed");
+        }
+    } else {
+        mapSetErased(sector_index, true);
     }
     return err;
 }
 
 esp_err_t FlashRingBuffer::writeBytes(uint32_t offset, const void* src, size_t len) {
-    if (!m_partition || offset + len > RING_BUFFER_SIZE) {
+    if (offset + len > RING_BUFFER_SIZE) {
         return ESP_ERR_INVALID_ARG;
     }
+    if (!m_partition) {
+        if (m_initialized) {
+            enterFatalState("partition unavailable (program)");
+        }
+        return ESP_ERR_INVALID_ARG;
+    }
+    // Clear the known-erased bit BEFORE programming: a failed write may still
+    // have flipped bits, so failure does not prove the sector is still blank.
+    // (Writes never span sectors in this design.)
+    mapSetErased(offset / SECTOR_SIZE, false);
+#ifdef TESTING_MODE
+    if (seamFire(m_seams.fail_program_countdown)) {
+        USB_SERIAL_PRINTF("SEAM: injected program failure @ 0x%x\n", offset);
+        return ESP_FAIL;
+    }
+#endif
     esp_err_t err = esp_partition_write(m_partition, offset, src, len);
     if (err != ESP_OK) {
         USB_SERIAL_PRINTF("FlashRingBuffer::writeBytes() - offset 0x%x len %u failed: %s\n",
                           offset, (unsigned)len, esp_err_to_name(err));
+        if (m_initialized) {
+            enterFatalState("partition program failed");
+        }
     }
     return err;
 }
 
 esp_err_t FlashRingBuffer::readBytes(uint32_t offset, void* dst, size_t len) const {
-    if (!m_partition || offset + len > RING_BUFFER_SIZE) {
+    if (offset + len > RING_BUFFER_SIZE) {
         return ESP_ERR_INVALID_ARG;
     }
+    if (!m_partition) {
+        if (m_initialized) {
+            const_cast<FlashRingBuffer*>(this)->enterFatalState("partition unavailable (read)");
+        }
+        return ESP_ERR_INVALID_ARG;
+    }
+#ifdef TESTING_MODE
+    if (seamFire(m_seams.fail_read_countdown)) {
+        USB_SERIAL_PRINTF("SEAM: injected read failure @ 0x%x\n", offset);
+        return ESP_FAIL;
+    }
+#endif
     esp_err_t err = esp_partition_read(m_partition, offset, dst, len);
     if (err != ESP_OK) {
         USB_SERIAL_PRINTF("FlashRingBuffer::readBytes() - offset 0x%x len %u failed: %s\n",
                           offset, (unsigned)len, esp_err_to_name(err));
+        if (m_initialized) {
+            const_cast<FlashRingBuffer*>(this)->enterFatalState("partition read failed");
+        }
     }
     return err;
 }
@@ -291,13 +354,38 @@ uint32_t FlashRingBuffer::mapCountInUse() const {
 }
 
 uint32_t FlashRingBuffer::mapNextInUse(uint32_t from) const {
-    for (uint32_t step = 1; step <= TOTAL_SECTORS; step++) {
-        uint32_t sector = (from + step) % TOTAL_SECTORS;
+    for (uint32_t step = 1; step <= RING_SECTORS; step++) {
+        uint32_t sector = (from + step) % RING_SECTORS;
         if (mapGet(sector)) {
             return sector;
         }
     }
-    return TOTAL_SECTORS;
+    return RING_SECTORS;
+}
+
+void FlashRingBuffer::enterFatalState(const char* context) {
+    if (!m_fatal) {
+        USB_SERIAL_PRINTF("FlashRingBuffer::enterFatalState() - %s: bookkeeping untrusted, "
+                          "all flash data operations disabled (recover via verified POST repair, factory reset, or reboot)\n",
+                          context);
+    }
+    m_fatal = true;
+    m_tail_cache_valid = false;
+    invalidatePeek();
+}
+
+void FlashRingBuffer::mapSetErased(uint32_t sector, bool erased) {
+    if (sector >= TOTAL_SECTORS) return;
+    if (erased) {
+        m_erased_map[sector >> 3] |= (uint8_t)(1u << (sector & 7));
+    } else {
+        m_erased_map[sector >> 3] &= (uint8_t)~(1u << (sector & 7));
+    }
+}
+
+bool FlashRingBuffer::mapGetErased(uint32_t sector) const {
+    if (sector >= TOTAL_SECTORS) return false;
+    return (m_erased_map[sector >> 3] >> (sector & 7)) & 1u;
 }
 
 // ---------------------------------------------------------------------------
@@ -344,10 +432,26 @@ bool FlashRingBuffer::appendRecord(const uint8_t* payload, uint16_t length, uint
         USB_SERIAL_PRINTLN("FlashRingBuffer::appendRecord() - writes disabled (shutdown prepared)");
         return false;
     }
+    if (m_fatal) {
+        return false;  // markFatal() already logged; caller falls back to PSRAM
+    }
     if (length < MIN_MESSAGE_SIZE || length > MAX_MESSAGE_SIZE) {
         USB_SERIAL_PRINTF("FlashRingBuffer::appendRecord() - invalid length %u (must be %u-%u)\n",
                           length, MIN_MESSAGE_SIZE, MAX_MESSAGE_SIZE);
         return false;
+    }
+
+    // Age-based flush bounds RAM data loss on an unplanned power cut. Run it
+    // BEFORE accepting the new record so a flash failure propagates to the
+    // caller (which falls back to PSRAM) instead of being swallowed by an
+    // unconditional success return.
+    uint32_t now = m_fn_millis ? m_fn_millis() : 0;
+    if (m_first_unflushed_ms != 0 && now &&
+        (now - m_first_unflushed_ms) >= m_max_unflushed_ms) {
+        if (!flush()) {
+            USB_SERIAL_PRINTLN("FlashRingBuffer::appendRecord() - age-triggered flush FAILED");
+            return false;
+        }
     }
 
     const uint32_t slot = alignSlot(RECORD_HEADER_SIZE + length);
@@ -388,21 +492,15 @@ bool FlashRingBuffer::appendRecord(const uint8_t* payload, uint16_t length, uint
     m_assembly_used += slot;
     m_assembly_count++;
 
-    uint32_t now = m_fn_millis ? m_fn_millis() : 0;
     if (m_first_unflushed_ms == 0) {
         m_first_unflushed_ms = now ? now : 1;
-    }
-
-    // Age-based flush bounds RAM data loss on an unplanned power cut.
-    if (now && (now - m_first_unflushed_ms) >= m_max_unflushed_ms) {
-        flush();
     }
 
     return true;
 }
 
 bool FlashRingBuffer::flush() {
-    if (!m_initialized) {
+    if (!m_initialized || m_fatal) {
         return false;
     }
     if (m_assembly_used == 0) {
@@ -449,7 +547,9 @@ bool FlashRingBuffer::flush() {
 
     // No room for even a minimum record? Seal the sector now.
     if ((SECTOR_SIZE - m_head_write_offset) < MIN_SLOT_SIZE) {
-        closeHeadSector();
+        if (!closeHeadSector()) {
+            return false;
+        }
     }
 
     return true;
@@ -464,7 +564,7 @@ bool FlashRingBuffer::openNextHeadSector() {
     if (m_ring_virgin && !mapGet(m_head_sector)) {
         next = m_head_sector;  // very first use: claim the current position
     } else {
-        next = (m_head_sector + 1) % TOTAL_SECTORS;
+        next = (m_head_sector + 1) % RING_SECTORS;
     }
 
     if (mapGet(next)) {
@@ -483,7 +583,12 @@ bool FlashRingBuffer::openNextHeadSector() {
         }
     }
 
-    if (eraseSector(next) != ESP_OK) {
+    // One erase per reuse cycle: skip if advanceTailSector() already erased
+    // this sector this boot (the erased map is RAM-only, so the first cycle
+    // after power-on still erases conservatively).
+    if (mapGetErased(next)) {
+        USB_SERIAL_PRINTF("FlashRingBuffer::openNextHeadSector() - sector %u already erased, skipping erase\n", next);
+    } else if (eraseSector(next) != ESP_OK) {
         return false;
     }
 
@@ -606,7 +711,7 @@ bool FlashRingBuffer::dropOldestSector() {
     invalidatePeek();
 
     uint32_t next = mapNextInUse(victim);
-    if (next == TOTAL_SECTORS) {
+    if (next == RING_SECTORS) {
         m_tail_sector = m_head_sector;
         m_tail_seq = m_head_seq;
     } else {
@@ -694,7 +799,7 @@ uint32_t FlashRingBuffer::tailSectorDataEnd() const {
 
 bool FlashRingBuffer::peekOldestRecord(uint8_t* payload, uint16_t max_length,
                                        uint16_t& actual_length, uint16_t& meta) {
-    if (!m_initialized || !payload) {
+    if (!m_initialized || m_fatal || !payload) {
         return false;
     }
 
@@ -805,7 +910,7 @@ bool FlashRingBuffer::peekOldestRecord(uint8_t* payload, uint16_t max_length,
 }
 
 bool FlashRingBuffer::consumeOldestRecord() {
-    if (!m_initialized || !m_peek_valid) {
+    if (!m_initialized || m_fatal || !m_peek_valid) {
         return false;
     }
 
@@ -823,6 +928,60 @@ bool FlashRingBuffer::consumeOldestRecord() {
         advanceTailSector();
     }
     return true;
+}
+
+bool FlashRingBuffer::peekOldestAssemblyRecord(uint8_t* payload, uint16_t max_length,
+                                               uint16_t& length, uint16_t& meta) const {
+    // RAM only: deliberately admitted in FATAL so accepted records can move
+    // to fallback storage without touching untrusted flash state.
+    if (!m_assembly || m_assembly_count == 0 || !payload) {
+        return false;
+    }
+
+    RecordHeader header;
+    memcpy(&header, m_assembly, RECORD_HEADER_SIZE);
+    if (header.len < MIN_MESSAGE_SIZE || header.len > MAX_MESSAGE_SIZE ||
+        header.len > max_length) {
+        return false;
+    }
+
+    memcpy(payload, m_assembly + RECORD_HEADER_SIZE, header.len);
+    length = header.len;
+    meta = header.meta;
+
+    uint32_t slot = alignSlot(RECORD_HEADER_SIZE + header.len);
+    return slot <= m_assembly_used;
+}
+
+bool FlashRingBuffer::consumeOldestAssemblyRecord() {
+    if (!m_assembly || m_assembly_count == 0) {
+        return false;
+    }
+
+    RecordHeader header;
+    memcpy(&header, m_assembly, RECORD_HEADER_SIZE);
+    if (header.len < MIN_MESSAGE_SIZE || header.len > MAX_MESSAGE_SIZE) {
+        return false;
+    }
+
+    uint32_t slot = alignSlot(RECORD_HEADER_SIZE + header.len);
+    if (slot > m_assembly_used) {
+        return false;
+    }
+    memmove(m_assembly, m_assembly + slot, m_assembly_used - slot);
+    m_assembly_used -= slot;
+    m_assembly_count--;
+    if (m_assembly_count == 0) {
+        m_assembly_used = 0;
+        m_first_unflushed_ms = 0;
+    }
+    return true;
+}
+
+bool FlashRingBuffer::drainOldestAssemblyRecord(uint8_t* payload, uint16_t max_length,
+                                                uint16_t& length, uint16_t& meta) {
+    return peekOldestAssemblyRecord(payload, max_length, length, meta) &&
+           consumeOldestAssemblyRecord();
 }
 
 bool FlashRingBuffer::advanceTailSector() {
@@ -857,7 +1016,7 @@ bool FlashRingBuffer::advanceTailSector() {
     }
 
     uint32_t next = mapNextInUse(old);
-    if (next == TOTAL_SECTORS) {
+    if (next == RING_SECTORS) {
         // No in-use sector left (count drift) - reset to empty at the head.
         m_record_count = 0;
         m_tail_sector = m_head_sector;
@@ -878,33 +1037,103 @@ bool FlashRingBuffer::advanceTailSector() {
 // Boot recovery
 // ---------------------------------------------------------------------------
 
-bool FlashRingBuffer::scanAndRecover(FlashDiagnostics* diag) {
-    USB_SERIAL_PRINTLN("FlashRingBuffer::scanAndRecover() - scanning sector headers");
+void FlashRingBuffer::canonicalEmptyState(RecoveredState& s) const {
+    memset(&s, 0, sizeof(s));
+    s.head_sector = 0;
+    s.head_seq = 0;
+    s.head_open = false;
+    s.head_write_offset = SECTOR_HEADER_SIZE;
+    s.head_used = 0;
+    s.head_record_count = 0;
+    s.ring_virgin = true;
+    s.tail_sector = 0;
+    s.tail_seq = 0;
+    s.tail_offset = SECTOR_HEADER_SIZE;
+    s.tail_consumed = 0;
+    s.record_count = 0;
+    s.next_seq = (m_next_seq > 0) ? m_next_seq : 1;  // seq stays monotonic
+}
+
+void FlashRingBuffer::applyRecoveredState(const RecoveredState& s) {
+    memcpy(m_sector_map, s.sector_map, sizeof(m_sector_map));
+    m_head_sector = s.head_sector;
+    m_head_seq = s.head_seq;
+    m_head_open = s.head_open;
+    m_head_write_offset = s.head_write_offset;
+    m_head_used = s.head_used;
+    m_head_record_count = s.head_record_count;
+    m_ring_virgin = s.ring_virgin;
+    m_tail_sector = s.tail_sector;
+    m_tail_seq = s.tail_seq;
+    m_tail_offset = s.tail_offset;
+    m_tail_consumed = s.tail_consumed;
+    m_record_count = s.record_count;
+    m_next_seq = s.next_seq;
+    m_tail_cache_valid = false;
+    invalidatePeek();
+}
+
+bool FlashRingBuffer::buildRecoveredState(RecoveredState& out, FlashDiagnostics* diag,
+                                          bool& flash_modified, bool& keep_old_state_ok) {
+    flash_modified = false;
+    keep_old_state_ok = true;
+    canonicalEmptyState(out);
+
+    // Resolve any committed journal FIRST. An unresolved disposition means
+    // normal operation must not resume on any path.
+    if (!replayRepairJournal(flash_modified)) {
+        keep_old_state_ok = false;
+        return false;
+    }
 
     FlashRingPersistedState nvs;
     bool have_nvs = loadPersistedState(nvs);
     if (have_nvs) {
-        m_next_seq = (nvs.next_seq > 0) ? nvs.next_seq : 1;
-        m_write_count = nvs.write_count;
+        if (nvs.next_seq > out.next_seq) {
+            out.next_seq = nvs.next_seq;
+        }
+        if (!m_initialized) {
+            m_write_count = nvs.write_count;  // wear statistic; boot seed only
+        }
     }
 
+#ifdef TESTING_MODE
+    if (m_seams.fail_recovery_before_sector_scan) {
+        m_seams.fail_recovery_before_sector_scan = false;
+        USB_SERIAL_PRINTLN("SEAM: injected recovery failure before sector scan");
+        return false;
+    }
+#endif
+
     uint32_t lowest_seq = UINT32_MAX, highest_seq = 0;
-    uint32_t head_candidate = TOTAL_SECTORS, tail_candidate = TOTAL_SECTORS;
+    uint32_t head_candidate = RING_SECTORS, tail_candidate = RING_SECTORS;
     SectorHeader head_header, tail_header;
     uint32_t in_use = 0;
     uint32_t closed_records = 0;
+    uint32_t open_count = 0, open_sector = RING_SECTORS;
 
-    for (uint32_t sector = 0; sector < TOTAL_SECTORS; sector++) {
+    for (uint32_t sector = 0; sector < RING_SECTORS; sector++) {
         SectorHeader header;
-        if (!readSectorHeader(sector, header) || !headerValid(header)) {
+        if (!readSectorHeader(sector, header)) {
+            // Cannot prove this sector's disposition - the candidate would be
+            // incomplete. Fail the scan; the caller keeps the old state (if
+            // flash is unmodified) or goes fatal.
+            USB_SERIAL_PRINTF("FlashRingBuffer::buildRecoveredState() - sector %u header unreadable, aborting scan\n",
+                              sector);
+            return false;
+        }
+        if (!headerValid(header)) {
             continue;
         }
 
-        mapSet(sector, true);
+        out.sector_map[sector >> 3] |= (uint8_t)(1u << (sector & 7));
         in_use++;
 
         if (headerClosed(header)) {
             closed_records += header.closed_count;
+        } else {
+            open_count++;
+            open_sector = sector;
         }
 
         if (header.seq >= highest_seq) {
@@ -917,8 +1146,8 @@ bool FlashRingBuffer::scanAndRecover(FlashDiagnostics* diag) {
             tail_candidate = sector;
             tail_header = header;
         }
-        if (header.seq >= m_next_seq) {
-            m_next_seq = header.seq + 1;
+        if (header.seq >= out.next_seq) {
+            out.next_seq = header.seq + 1;
         }
 
         if ((sector & 0xFF) == 0) {
@@ -928,42 +1157,54 @@ bool FlashRingBuffer::scanAndRecover(FlashDiagnostics* diag) {
 
     if (diag) {
         diag->in_use_sectors = in_use;
-        diag->erased_sectors = TOTAL_SECTORS - in_use;
+        diag->erased_sectors = RING_SECTORS - in_use;
     }
 
     if (in_use == 0) {
-        USB_SERIAL_PRINTLN("FlashRingBuffer::scanAndRecover() - empty partition, lazy fresh start (no writes)");
-        m_ring_virgin = true;
-        m_head_sector = 0;
-        m_tail_sector = 0;
-        m_record_count = 0;
-        return true;
+        USB_SERIAL_PRINTLN("FlashRingBuffer::buildRecoveredState() - empty partition, canonical fresh state (no writes)");
+        return true;  // 'out' is the complete canonical empty state
+    }
+
+    // Structural invariant: any open sector must be exactly the highest-seq
+    // (head) sector. The append protocol closes a sector before opening the
+    // next, so any other arrangement is corruption; records in a stray open
+    // sector cannot be ordered or counted, and guessing would risk data. No
+    // destructive auto-repair here - refuse and let the caller go fatal /
+    // fail init.
+    if (open_count > 1 || (open_count == 1 && open_sector != head_candidate)) {
+        USB_SERIAL_PRINTF("FlashRingBuffer::buildRecoveredState() - structural corruption: %u open sectors, open %u vs head %u\n",
+                          open_count, open_sector, head_candidate);
+        keep_old_state_ok = false;
+        return false;
     }
 
     // --- Head sector ---
-    m_head_sector = head_candidate;
-    m_head_seq = head_header.seq;
-    m_ring_virgin = false;
+    out.ring_virgin = false;
+    out.head_sector = head_candidate;
+    out.head_seq = head_header.seq;
 
     if (headerClosed(head_header)) {
-        m_head_open = false;
-        m_head_used = head_header.closed_used;
-        m_head_record_count = head_header.closed_count;
-        m_head_write_offset = SECTOR_HEADER_SIZE + m_head_used;
-        m_record_count = closed_records;
+        out.head_open = false;
+        out.head_used = head_header.closed_used;
+        out.head_record_count = head_header.closed_count;
+        out.head_write_offset = SECTOR_HEADER_SIZE + out.head_used;
+        out.record_count = closed_records;
     } else {
         // Open head sector: find the true end of valid data.
         if (readBytes(head_candidate * SECTOR_SIZE, m_tail_cache, SECTOR_SIZE) != ESP_OK) {
             return false;
         }
-        uint32_t open_count = 0;
-        uint32_t extent = scanRecordExtent(m_tail_cache, SECTOR_SIZE, &open_count);
+        uint32_t open_records = 0;
+        uint32_t extent = scanRecordExtent(m_tail_cache, SECTOR_SIZE, &open_records);
         bool torn = !regionIsErased(m_tail_cache, extent, SECTOR_SIZE);
 
         if (torn) {
-            USB_SERIAL_PRINTF("FlashRingBuffer::scanAndRecover() - torn append in head sector %u (valid to %u), rescuing\n",
+            USB_SERIAL_PRINTF("FlashRingBuffer::buildRecoveredState() - torn append in head sector %u (valid to %u), rescuing\n",
                               head_candidate, extent);
-            if (!rescueTornHeadSector(head_candidate, extent, open_count)) {
+            // Set BEFORE attempting: a failed rescue may already have erased.
+            flash_modified = true;
+            keep_old_state_ok = false;
+            if (!rescueTornHeadSector(head_candidate, extent, open_records)) {
                 return false;
             }
             if (diag) {
@@ -971,24 +1212,24 @@ bool FlashRingBuffer::scanAndRecover(FlashDiagnostics* diag) {
             }
         }
 
-        m_head_open = true;
-        m_head_write_offset = extent;
-        m_head_used = extent - SECTOR_HEADER_SIZE;
-        m_head_record_count = open_count;
-        m_record_count = closed_records + open_count;
+        out.head_open = true;
+        out.head_write_offset = extent;
+        out.head_used = extent - SECTOR_HEADER_SIZE;
+        out.head_record_count = open_records;
+        out.record_count = closed_records + open_records;
         m_tail_cache_valid = false;  // scratch use
     }
 
     // --- Tail cursor ---
-    m_tail_sector = tail_candidate;
-    m_tail_seq = tail_header.seq;
-    m_tail_offset = SECTOR_HEADER_SIZE;
-    m_tail_consumed = 0;
+    out.tail_sector = tail_candidate;
+    out.tail_seq = tail_header.seq;
+    out.tail_offset = SECTOR_HEADER_SIZE;
+    out.tail_consumed = 0;
 
     if (have_nvs && nvs.tail_sector == tail_candidate && nvs.tail_seq == tail_header.seq) {
         uint32_t sector_end;
-        if (tail_candidate == m_head_sector && m_head_open) {
-            sector_end = m_head_write_offset;
+        if (tail_candidate == out.head_sector && out.head_open) {
+            sector_end = out.head_write_offset;
         } else if (headerClosed(tail_header)) {
             sector_end = SECTOR_HEADER_SIZE + tail_header.closed_used;
         } else {
@@ -997,57 +1238,221 @@ bool FlashRingBuffer::scanAndRecover(FlashDiagnostics* diag) {
         bool offset_ok = nvs.tail_offset >= SECTOR_HEADER_SIZE &&
                          nvs.tail_offset <= sector_end &&
                          (nvs.tail_offset & 3u) == 0;
-        if (offset_ok && nvs.tail_consumed <= m_record_count) {
-            m_tail_offset = nvs.tail_offset;
-            m_tail_consumed = nvs.tail_consumed;
-            m_record_count -= nvs.tail_consumed;
+        if (offset_ok && nvs.tail_consumed <= out.record_count) {
+            out.tail_offset = nvs.tail_offset;
+            out.tail_consumed = nvs.tail_consumed;
+            out.record_count -= nvs.tail_consumed;
             if (diag) {
                 diag->nvs_state_applied = true;
             }
-            USB_SERIAL_PRINTF("FlashRingBuffer::scanAndRecover() - tail cursor restored from NVS: sector %u @ %u (%u consumed)\n",
-                              m_tail_sector, m_tail_offset, m_tail_consumed);
+            USB_SERIAL_PRINTF("FlashRingBuffer::buildRecoveredState() - tail cursor restored from NVS: sector %u @ %u (%u consumed)\n",
+                              out.tail_sector, out.tail_offset, out.tail_consumed);
         }
     }
 
-    USB_SERIAL_PRINTF("FlashRingBuffer::scanAndRecover() - %u sectors in use (seq %u..%u), %u unread records\n",
-                      in_use, lowest_seq, highest_seq, m_record_count);
+    USB_SERIAL_PRINTF("FlashRingBuffer::buildRecoveredState() - %u sectors in use (seq %u..%u), %u unread records\n",
+                      in_use, lowest_seq, highest_seq, out.record_count);
+    return true;
+}
 
-    savePersistedState();
+bool FlashRingBuffer::scanAndRecover(FlashDiagnostics* diag, bool flash_already_modified) {
+    USB_SERIAL_PRINTLN("FlashRingBuffer::scanAndRecover() - scanning sector headers");
+
+    RecoveredState candidate;
+    bool recovery_modified = false;
+    bool keep_old_state_ok = true;
+
+    if (!buildRecoveredState(candidate, diag, recovery_modified, keep_old_state_ok)) {
+        bool flash_modified = flash_already_modified || recovery_modified;
+        if (m_initialized) {
+            // Runtime entry (POST). At boot, m_initialized is false and the
+            // failed init tears down - nothing trusted exists yet.
+            if (flash_modified || !keep_old_state_ok) {
+                enterFatalState("recovery failed with flash modified or structure untrusted");
+            } else {
+                USB_SERIAL_PRINTLN("FlashRingBuffer::scanAndRecover() - scan failed, flash unmodified: previous trusted state retained");
+            }
+        }
+        return false;
+    }
+
+    // Publish the verified candidate as one deliberate transition.
+    applyRecoveredState(candidate);
+
+    if (!candidate.ring_virgin) {
+        // Non-critical: a failed cursor save only means harmless re-upload.
+        savePersistedState();
+    }
     return true;
 }
 
 bool FlashRingBuffer::rescueTornHeadSector(uint32_t sector, uint32_t valid_end,
                                            uint32_t valid_count) {
-    // m_tail_cache holds the sector image. Rebuild: erase, restamp the header
-    // with the SAME seq, rewrite the rescued records, leave the sector open.
+    // m_tail_cache holds the damaged sector's image. Durable copy-on-write:
+    // journal the rescued records first (commit = journal header, written
+    // last), only then erase and rebuild the damaged sector, finally clear
+    // the journal. Power loss at ANY point is recoverable - boot replays a
+    // committed journal (replayRepairJournal), and the replay is idempotent
+    // because no other write can reach the target sector until the journal
+    // has been durably cleared (a failed clear fails the whole rescue, and
+    // with it initialization - see below).
     (void)valid_count;
 
-    if (eraseSector(sector) != ESP_OK) {
+    uint32_t seq;
+    memcpy(&seq, m_tail_cache + 4, 4);  // original seq from the image
+
+    uint32_t data_len = valid_end - SECTOR_HEADER_SIZE;
+    const uint8_t* records = m_tail_cache + SECTOR_HEADER_SIZE;
+
+    if (!writeRepairJournal(sector, seq, records, data_len)) {
+        USB_SERIAL_PRINTLN("FlashRingBuffer::rescueTornHeadSector() - journal write FAILED, sector left untouched");
+        return false;
+    }
+    if (!rebuildSectorFromRecords(sector, seq, records, data_len)) {
+        return false;
+    }
+    if (eraseSector(JOURNAL_SECTOR) != ESP_OK) {
+        // FATAL: if the committed journal survives while the rebuilt sector
+        // goes on to receive new appends, a later boot would replay the stale
+        // snapshot over them. Failing here fails init, so no new record can
+        // ever be written ahead of an uncleared journal.
+        USB_SERIAL_PRINTLN("FlashRingBuffer::rescueTornHeadSector() - journal clear FAILED - refusing to continue (stale journal would destroy future records)");
+        return false;
+    }
+
+    USB_SERIAL_PRINTF("FlashRingBuffer::rescueTornHeadSector() - sector %u rebuilt with %u bytes of rescued records\n",
+                      sector, data_len);
+    return true;
+}
+
+bool FlashRingBuffer::writeRepairJournal(uint32_t target_sector, uint32_t seq,
+                                         const uint8_t* records, uint32_t data_len) {
+    if (data_len > SECTOR_SIZE - JOURNAL_HEADER_SIZE) {
+        return false;
+    }
+    if (eraseSector(JOURNAL_SECTOR) != ESP_OK) {
+        return false;
+    }
+
+    uint32_t base = JOURNAL_SECTOR * SECTOR_SIZE;
+
+    // Data first; the header is the commit point and is written last.
+    if (data_len > 0) {
+        if (writeBytes(base + JOURNAL_HEADER_SIZE, records, data_len) != ESP_OK) {
+            return false;
+        }
+        m_write_count++;
+    }
+
+    JournalHeader journal;
+    memset(&journal, 0xFF, sizeof(journal));
+    journal.magic = JOURNAL_MAGIC;
+    journal.target_sector = target_sector;
+    journal.seq = seq;
+    journal.data_len = data_len;
+    journal.data_crc = calculateCRC32(records, data_len);
+    journal.hdr_crc = calculateCRC32((const uint8_t*)&journal, 20);
+
+    if (writeBytes(base, &journal, sizeof(journal)) != ESP_OK) {
+        return false;
+    }
+    m_write_count++;
+
+    USB_SERIAL_PRINTF("FlashRingBuffer::writeRepairJournal() - journal committed for sector %u (%u bytes)\n",
+                      target_sector, data_len);
+    return true;
+}
+
+bool FlashRingBuffer::rebuildSectorFromRecords(uint32_t target_sector, uint32_t seq,
+                                               const uint8_t* records, uint32_t data_len) {
+    if (eraseSector(target_sector) != ESP_OK) {
         return false;
     }
 
     SectorHeader header;
     memset(&header, 0xFF, sizeof(header));
     header.magic = SECTOR_MAGIC;
-    memcpy(&header.seq, m_tail_cache + 4, 4);  // original seq from the image
+    header.seq = seq;
     header.hdr_crc = calculateCRC32((const uint8_t*)&header, 8);
 
-    if (writeBytes(sector * SECTOR_SIZE, &header, 12) != ESP_OK) {
+    if (writeBytes(target_sector * SECTOR_SIZE, &header, 12) != ESP_OK) {
         return false;
     }
     m_write_count++;
 
-    if (valid_end > SECTOR_HEADER_SIZE) {
-        if (writeBytes(sector * SECTOR_SIZE + SECTOR_HEADER_SIZE,
-                       m_tail_cache + SECTOR_HEADER_SIZE,
-                       valid_end - SECTOR_HEADER_SIZE) != ESP_OK) {
+    if (data_len > 0) {
+        if (writeBytes(target_sector * SECTOR_SIZE + SECTOR_HEADER_SIZE,
+                       records, data_len) != ESP_OK) {
             return false;
         }
         m_write_count++;
     }
+    return true;
+}
 
-    USB_SERIAL_PRINTF("FlashRingBuffer::rescueTornHeadSector() - sector %u rebuilt with %u bytes of rescued records\n",
-                      sector, valid_end - SECTOR_HEADER_SIZE);
+bool FlashRingBuffer::replayRepairJournal(bool& flash_modified) {
+    JournalHeader journal;
+    if (readBytes(JOURNAL_SECTOR * SECTOR_SIZE, &journal, sizeof(journal)) != ESP_OK) {
+        return false;  // cannot even determine whether a journal exists
+    }
+
+    if (journal.magic != JOURNAL_MAGIC ||
+        calculateCRC32((const uint8_t*)&journal, 20) != journal.hdr_crc) {
+        return true;  // no committed journal (blank or torn journal write) - nothing pending
+    }
+
+    // From this point a COMMITTED journal exists. Every exit below must fully
+    // resolve its disposition: either replayed-and-cleared or
+    // discarded-and-cleared, with the erase VERIFIED. Returning true while a
+    // committed journal survives would let normal writes reach the target
+    // sector and a later boot replay the stale snapshot over them.
+
+    if (journal.target_sector >= RING_SECTORS ||
+        journal.data_len > SECTOR_SIZE - JOURNAL_HEADER_SIZE) {
+        USB_SERIAL_PRINTLN("FlashRingBuffer::replayRepairJournal() - journal fields out of range, discarding");
+        if (eraseSector(JOURNAL_SECTOR) != ESP_OK) {
+            USB_SERIAL_PRINTLN("FlashRingBuffer::replayRepairJournal() - discard erase FAILED - journal disposition unresolved");
+            return false;
+        }
+        return true;  // target untouched, journal verifiably gone
+    }
+
+    USB_SERIAL_PRINTF("FlashRingBuffer::replayRepairJournal() - interrupted repair found for sector %u, replaying\n",
+                      journal.target_sector);
+
+    // m_tail_cache is free at this point (recovery scan has not started).
+    if (readBytes(JOURNAL_SECTOR * SECTOR_SIZE + JOURNAL_HEADER_SIZE,
+                  m_tail_cache, journal.data_len) != ESP_OK) {
+        return false;  // disposition unresolved
+    }
+    if (calculateCRC32(m_tail_cache, journal.data_len) != journal.data_crc) {
+        // Header committed but data does not verify (transient read fault or
+        // flash corruption). The journal cannot be replayed; it must still be
+        // VERIFIABLY cleared before operation resumes, because a later boot
+        // might read it successfully and replay the stale snapshot.
+        USB_SERIAL_PRINTLN("FlashRingBuffer::replayRepairJournal() - ERROR: journal data CRC mismatch, discarding journal");
+        if (eraseSector(JOURNAL_SECTOR) != ESP_OK) {
+            USB_SERIAL_PRINTLN("FlashRingBuffer::replayRepairJournal() - discard erase FAILED - journal disposition unresolved");
+            return false;
+        }
+        return true;  // target untouched, journal verifiably gone
+    }
+
+    flash_modified = true;  // about to modify the target ring sector
+    if (!rebuildSectorFromRecords(journal.target_sector, journal.seq,
+                                  m_tail_cache, journal.data_len)) {
+        return false;
+    }
+    if (eraseSector(JOURNAL_SECTOR) != ESP_OK) {
+        // Normal operation must never resume while a committed journal
+        // remains, or the next boot's replay would erase records appended
+        // after this rebuild.
+        USB_SERIAL_PRINTLN("FlashRingBuffer::replayRepairJournal() - journal clear FAILED - refusing to continue (stale journal would destroy future records)");
+        return false;
+    }
+
+    USB_SERIAL_PRINTF("FlashRingBuffer::replayRepairJournal() - sector %u repair completed\n",
+                      journal.target_sector);
     return true;
 }
 
@@ -1075,7 +1480,7 @@ bool FlashRingBuffer::loadPersistedState(FlashRingPersistedState& out) const {
         USB_SERIAL_PRINTLN("FlashRingBuffer::loadPersistedState() - stored state invalid, ignoring");
         return false;
     }
-    if (state.tail_sector >= TOTAL_SECTORS || state.tail_offset > SECTOR_SIZE) {
+    if (state.tail_sector >= RING_SECTORS || state.tail_offset > SECTOR_SIZE) {
         return false;
     }
     out = state;
@@ -1083,6 +1488,12 @@ bool FlashRingBuffer::loadPersistedState(FlashRingPersistedState& out) const {
 }
 
 bool FlashRingBuffer::savePersistedState() {
+#ifdef TESTING_MODE
+    if (seamFire(m_seams.fail_nvs_save_countdown)) {
+        USB_SERIAL_PRINTLN("SEAM: injected NVS save failure");
+        return false;
+    }
+#endif
     FlashRingPersistedState state;
     state.version = 2;
     state.tail_sector = m_tail_sector;
@@ -1125,14 +1536,15 @@ bool FlashRingBuffer::isFull() const {
     }
     // Drop-oldest policy means appends never block; report "full" only in the
     // transient state where every sector is in use and the head has no room.
-    return mapCountInUse() == TOTAL_SECTORS &&
+    return mapCountInUse() == RING_SECTORS &&
            (!m_head_open || (SECTOR_SIZE - m_head_write_offset) < MIN_SLOT_SIZE);
 }
 
 void FlashRingBuffer::printStatus() const {
     USB_SERIAL_PRINTLN("=== FlashRingBuffer Status ===");
-    USB_SERIAL_PRINTF("Initialized: %s%s\n", m_initialized ? "Yes" : "No",
-                      m_writes_disabled ? " (writes disabled - shutdown prepared)" : "");
+    USB_SERIAL_PRINTF("Initialized: %s%s%s\n", m_initialized ? "Yes" : "No",
+                      m_writes_disabled ? " (writes disabled - shutdown prepared)" : "",
+                      m_fatal ? " (FATAL - recovery failed, data ops disabled)" : "");
     USB_SERIAL_PRINTF("Head: sector %u seq %u %s, append offset %u (%u bytes, %u records)\n",
                       m_head_sector, m_head_seq, m_head_open ? "OPEN" : "closed",
                       m_head_write_offset, m_head_used, m_head_record_count);
@@ -1141,30 +1553,45 @@ void FlashRingBuffer::printStatus() const {
     USB_SERIAL_PRINTF("Records: %u flushed + %u in RAM assembly = %u total\n",
                       m_record_count, m_assembly_count, getRecordCount());
     USB_SERIAL_PRINTF("Assembly buffer: %u bytes pending\n", m_assembly_used);
-    USB_SERIAL_PRINTF("Sectors in use: %u / %u\n", mapCountInUse(), TOTAL_SECTORS);
+    USB_SERIAL_PRINTF("Sectors in use: %u / %u (last sector reserved for repair journal)\n",
+                      mapCountInUse(), RING_SECTORS);
     USB_SERIAL_PRINTF("Space: %u used / %u free\n", getUsedSpace(), getFreeSpace());
     USB_SERIAL_PRINTF("Next seq: %u, lifetime program ops: %u\n", m_next_seq, m_write_count);
     USB_SERIAL_PRINTLN("=============================");
 }
 
-void FlashRingBuffer::prepareForShutdown() {
+bool FlashRingBuffer::prepareForShutdown() {
     USB_SERIAL_PRINTLN("FlashRingBuffer::prepareForShutdown() - flushing and locking writes");
     if (!m_initialized) {
-        return;
+        return true;  // nothing pending, nothing to lose
     }
-    flush();
-    savePersistedState();
+
+    bool flushed = flush();
+    bool saved = savePersistedState();
+
+    if (!flushed || !saved) {
+        // Writes stay ENABLED so the operation can be retried.
+        USB_SERIAL_PRINTF("FlashRingBuffer::prepareForShutdown() - NOT SAFE TO POWER OFF "
+                          "(flush %s, state save %s) - %u records still in RAM, retry or expect loss\n",
+                          flushed ? "ok" : "FAILED", saved ? "ok" : "FAILED",
+                          m_assembly_count);
+        return false;
+    }
+
     m_writes_disabled = true;
     USB_SERIAL_PRINTLN("FlashRingBuffer::prepareForShutdown() - SAFE TO POWER OFF");
+    return true;
 }
 
-void FlashRingBuffer::emergencyFlush() {
+bool FlashRingBuffer::emergencyFlush() {
     if (!m_initialized) {
-        return;
+        return true;
     }
-    flush();
-    savePersistedState();
-    USB_SERIAL_PRINTLN("FlashRingBuffer::emergencyFlush() - complete");
+    bool flushed = flush();
+    bool saved = savePersistedState();
+    USB_SERIAL_PRINTF("FlashRingBuffer::emergencyFlush() - %s\n",
+                      (flushed && saved) ? "complete" : "FAILED (data may remain in RAM)");
+    return flushed && saved;
 }
 
 #define BUILD_INCLUDE_FLASHRINGBUFFER_PART2

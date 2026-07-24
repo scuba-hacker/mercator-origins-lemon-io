@@ -203,7 +203,12 @@ void populateHeadWithLemonTelemetryAndCommit(BlockHeader& headBlock)
     headBlock.setPayloadSize(totalMakoAndLemonLength);
 
     bool isPipelineFull=false;
-    telemetryPipeline.commitPopulatedHeadBlock(headBlock, isPipelineFull);
+    bool committed = telemetryPipeline.commitPopulatedHeadBlock(headBlock, isPipelineFull);
+    if (!committed) {
+      USB_SERIAL_PRINTF("TELEMETRY CAPTURE REFUSED: %hu-byte block was not stored%s\n",
+                        totalMakoAndLemonLength,
+                        isPipelineFull ? " (fallback pipeline full)" : "");
+    }
   
     if (writeTelemetryLogToSerial)
       USB_SERIAL_PRINTF("Commit head block: maxpipeblocklength=%hu longestpipe=%hu pipelineLength=%hu TH=%hu,%hu\n",telemetryPipeline.getMaximumPipelineLength(),telemetryPipeline.getMaximumDepth(),telemetryPipeline.getPipelineLength(),telemetryPipeline.getTailBlockIndex(),telemetryPipeline.getHeadBlockIndex());
@@ -266,8 +271,9 @@ void getNextTelemetryMessagesUploadedToPrivateMQTT()
         uploadStatus = uploadStatusPrivateMQTT = uploadTelemetryToPrivateMQTT(&makoJSON, &lemonForUpload);
 
 
-    // 5. If sent ok then commit (or no send to Qubitro required), otherwise do nothing
-    if (uploadStatus & 0x01 == Q_SUCCESS)
+    // 5. If sent ok then commit (or no send to Qubitro required), otherwise do nothing.
+    // e_q_upload_status convention: success codes are odd, failure codes even.
+    if ((uploadStatus & 0x01) != 0)
     {
       telemetryPipeline.tailBlockCommitted();
       

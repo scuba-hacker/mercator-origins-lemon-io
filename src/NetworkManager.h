@@ -238,6 +238,8 @@ public:
     char* getMQTTPayloadBuffer();
     
     // OTA callbacks
+    // Called by the owning main task after the async callback requests OTA.
+    void prepareForOTAOnMainTask();
     void uploadOTABeginCallback();
     void uploadOTAProgressCallback(size_t progress, size_t total);
     void uploadOTASucceededCallback();
