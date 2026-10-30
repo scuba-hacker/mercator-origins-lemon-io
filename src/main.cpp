@@ -260,6 +260,7 @@ bool enableMQTTEncryption = true; // Set to true to use encrypted MQTT connectio
 bool enableReadUplinkComms = true;
 bool enableGPSRead = true;
 bool enableLanternRead = true;
+bool forceLanternNeoPixelsAllOff = false;  // any power issues, retest with neopixels disabled as draw significant power.
 bool enableAllUplinkMessageIntegrityChecks = true;
 bool enableConnectToPrivateMQTT = true;
 bool enableUploadToPrivateMQTT = true;
@@ -546,6 +547,7 @@ float KBFromMako = 0.0;
 uint32_t startAccumulatingMissedMessagesAt = 0;
 uint32_t setupCompletedAt = 0;
 bool accumulateMissedMessageCount = false;    // start-up
+bool uplinkRequestSentToMako = false;         // true when current listen window follows a GGA sent to Mako
 const uint32_t delayBeforeCountingMissedMessages = 10000;
 void incrementUplinkMessageMissedCount();
 
@@ -1166,6 +1168,9 @@ void sendLemonStatus(e_lemon_status status, bool useBufferLog)
   if (diveInProgress || forceDiveInProgress)
     status = (e_lemon_status)(status | LC_DIVE_IN_PROGRESS);
 
+  if (forceLanternNeoPixelsAllOff)
+    status = LC_ALL_OFF;
+
   if (useBufferLog)
     BUFFER_LOG_PRINTF("Send Lemon Status to Lantern: 0x%02X %s\n", status, getLemonStatusString(status));
   else
@@ -1643,6 +1648,7 @@ void loop()
           if (gps.isSentenceGGA())
           {
             processUplinkMessage = true; // triggers listen for uplink msg
+            uplinkRequestSentToMako = true;
             uplinkMessageListenTimer = millis();
           }
 
@@ -1835,7 +1841,16 @@ void loop()
         // No GPS fix available or GPS fix lost - create telemetry message with zero'd Mako data
         if (writeMakoMsgDecodingLogToSerial)
           USB_SERIAL_PRINTLN("11.0 No GPS fix - creating telemetry with zero'd Mako data");
-        
+
+        // A NO FIX GGA was sent to Mako but no reply arrived - count as missed.
+        // Not counted for GPS timeout windows where nothing was sent to Mako.
+        if (uplinkRequestSentToMako)
+        {
+          if (writeMakoMsgDecodingLogToSerial)
+            USB_SERIAL_PRINTLN("11.0.1 Uplink msg missed count incremented - place 3 (no GPS fix)");
+          incrementUplinkMessageMissedCount();
+        }
+
         // Get the next free head block to populate in the telemetry pipeline
         BlockHeader headBlock = telemetryPipeline.getHeadBlockForPopulating();
         
@@ -1869,10 +1884,11 @@ void loop()
         
         processUplinkMessage = false; // finished processing
       }
-      else if (accumulateMissedMessageCount && (millis() - uplinkMessageListenTimer) > uplinkMessageLingerPeriodMs)
+      else if ((millis() - uplinkMessageListenTimer) > uplinkMessageLingerPeriodMs)
       {
-        // Timeout waiting for Mako response - only count as missed if we were actually waiting
-        if (processUplinkMessage)
+        // Timeout waiting for Mako response - only count as missed if a GGA was sent to Mako.
+        // incrementUplinkMessageMissedCount() handles the start-up delay before counting begins.
+        if (uplinkRequestSentToMako)
         {
           if (writeMakoMsgDecodingLogToSerial)
             USB_SERIAL_PRINTLN("10.1 Uplink msg missed count incremented - place 2");
@@ -1940,6 +1956,7 @@ void loop()
 
       // Trigger telemetry upload even when GPS stops sending messages completely
       processUplinkMessage = true;
+      uplinkRequestSentToMako = false;   // nothing sent to Mako, so no reply expected
       uplinkMessageListenTimer = millis();
       USB_SERIAL_PRINTLN("GPS TIMEOUT: Triggering telemetry upload for timeout condition");
     }
